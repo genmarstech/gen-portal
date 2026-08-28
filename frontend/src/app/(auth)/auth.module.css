@@ -1,0 +1,83 @@
+.link {
+  color: var(--accent-text);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-text) 40%, transparent);
+  font-weight: 400;
+}
+
+.link:hover {
+  color: var(--link-hover);
+}
+
+.inlineLink {
+  align-self: flex-start;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--accent-text);
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-text) 35%, transparent);
+}
+
+.inlineLink:hover {
+  color: var(--link-hover);
+}
+
+.note {
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-muted);
+  background: var(--bg-raised);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+.sent {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--ink-muted);
+}
+
+.sentTo {
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.resend {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+.resendButton {
+  padding: 0;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--accent-text);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent-text) 35%, transparent);
+  cursor: pointer;
+}
+
+.resendButton:disabled {
+  color: var(--ink-faint);
+  border-bottom-color: transparent;
+  cursor: default;
+}
+
+.terms {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+/* Confirmation that a resend actually went out. Quiet — it is a receipt, not
+   an achievement. */
+.notice {
+  margin-bottom: var(--sp-4);
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}

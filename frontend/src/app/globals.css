@@ -1,0 +1,566 @@
+/*
+ * Genmars Tech — global styles
+ *
+ * Palette, type, and spacing come from 06-brand/README.md in the company folder.
+ * Do not introduce a colour that is not defined here.
+ *
+ * ── TOKEN ARCHITECTURE ────────────────────────────────────────────────────────
+ * Brand constants never change between themes. Semantic tokens do.
+ *
+ *   :root                                  light values (the default)
+ *   :root[data-theme="dark"]               explicit dark choice
+ *   @media (prefers-color-scheme: dark)    system dark, unless "light" is chosen
+ *
+ * Never give a colour its only definition inside a media or [data-theme] block.
+ *
+ * ── CONTRAST ─────────────────────────────────────────────────────────────────
+ * LIGHT: Ignition (#DB7B51) is 2.64:1 on --surface and 3.02:1 on white. Both
+ * fail AA for body text. On light it is used for LARGE display type, rules and
+ * non-text accents only. Links and small text use Mahogany (5.79:1) or Imperial
+ * Topaz (5.04:1).
+ *
+ * DARK: Ignition reaches 5.44:1 on the dark base and 4.61:1 on raised, so it is
+ * safe as link and body colour there. Verified ratios are in the comments below.
+ */
+
+:root {
+  /* ---- brand constants — identical in every theme ---- */
+  --deep-well: #2e2b34;
+  --mahogany: #834f49;
+  --imperial-topaz: #8b5a48;
+  --wild-ginger: #82555b;
+  --ignition: #db7b51;
+
+  --canvas: #e9e3df;
+  --surface: #f4efec;
+  --surface-raised: #f7f3f1;
+  --white: #ffffff;
+
+  --gradient-ignition: linear-gradient(
+    135deg,
+    #2e2b34 0%,
+    #834f49 55%,
+    #db7b51 100%
+  );
+  --gradient-regolith: linear-gradient(
+    135deg,
+    #82555b 0%,
+    #8b5a48 50%,
+    #db7b51 100%
+  );
+
+  /* ---- semantic tokens — LIGHT ---- */
+  --bg: #f4efec;
+  --bg-raised: #f7f3f1;
+  --bg-sunken: #e9e3df;
+  /*
+   * Full-width section band. Recessed in light, LIFTED in dark — it has to stay
+   * distinct from both the page and the dark footer, and no single direction
+   * does that in both themes.
+   */
+  --bg-band: #e9e3df;
+  /* Bright satellite in the orbit scene — must read against the page ground. */
+  --sat-bright: #8b5a48;
+  --ink: #2e2b34;
+  --ink-muted: #5f5867;
+  --ink-faint: #7a7480;
+  --link: #834f49; /* Mahogany — 5.79:1 on surface */
+  --link-hover: #8b5a48;
+  --rule: rgba(46, 43, 52, 0.14);
+  --rule-strong: rgba(46, 43, 52, 0.28);
+  --shadow: rgba(46, 43, 52, 0.09);
+
+  /* Accent that is safe for SMALL text in this theme. */
+  --accent-text: #834f49;
+
+  /*
+   * Danger. A deep red rather than a bright one — it has to sit beside Mahogany
+   * and Imperial Topaz without looking like a different design system, while
+   * still reading unmistakably as an error.
+   * 5.83:1 on --bg, 6.03:1 on --bg-raised. Both pass AA.
+   */
+  --danger: #a8322b;
+  /* Accent for large display / non-text marks. Always Ignition. */
+  --accent: #db7b51;
+
+  --mark-g: #8b5a48;
+  --mark-orbit: #db7b51;
+  --wordmark-ink: #2e2b34;
+  --tagline-ink: #7a7480;
+
+  /* ---- type ---- */
+  --font-sans: var(--font-jost), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;
+
+  --track-wordmark: 0.3em;
+  --track-tagline: 0.44em;
+  --track-eyebrow: 0.18em;
+
+  /* ---- spacing ---- */
+  --sp-1: 0.25rem;
+  --sp-2: 0.5rem;
+  --sp-3: 0.75rem;
+  --sp-4: 1rem;
+  --sp-5: 1.25rem;
+  --sp-6: 1.5rem;
+  --sp-8: 2rem;
+  --sp-10: 2.5rem;
+  --sp-12: 3rem;
+  --sp-16: 4rem;
+  --sp-24: 6rem;
+  --sp-32: 8rem;
+
+  --measure: 68ch;
+  --page-max: 74rem;
+  --radius: 2px;
+  --radius-lg: 6px;
+
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --header-h: 5rem;
+
+  color-scheme: light;
+}
+
+/* ---- semantic tokens — DARK ---- */
+
+:root[data-theme="dark"] {
+  --bg: #211e27;
+  --bg-raised: #2e2b34; /* Deep Well */
+  --bg-sunken: #17141b;
+  --bg-band: #2e2b34;
+  --sat-bright: #f4efec;
+
+  --ink: #f4efec; /* 14.38:1 on base */
+  --ink-muted: #bdb6c2; /* 8.31:1 */
+  --ink-faint: #a69faD; /* 6.0:1 */
+  --link: #db7b51; /* Ignition — 5.44:1, safe for text here */
+  --link-hover: #e89a76; /* 7.28:1 */
+  --rule: rgba(244, 239, 236, 0.14);
+  --rule-strong: rgba(244, 239, 236, 0.3);
+  --shadow: rgba(0, 0, 0, 0.5);
+
+  --accent-text: #db7b51;
+  --accent: #db7b51;
+
+  /* 7.13:1 on the dark base, 6.04:1 on raised. Both pass AA. */
+  --danger: #f0918a;
+
+  --mark-g: #c98f76;
+  --mark-orbit: #db7b51;
+  --wordmark-ink: #f4efec;
+  --tagline-ink: #a69fad;
+
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #211e27;
+    --bg-raised: #2e2b34;
+    --bg-sunken: #17141b;
+    --bg-band: #2e2b34;
+    --sat-bright: #f4efec;
+    --ink: #f4efec;
+    --ink-muted: #bdb6c2;
+    --ink-faint: #a69fad;
+    --link: #db7b51;
+    --link-hover: #e89a76;
+    --rule: rgba(244, 239, 236, 0.14);
+    --rule-strong: rgba(244, 239, 236, 0.3);
+    --shadow: rgba(0, 0, 0, 0.5);
+
+    --accent-text: #db7b51;
+    --accent: #db7b51;
+    --danger: #f0918a;
+
+    --mark-g: #c98f76;
+    --mark-orbit: #db7b51;
+    --wordmark-ink: #f4efec;
+    --tagline-ink: #a69fad;
+
+    color-scheme: dark;
+  }
+}
+
+/*
+ * An inverted band — a section that deliberately breaks the page rhythm.
+ *
+ * In LIGHT it goes dark (Deep Well). In DARK it goes deeper still, rather than
+ * flipping to light, because a white band in a dark page is a flashbang. Either
+ * way it reads as a distinct register, and Ignition becomes text-safe inside it.
+ */
+.band-invert {
+  --bg: #2e2b34;
+  --bg-raised: #383440;
+  --bg-band: #383440;
+  --bg-sunken: #211e27;
+  --sat-bright: #f4efec;
+  --ink: #f4efec;
+  --ink-muted: #bdb6c2;
+  --ink-faint: #a69fad;
+  --link: #db7b51; /* 4.61:1 on Deep Well */
+  --link-hover: #e89a76;
+  --rule: rgba(244, 239, 236, 0.16);
+  --rule-strong: rgba(244, 239, 236, 0.32);
+  --accent-text: #db7b51;
+  --danger: #f0918a;
+  --mark-g: #c98f76;
+  --wordmark-ink: #f4efec;
+  --tagline-ink: #a69fad;
+
+  background: var(--bg);
+  color: var(--ink);
+  color-scheme: dark;
+}
+
+:root[data-theme="dark"] .band-invert {
+  --bg: #17141b; /* deeper, not lighter */
+  --bg-raised: #221f28;
+  --bg-band: #221f28;
+  --ink-faint: #a69fad;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .band-invert {
+    --bg: #17141b;
+    --bg-raised: #221f28;
+    --bg-band: #221f28;
+  }
+}
+
+/* ---------- reset ---------- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+  scroll-padding-top: calc(var(--header-h) + var(--sp-4));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-weight: 300;
+  font-size: clamp(1rem, 0.96rem + 0.2vw, 1.0625rem);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  /* Theme swap should feel like a dimmer, not a strobe. */
+  transition:
+    background-color 0.35s ease,
+    color 0.35s ease;
+  overflow-x: hidden;
+}
+
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+}
+
+/* ---------- type ---------- */
+
+h1,
+h2,
+h3,
+h4 {
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+  color: var(--ink);
+}
+
+h1 {
+  font-size: clamp(2.1rem, 1.5rem + 3vw, 4rem);
+}
+
+h2 {
+  font-size: clamp(1.5rem, 1.25rem + 1.5vw, 2.4rem);
+}
+
+h3 {
+  font-size: clamp(1.15rem, 1.05rem + 0.5vw, 1.4rem);
+  letter-spacing: -0.005em;
+}
+
+h4 {
+  font-size: 1.0625rem;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+
+p {
+  text-wrap: pretty;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--link) 35%, transparent);
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+a:hover {
+  color: var(--link-hover);
+  border-bottom-color: color-mix(in srgb, var(--link-hover) 70%, transparent);
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius);
+}
+
+strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+code,
+kbd {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+kbd {
+  display: inline-block;
+  padding: 0.15em 0.4em;
+  border: 1px solid var(--rule-strong);
+  border-bottom-width: 2px;
+  border-radius: 3px;
+  background: var(--bg-raised);
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+/* ---------- layout ---------- */
+
+.page {
+  flex: 1;
+}
+
+.wrap {
+  width: 100%;
+  max-width: var(--page-max);
+  margin-inline: auto;
+  padding-inline: var(--sp-5);
+}
+
+@media (min-width: 48rem) {
+  .wrap {
+    padding-inline: var(--sp-8);
+  }
+}
+
+.section {
+  padding-block: clamp(var(--sp-16), 10vw, var(--sp-32));
+  border-top: 1px solid var(--rule);
+}
+
+.section--flush {
+  border-top: none;
+}
+
+.measure {
+  max-width: var(--measure);
+}
+
+/* ---------- shared components ---------- */
+
+.eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 400;
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: var(--sp-6);
+}
+
+.lede {
+  font-size: clamp(1.0625rem, 1rem + 0.45vw, 1.375rem);
+  line-height: 1.5;
+  color: var(--ink-muted);
+  font-weight: 300;
+}
+
+.grid {
+  display: grid;
+  gap: var(--sp-8);
+}
+
+@media (min-width: 40rem) {
+  .grid--2 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 60rem) {
+  .grid--3 {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.rule {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin-block: var(--sp-12);
+}
+
+.rule--accent {
+  border: 0;
+  border-top: 2px solid var(--accent);
+  width: 3rem;
+  margin-block: 0 var(--sp-8);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: 0.8rem 1.5rem;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  background: var(--ink);
+  color: var(--bg);
+  cursor: pointer;
+  text-align: center;
+  transition:
+    background 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.2s var(--ease);
+}
+
+.btn:hover {
+  background: var(--mahogany);
+  border-color: var(--mahogany);
+  color: var(--white);
+  transform: translateY(-1px);
+}
+
+:root[data-theme="dark"] .btn:hover {
+  background: var(--ignition);
+  border-color: var(--ignition);
+  color: #221f28;
+}
+
+.btn:active {
+  transform: translateY(0);
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+.btn--ghost:hover {
+  background: transparent;
+  color: var(--link-hover);
+  border-color: var(--link-hover);
+}
+
+.btn[disabled] {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* ---------- accessibility ---------- */
+
+.skip-link {
+  position: absolute;
+  left: var(--sp-4);
+  top: -100%;
+  z-index: 100;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--deep-well);
+  color: var(--surface);
+  border: 0;
+  border-radius: var(--radius);
+}
+
+.skip-link:focus {
+  top: var(--sp-4);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- print ---------- */
+
+@media print {
+  .skip-link,
+  header,
+  footer,
+  [data-no-print] {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+    font-size: 11pt;
+  }
+
+  .section {
+    padding-block: 1rem;
+    break-inside: avoid;
+  }
+
+  a::after {
+    content: " (" attr(href) ")";
+    font-size: 0.85em;
+    color: #555;
+  }
+}

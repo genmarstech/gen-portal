@@ -1,0 +1,36 @@
+# Line endings.
+#
+# This repository is developed on Windows and deployed to Linux. Git's default
+# on Windows converts LF to CRLF on checkout, which is harmless for source files
+# and BREAKS anything the kernel has to interpret:
+#
+#   · a shell script with CRLF fails as `bad interpreter: /usr/bin/env bash^M`
+#   · a Dockerfile RUN line carries the ^M into the shell it starts
+#   · a systemd unit with CRLF is rejected as malformed
+#
+# Every one of those fails on the server, after a clean local test, with an
+# error message that does not mention line endings. So: text is normalised to
+# LF in the repository, and the files that must stay LF on disk say so.
+
+* text=auto eol=lf
+
+# Executed on Linux — never CRLF, on any platform.
+*.sh            text eol=lf
+*.service       text eol=lf
+*.timer         text eol=lf
+*.caddy         text eol=lf
+Dockerfile      text eol=lf
+*.Dockerfile    text eol=lf
+.dockerignore   text eol=lf
+*.env.example   text eol=lf
+
+# Binary: never touched.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.dump binary

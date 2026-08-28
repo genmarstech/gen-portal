@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# gen-portal
+#
+# The top block is the one that matters. Charter 03 §III: secrets never enter
+# the repository — and unlike a broken build, a committed secret is not fixed by
+# deleting it in the next commit. It is in the history, and it has to be
+# rotated.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ---- secrets ----------------------------------------------------------------
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# ---- client data ------------------------------------------------------------
+# The development database holds real-shaped personal data, and sent-emails/
+# holds live verification and password-reset codes.
+*.sqlite3
+backend/sent-emails/
+
+# Backups hold client personal data. The directory is tracked; its contents
+# never are.
+backups/*
+!backups/.gitkeep
+!backups/README.md
+
+# ---- build output -----------------------------------------------------------
+# Collected static, copied out of the image on each deploy (docs/DEPLOYMENT.md).
+staticfiles/
+
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+node_modules/
+
+# ---- python -----------------------------------------------------------------
+.venv/
+.venv-*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ---- editors and os ---------------------------------------------------------
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

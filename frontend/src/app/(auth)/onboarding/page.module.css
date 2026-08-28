@@ -1,0 +1,61 @@
+.booting {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+}
+
+/* Two steps, so two segments. A percentage bar would be dishonest precision
+   for a form this short. */
+.progress {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 26px;
+}
+
+.bar,
+.barDone {
+  height: 2px;
+  flex: 1;
+  border-radius: 1px;
+  transition: background 0.4s var(--ease);
+}
+
+.bar {
+  background: var(--rule-strong);
+}
+
+.barDone {
+  background: var(--accent);
+}
+
+.back {
+  padding: 0;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--ink-faint);
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.back:hover {
+  color: var(--link-hover);
+}
+
+.after {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--rule);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar,
+  .barDone {
+    transition: none;
+  }
+}

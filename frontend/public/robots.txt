@@ -1,0 +1,5 @@
+# The client portal is not for indexing. Everything behind sign-in is private by
+# definition, and the sign-in page itself has no reason to appear in a search
+# result — genmars.co.ke is the public front door.
+User-agent: *
+Disallow: /

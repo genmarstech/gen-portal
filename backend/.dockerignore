@@ -1,0 +1,17 @@
+# Keep the build context small and keep secrets out of the image.
+.venv
+.venv-*
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+
+# NEVER ship these. .env holds the real SECRET_KEY and database password; the
+# sqlite file and the mail directory hold development data including codes.
+.env
+*.sqlite3
+sent-emails/
+staticfiles/
+
+.git
+.gitignore

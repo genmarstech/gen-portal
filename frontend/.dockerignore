@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+npm-debug.log*
+
+# .env.local is developer configuration; production comes from the environment.
+.env.local
+.env*.local
+
+.git
+.gitignore

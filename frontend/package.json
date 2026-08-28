@@ -1,0 +1,30 @@
+{
+  "name": "gen-portal-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Client portal frontend for Genmars Tech Limited",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "dev": "next dev -p 3010",
+    "build": "next build",
+    "start": "next start -p 3010",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "check:theme": "node scripts/check-theme-tokens.mjs",
+    "verify": "npm run check:theme && npm run typecheck && npm run clean && npm run build",
+    "clean": "node -e \"const{rmSync}=require('fs');try{rmSync('.next',{recursive:true,force:true,maxRetries:5,retryDelay:200})}catch(e){console.error(e.code)}\""
+  },
+  "dependencies": {
+    "next": "^15.5.4",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "eslint": "^9.27.0",
+    "eslint-config-next": "^15.5.4",
+    "typescript": "^5.8.3"
+  }
+}

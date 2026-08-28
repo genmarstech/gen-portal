@@ -1,0 +1,64 @@
+.wrap {
+  max-width: 44rem;
+}
+
+.head {
+  padding-bottom: var(--sp-8);
+  border-bottom: 1px solid var(--rule);
+}
+
+.title {
+  font-size: clamp(1.7rem, 1.4rem + 1.4vw, 2.2rem);
+}
+
+.email {
+  margin-top: var(--sp-2);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.section {
+  padding-block: clamp(var(--sp-8), 4vw, var(--sp-12));
+  border-bottom: 1px solid var(--rule);
+}
+
+.section:last-child {
+  border-bottom: 0;
+}
+
+.h2 {
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: var(--sp-6);
+}
+
+.body {
+  max-width: var(--measure);
+  color: var(--ink-muted);
+  margin-bottom: var(--sp-6);
+}
+
+.form {
+  max-width: 26rem;
+}
+
+.done {
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-4);
+  border-left: 2px solid var(--accent);
+  background: var(--bg-raised);
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+.note {
+  margin-top: var(--sp-6);
+  max-width: var(--measure);
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}

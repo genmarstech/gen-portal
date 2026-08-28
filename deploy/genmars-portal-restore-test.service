@@ -1,0 +1,17 @@
+# Prove the newest backup restores. See scripts/restore-test.sh for why this
+# exists as its own scheduled job rather than a note in a runbook.
+
+[Unit]
+Description=Genmars portal — restore test (proves the backups are usable)
+Documentation=file:///srv/genmars-portal/docs/DEPLOYMENT.md
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/genmars-portal
+ExecStart=/srv/genmars-portal/scripts/restore-test.sh
+EnvironmentFile=/srv/genmars-portal/.env
+
+[Install]
+WantedBy=multi-user.target

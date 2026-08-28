@@ -1,0 +1,37 @@
+# Postgres backup for the Genmars client portal.
+#
+#   sudo cp deploy/genmars-portal-backup.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now genmars-portal-backup.timer
+#
+# Verify it is actually scheduled — an enabled timer that never fires is the
+# usual way "we have backups" turns out to be false:
+#   systemctl list-timers genmars-portal-backup.timer
+#   journalctl -u genmars-portal-backup.service -n 50
+
+[Unit]
+Description=Genmars portal — Postgres backup
+Documentation=file:///srv/genmars-portal/docs/DEPLOYMENT.md
+# Nothing to dump if Docker is not up.
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/genmars-portal
+ExecStart=/srv/genmars-portal/scripts/backup.sh
+
+# The compose file reads POSTGRES_* from here; the backup script needs the same
+# values to name the database and the role.
+EnvironmentFile=/srv/genmars-portal/.env
+
+# A failed backup must be loud. Without this the unit fails silently and the
+# only trace is a journal line nobody reads.
+#
+# OnFailure needs a matching genmars-portal-backup-failed@.service to actually
+# notify. Until that exists, the honest position is that failures are visible in
+# `systemctl list-timers` and the journal, and nowhere else — recorded in
+# docs/PRE-LAUNCH.md rather than pretended away.
+
+[Install]
+WantedBy=multi-user.target

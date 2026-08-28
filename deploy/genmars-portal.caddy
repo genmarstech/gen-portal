@@ -1,0 +1,173 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Genmars client portal — app.genmars.co.ke  +  api.genmars.co.ke
+#
+# A DROP-IN for the shared host Caddy, not a standalone config.
+#
+#   sudo cp deploy/genmars-portal.caddy /etc/caddy/conf.d/genmars-portal.caddy
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# ⚠ DO NOT copy this over /etc/caddy/Caddyfile. This host also serves
+#   genmars.co.ke and clipsserenityspa.co.ke from /etc/caddy/conf.d/. The main
+#   Caddyfile does nothing but `import /etc/caddy/conf.d/*.caddy` — overwriting
+#   it would take a client site down.
+#
+# ── TWO HOSTNAMES, AND WHAT THE BROWSER ACTUALLY TALKS TO ───────────────────
+#
+#   app.genmars.co.ke   the portal. This is the ONLY hostname a signed-in
+#                       browser ever contacts.
+#   api.genmars.co.ke   the same Django, addressable in its own right, for
+#                       everything that is not this browser session: products,
+#                       infrastructure, integrations, scripts.
+#
+# The portal's own /api/* calls do NOT cross to api.genmars.co.ke. Next proxies
+# them server-side (next.config.ts `rewrites`), so from the browser's point of
+# view every request — page and API alike — is same-origin on app.genmars.co.ke.
+#
+# That is deliberate, and it is what keeps the auth design intact:
+#
+#   · no CORS anywhere, so no preflight, no allow-list, and no
+#     `Access-Control-Allow-Credentials: true` pointed at a cookie that grants
+#     access to client data
+#   · the session cookie stays host-only on app.genmars.co.ke — it is never
+#     sent to api.genmars.co.ke, so a fault in a future public API endpoint
+#     cannot be driven with a portal user's session
+#   · no dependency on cross-origin cookie behaviour, which browsers keep
+#     tightening
+#
+# If a browser ever needs to call api.genmars.co.ke directly, that needs CORS
+# (django-cors-headers) and a deliberate decision about credentials. Do not add
+# it by reflex to make one fetch work.
+#
+# ── DNS ─────────────────────────────────────────────────────────────────────
+# Both records are A -> the host, DNS-only (grey cloud) in Cloudflare. Verified
+# 2026-08-28. Proxied (orange) would break two things at once: the ACME HTTP-01
+# challenge could not reach this host, and NUM_PROXIES = 1 in settings.py would
+# be wrong — DRF would read Cloudflare's address as the client, collapsing every
+# per-IP rate limit into one global limit shared by all clients.
+#
+# Note genmars.co.ke itself IS proxied. That is fine and unrelated: it is a
+# static marketing site with no rate limiting and its certificate is long since
+# issued.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# ── the portal ───────────────────────────────────────────────────────────────
+
+app.genmars.co.ke {
+	encode zstd gzip
+
+	# Django admin and DRF assets, served straight off disk. Static files have
+	# no business travelling through gunicorn, where each one occupies a worker
+	# that should be answering API requests. The path is the bind mount from
+	# compose.yaml.
+	handle /static/* {
+		root * /srv/genmars-portal
+		file_server
+	}
+
+	# Everything else is Next, including /api/* — which Next itself forwards to
+	# Django in-process. ORDER MATTERS: a `handle` with no matcher swallows
+	# everything, so it must come last.
+	handle {
+		reverse_proxy 127.0.0.1:3010 {
+			header_up X-Real-IP {remote_host}
+
+			health_uri /healthz
+			health_interval 10s
+			health_timeout 3s
+		}
+	}
+
+	header {
+		# HSTS belongs at the TLS edge, not in a container — it is meaningless
+		# on the plain-HTTP hop behind it.
+		#
+		# Deliberately WITHOUT includeSubDomains and WITHOUT preload, same as
+		# the marketing site. Both are hard to reverse, and includeSubDomains
+		# here would bind every genmars.co.ke subdomain, including any not yet
+		# on HTTPS.
+		Strict-Transport-Security "max-age=31536000"
+
+		# This origin serves an authenticated application. Framing it is only
+		# useful for clickjacking someone's session.
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+
+# ── the API, in its own right ────────────────────────────────────────────────
+
+api.genmars.co.ke {
+	encode zstd gzip
+
+	handle /static/* {
+		root * /srv/genmars-portal
+		file_server
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:8010 {
+			header_up X-Real-IP {remote_host}
+
+			# One proxy hop, matching NUM_PROXIES = 1 in settings.py. Put
+			# anything else in front of Caddy and that number becomes wrong.
+
+			health_uri /api/health
+			health_interval 10s
+			health_timeout 3s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGGING — intentionally absent from both blocks
+#
+# Same as deploy/genmars.caddy on this host. A `log { output file ... }` block
+# FAILS at reload with "permission denied" even after chown — and because it
+# fails at LOAD rather than at adapt time, `caddy validate` PASSES and only the
+# reload breaks. Access logs go to the journal with everything else.
+#
+# It matters more here than on the marketing site: these logs record which
+# authenticated client hit which URL, so their retention is a privacy-policy
+# commitment. One retention setting in journald is one place to be honest about.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# STAGING — for the FIRST issuance on these two new subdomains
+#
+# Neither has ever had a certificate. Let's Encrypt rate-limits failed issuance
+# hard enough to cost a week, so prove DNS and the proxy path against staging
+# first. Browsers will warn; that is expected. Add INSIDE each site block, then
+# remove and reload once staging certs appear:
+#
+#     tls edwin@genmars.co.ke {
+#         ca https://acme-staging-v02.api.letsencrypt.org/directory
+#     }
+#
+# Two things that have already cost time on this host:
+#
+#   1. The ACME email is an ARGUMENT to `tls`, not a subdirective.
+#      `tls { email ... }` is rejected: "unknown subdirective: email".
+#
+#   2. Scope it PER SITE. `acme_ca` in the global options block would switch
+#      genmars.co.ke and clipsserenityspa.co.ke to staging too, putting a
+#      browser warning on a live client site.
+#
+# Confirm which CA issued:
+#   for h in app.genmars.co.ke api.genmars.co.ke; do
+#     echo | openssl s_client -connect $h:443 -servername $h 2>/dev/null \
+#       | openssl x509 -noout -issuer -dates
+#   done
+# ─────────────────────────────────────────────────────────────────────────────

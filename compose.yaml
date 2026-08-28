@@ -1,0 +1,242 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Genmars client portal — app.genmars.co.ke + api.genmars.co.ke
+#
+#   docker compose up -d --build      build and run
+#   docker compose logs -f api        follow the API log
+#   docker compose exec api python manage.py migrate
+#   docker compose down               stop (data survives — volumes are named)
+#
+# ── THE BINDING RULE ────────────────────────────────────────────────────────
+# api and web publish to 127.0.0.1 ONLY. The host Caddy proxies to them and
+# terminates TLS; nothing here is reachable from the network.
+#
+# "8010:8010" would bind 0.0.0.0 and expose the API over plain HTTP to the
+# internet, bypassing TLS entirely — and a UFW "deny" would NOT stop it, because
+# Docker writes its own iptables rules ahead of UFW's. The 127.0.0.1 prefix is
+# what actually closes the port.
+#
+# db and redis publish NOTHING. They are reachable only over the compose network,
+# by name, from the other containers.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: genmars-portal
+
+services:
+  # ---- database ------------------------------------------------------------
+
+  db:
+    image: postgres:16-alpine
+    container_name: genmars-portal-db
+    restart: unless-stopped
+
+    # No `ports:`. Deliberate — see the binding rule above. The only way in is
+    # the compose network or `docker compose exec`.
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-genmars_portal}
+      POSTGRES_USER: ${POSTGRES_USER:-genmars}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      # Fail fast on an unclean init rather than silently building a database
+      # with different collation rules than the backups were taken under.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+
+    volumes:
+      - portal-db:/var/lib/postgresql/data
+      # Backups land on the host so they survive `docker compose down -v` and
+      # can be copied off the box. A backup that only exists inside the thing it
+      # is backing up is not a backup.
+      - ./backups:/backups
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-genmars} -d ${POSTGRES_DB:-genmars_portal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    security_opt:
+      - no-new-privileges:true
+
+    # ── A CEILING, BECAUSE THIS HOST IS SHARED ──────────────────────────────
+    # clipsserenityspa.co.ke — a LIVE CLIENT SITE — runs on this same machine,
+    # as does the Genmars marketing site. An unbounded Postgres can grow until
+    # the kernel starts OOM-killing, and the process it picks is not necessarily
+    # ours. A client's site must not be able to die because our database got
+    # busy.
+    #
+    # shared_buffers defaults to 128MB, so 512M leaves real headroom for work
+    # memory and connections at this size. Raise it deliberately if the data
+    # grows; do not remove it.
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ---- cache / throttle counters -------------------------------------------
+
+  redis:
+    image: redis:7-alpine
+    container_name: genmars-portal-redis
+    restart: unless-stopped
+
+    # Rate-limit counters live here. `--save ""` disables RDB snapshots: losing
+    # them on restart resets throttle windows, which is acceptable, and it keeps
+    # the container from needing a writable data volume.
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+    read_only: true
+    tmpfs:
+      - /data:size=8m,mode=0770,noexec,nosuid,nodev
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # `--maxmemory 128mb` above is Redis policing ITSELF, which it only does for
+    # keys it knows about. This is the kernel policing Redis, which is what
+    # actually holds on a shared host. The gap between the two covers
+    # fragmentation and buffers.
+    deploy:
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 192M
+        reservations:
+          memory: 32M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ---- Django API ----------------------------------------------------------
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: ghcr.io/genmarstech/gen-portal-api:latest
+    container_name: genmars-portal-api
+    restart: unless-stopped
+
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+    env_file:
+      - ./backend/.env
+
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-genmars}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-genmars_portal}
+      REDIS_URL: redis://redis:6379/0
+
+    # Loopback only. Do not change to "8010:8010".
+    ports:
+      - "127.0.0.1:8010:8010"
+
+    # ── NO STATIC BIND MOUNT — THIS WAS A BUG ───────────────────────────────
+    # `- ./staticfiles:/app/staticfiles:ro` looks right and is wrong. The image
+    # already contains the collectstatic output, built at image build time. Bind
+    # mounting the host directory over that path MASKS it: on a fresh clone the
+    # host directory is empty, so the container serves nothing, Caddy serves
+    # nothing, and the admin renders with no CSS — for a reason that is invisible
+    # in every log.
+    #
+    # Static files are copied OUT of the image instead, once per deploy:
+    #
+    #     docker compose cp api:/app/staticfiles ./staticfiles
+    #
+    # Explicit, ordinary to reason about, and it cannot silently hide the thing
+    # it is meant to publish. See step 5 of docs/DEPLOYMENT.md.
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    # NOT read_only. Python writes bytecode caches and gunicorn needs a
+    # scratch dir; forcing read-only here would buy very little and cost a class
+    # of confusing boot failures. The container is non-root with no capabilities,
+    # which is where the real protection is.
+
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          memory: 128M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # ---- Next.js frontend ----------------------------------------------------
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: ghcr.io/genmarstech/gen-portal-web:latest
+    container_name: genmars-portal-web
+    restart: unless-stopped
+
+    depends_on:
+      - api
+
+    environment:
+      # Server-side rewrites reach Django over the compose network by name.
+      # In the browser everything is same-origin through Caddy, so this is only
+      # for requests Next itself makes.
+      API_ORIGIN: http://api:8010
+
+    # Loopback only. Do not change to "3010:3010".
+    ports:
+      - "127.0.0.1:3010:3010"
+
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid,nodev
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 384M
+        reservations:
+          memory: 96M
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  portal-db:

@@ -1,0 +1,20 @@
+# Nightly backup, and a WEEKLY RESTORE TEST.
+#
+# The restore test is not optional garnish. Charter 03 §IV Tier 1 asks for
+# "automated backup with a tested restore", and an untested backup is a file,
+# not a backup. Running the test on a schedule is what keeps "tested" true
+# rather than true once, months ago.
+
+[Unit]
+Description=Genmars portal — nightly Postgres backup
+
+[Timer]
+# 02:15 Africa/Nairobi. Off the hour on purpose: everything else on a host
+# tends to run at :00, and a dump competing with log rotation and certificate
+# renewal is slower and harder to read in the journal.
+OnCalendar=*-*-* 02:15:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

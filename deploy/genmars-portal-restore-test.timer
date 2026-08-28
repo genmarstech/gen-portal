@@ -1,0 +1,13 @@
+[Unit]
+Description=Genmars portal — weekly restore test
+
+[Timer]
+# Sunday 03:30, well after the nightly dump has finished. Weekly rather than
+# nightly because it creates and drops a full copy of the database: cheap now,
+# and worth re-tuning if the database grows enough for that to matter.
+OnCalendar=Sun *-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

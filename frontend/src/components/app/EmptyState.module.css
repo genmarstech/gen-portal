@@ -1,0 +1,119 @@
+.wrap {
+  display: grid;
+  gap: var(--sp-8);
+  align-items: start;
+}
+
+@media (min-width: 52rem) {
+  .wrap {
+    grid-template-columns: 1fr minmax(0, 1.35fr);
+    gap: var(--sp-12);
+    align-items: center;
+  }
+}
+
+.art {
+  order: -1;
+}
+
+@media (min-width: 52rem) {
+  .art {
+    order: 0;
+  }
+}
+
+.svg {
+  display: block;
+  width: 100%;
+  max-width: 300px;
+  height: auto;
+}
+
+.track {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  stroke-dasharray: 5 8;
+  opacity: 0.45;
+}
+
+.trackInner {
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1;
+  stroke-dasharray: 3 7;
+  opacity: 0.22;
+}
+
+.centre {
+  fill: var(--ink);
+  opacity: 0.14;
+}
+
+.copy {
+  max-width: var(--measure);
+}
+
+.title {
+  font-size: clamp(1.8rem, 1.4rem + 2vw, 2.6rem);
+  margin-bottom: var(--sp-4);
+}
+
+.steps {
+  list-style: none;
+  margin: var(--sp-8) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-5);
+  border-top: 1px solid var(--rule);
+  padding-top: var(--sp-6);
+}
+
+.steps li {
+  display: grid;
+  grid-template-columns: 2.5rem 1fr;
+  gap: var(--sp-3);
+  font-size: 0.9375rem;
+  color: var(--ink-muted);
+}
+
+.steps strong {
+  color: var(--ink);
+  font-weight: 400;
+}
+
+.stepNum {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--accent-text);
+  padding-top: 0.2em;
+}
+
+.cta {
+  margin-top: var(--sp-8);
+  font-size: 0.9375rem;
+  color: var(--ink-muted);
+}
+
+/* The step they have already completed. Struck through would be smug and hard
+   to read; a quieter number and an accent rule is enough to say "done". */
+.stepDone .stepNum {
+  color: var(--accent-text);
+  opacity: 1;
+}
+
+.stepDone {
+  position: relative;
+}
+
+.stepDone::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 0.3em;
+  bottom: 0.3em;
+  width: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+}

@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.sqlite3
+sent-emails/
+.env
+.env.*
+staticfiles/
+.pytest_cache/

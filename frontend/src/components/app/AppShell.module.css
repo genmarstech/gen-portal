@@ -1,0 +1,188 @@
+.shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.booting {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+}
+
+/* ---------- header ---------- */
+
+/*
+ * Sticky, so it has to stay CHEAP. Measured at 375x812 the first draft came out
+ * 149px tall — brand and nav on one row, the theme toggle and sign-out wrapped
+ * onto a second, the signed-in address on a third — which is 18% of a phone
+ * screen permanently occupied by chrome. The rules below flatten it to a single
+ * row on narrow screens.
+ */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--rule);
+  padding-block: var(--sp-3);
+}
+
+.headerInner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  /* Deliberately NOT wrapping: everything here is small enough to fit one row
+     at 320px, and wrapping is what made the header three rows tall. */
+  flex-wrap: nowrap;
+}
+
+@media (min-width: 40rem) {
+  .headerInner {
+    gap: var(--sp-6);
+  }
+}
+
+.brand {
+  border: 0;
+  margin-right: auto;
+  color: var(--ink);
+  flex: none;
+}
+
+.brand:hover {
+  border: 0;
+}
+
+/* Wordmark renders its own SVG; the shell only constrains its height. */
+.lockup {
+  display: block;
+  height: auto;
+  width: 116px;
+  max-width: 100%;
+}
+
+@media (min-width: 40rem) {
+  .lockup {
+    width: 150px;
+  }
+}
+
+.nav {
+  display: flex;
+  gap: var(--sp-4);
+}
+
+@media (min-width: 40rem) {
+  .nav {
+    gap: var(--sp-5);
+  }
+}
+
+.link {
+  position: relative;
+  font-size: 0.9375rem;
+  color: var(--ink-muted);
+  border: 0;
+  padding-block: var(--sp-1);
+}
+
+.link:hover {
+  color: var(--ink);
+  border: 0;
+}
+
+.link::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 1px;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s var(--ease);
+}
+
+.link:hover::after,
+.active::after {
+  transform: scaleX(1);
+}
+
+.active {
+  color: var(--ink);
+}
+
+.tools {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex: none;
+}
+
+/*
+ * The three-way theme control is 97px wide. Measured at 375px, the header row
+ * needed 422px to fit brand + nav + tools; dropping this one control brings it
+ * to 344px and the row fits with room to spare. It is not lost — the Account
+ * page carries it, for every width.
+ */
+.themeToggle {
+  display: none;
+}
+
+@media (min-width: 40rem) {
+  .themeToggle {
+    display: inline-flex;
+  }
+}
+
+.signOut {
+  padding: 0;
+  font-family: inherit;
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+}
+
+.signOut:hover {
+  color: var(--link-hover);
+  border-bottom-color: color-mix(in srgb, var(--link-hover) 40%, transparent);
+}
+
+/*
+ * The signed-in address. Hidden on phones: it costs a whole row of sticky
+ * chrome to answer a question the Account page already answers, and on a
+ * personal device "which account am I in" is rarely the live question.
+ */
+.who {
+  display: none;
+}
+
+@media (min-width: 40rem) {
+  .who {
+    display: block;
+    margin-top: var(--sp-2);
+    font-size: 0.75rem;
+    color: var(--ink-faint);
+  }
+}
+
+.main {
+  flex: 1;
+  padding-block: clamp(var(--sp-8), 5vw, var(--sp-16));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .link::after {
+    transition: none;
+  }
+}

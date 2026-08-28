@@ -1,0 +1,10 @@
+# Development and CI only — never installed into the runtime image.
+#
+# These were previously installed ad hoc, which meant a fresh checkout could
+# not run the test suite: the tests existed, but nothing recorded what to
+# install to execute them. A red pipeline blocks deploy (Charter 03 §III), so
+# the pipeline has to be reproducible from the repository alone.
+-r requirements.txt
+
+pytest==9.1.*
+pytest-django==4.14.*

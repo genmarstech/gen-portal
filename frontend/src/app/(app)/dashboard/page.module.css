@@ -1,0 +1,115 @@
+.loading {
+  display: grid;
+  place-items: center;
+  padding-block: var(--sp-24);
+}
+
+.error {
+  max-width: var(--measure);
+  padding: var(--sp-6);
+  background: var(--bg-raised);
+  border-left: 2px solid var(--danger);
+  border-radius: var(--radius);
+  color: var(--ink-muted);
+}
+
+.head {
+  margin-bottom: var(--sp-10);
+}
+
+.title {
+  font-size: clamp(1.8rem, 1.5rem + 1.5vw, 2.4rem);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.card {
+  display: grid;
+  gap: var(--sp-2);
+  padding: var(--sp-6) var(--sp-4) var(--sp-6) 0;
+  border-bottom: 1px solid var(--rule);
+  border-radius: 0;
+  color: var(--ink);
+  position: relative;
+  transition: background 0.3s ease;
+}
+
+.card:hover {
+  color: var(--ink);
+  border-bottom-color: var(--rule);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 7%, transparent) 0%,
+    transparent 40%
+  );
+}
+
+.card::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 2px;
+  background: var(--accent);
+  transform: scaleY(0);
+  transform-origin: top;
+  transition: transform 0.4s var(--ease);
+}
+
+.card:hover::before {
+  transform: scaleY(1);
+}
+
+@media (min-width: 44rem) {
+  .card {
+    grid-template-columns: 7rem 1fr auto;
+    align-items: baseline;
+    gap: var(--sp-6);
+    padding-left: var(--sp-5);
+  }
+}
+
+.cardRef {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--accent-text);
+}
+
+.cardTitle {
+  font-size: 1.15rem;
+}
+
+.cardMeta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-4);
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.status {
+  padding: 0.25rem 0.6rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  letter-spacing: var(--track-eyebrow);
+  text-transform: uppercase;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+/* Only the live state is accented. Everything else stays quiet — if every
+   status is highlighted, none of them is. */
+.active {
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.date {
+  white-space: nowrap;
+}

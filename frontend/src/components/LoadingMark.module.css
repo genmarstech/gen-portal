@@ -1,0 +1,80 @@
+/*
+ * Orbit circumference for rx=55, ry=17 is ~242 units (Ramanujan). The dash
+ * numbers below are derived from that — change the ellipse and they must change
+ * with it, or the comet will stutter as it wraps.
+ */
+
+.wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.svg {
+  overflow: visible;
+}
+
+.track {
+  opacity: 0.18;
+}
+
+.comet {
+  /* A ~34-unit arc travelling a ~242-unit path. */
+  stroke-dasharray: 34 208;
+  stroke-dashoffset: 242;
+  animation: orbit-travel 1.5s linear infinite;
+}
+
+.planet {
+  transform-origin: 60px 60px;
+  animation: planet-breathe 3s ease-in-out infinite;
+}
+
+@keyframes orbit-travel {
+  from {
+    stroke-dashoffset: 242;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes planet-breathe {
+  0%,
+  100% {
+    opacity: 0.85;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/*
+ * Reduced motion: nothing travels. The comet parks as a static arc and the whole
+ * mark breathes on opacity instead — still legibly "busy", with no movement.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .comet {
+    animation: none;
+    stroke-dashoffset: 180;
+  }
+
+  .planet {
+    animation: none;
+  }
+
+  .svg {
+    animation: mark-breathe 1.6s ease-in-out infinite;
+  }
+
+  @keyframes mark-breathe {
+    0%,
+    100% {
+      opacity: 0.45;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+}

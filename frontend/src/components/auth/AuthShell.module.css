@@ -1,0 +1,131 @@
+.shell {
+  display: flex;
+  width: 100%;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+}
+
+.column {
+  position: relative;
+  flex: 1;
+  /* Flex items default to min-width:auto, so they refuse to shrink below their
+     content and push the whole column past a narrow viewport. This is the fix,
+     and it has to be on BOTH the flex item and its inner block. */
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 24px 28px;
+  background: var(--bg);
+}
+
+@media (min-width: 62rem) {
+  .column {
+    padding: 56px;
+  }
+}
+
+.toggle {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+}
+
+.body {
+  width: 100%;
+  min-width: 0;
+  max-width: 400px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px; /* design: block rhythm */
+}
+
+/* ---------- mobile lockup ---------- */
+
+.mobileLockup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--ink);
+}
+
+@media (min-width: 62rem) {
+  .mobileLockup {
+    display: none; /* the panel carries the mark */
+  }
+}
+
+.mobileMark {
+  width: 30px;
+  height: 30px;
+  flex: none;
+}
+
+.mobileWord {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3em;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.mobileA {
+  height: 0.72em;
+  width: 0.66em;
+  flex: none;
+}
+
+/* ---------- heading ---------- */
+
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.eyebrow {
+  display: none;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--accent-text);
+}
+
+@media (min-width: 62rem) {
+  .eyebrow {
+    display: block;
+  }
+}
+
+.title {
+  font-size: 33px;
+  font-weight: 400;
+  line-height: 1.12;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+@media (min-width: 62rem) {
+  .title {
+    font-size: 36px;
+  }
+}
+
+.lede {
+  font-size: 15px;
+  font-weight: 300;
+  line-height: 1.65;
+  color: var(--ink-muted);
+  text-wrap: pretty;
+}
+
+.footer {
+  font-size: 14px;
+  font-weight: 300;
+  line-height: 1.65;
+  color: var(--ink-muted);
+}
