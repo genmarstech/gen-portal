@@ -11,19 +11,19 @@
 
 [Unit]
 Description=Genmars portal — Postgres backup
-Documentation=file:///srv/genmars-portal/docs/DEPLOYMENT.md
+Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
 # Nothing to dump if Docker is not up.
 Requires=docker.service
 After=docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/srv/genmars-portal
-ExecStart=/srv/genmars-portal/scripts/backup.sh
+WorkingDirectory=/opt/gen-portal
+ExecStart=/opt/gen-portal/scripts/backup.sh
 
 # The compose file reads POSTGRES_* from here; the backup script needs the same
 # values to name the database and the role.
-EnvironmentFile=/srv/genmars-portal/.env
+EnvironmentFile=/opt/gen-portal/.env
 
 # A failed backup must be loud. Without this the unit fails silently and the
 # only trace is a journal line nobody reads.

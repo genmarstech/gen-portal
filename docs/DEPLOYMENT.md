@@ -67,11 +67,15 @@ dig +short api.genmars.co.ke
 
 ### 2. Code and configuration
 
+`/opt/gen-portal`, matching the rest of this host — `gen-website`, `clips-spa`
+and the UrbanTrends projects all live under `/opt`. The systemd units and the
+Caddy `root` directive hardcode this path, so a clone somewhere else needs those
+edited too.
+
 ```bash
-sudo mkdir -p /srv/genmars-portal
-sudo chown "$USER" /srv/genmars-portal
-git clone https://github.com/genmarstech/gen-portal /srv/genmars-portal
-cd /srv/genmars-portal
+cd /opt
+git clone git@github.com:genmarstech/gen-portal.git
+cd gen-portal
 ```
 
 Two env files, neither in the repository:
@@ -233,7 +237,7 @@ receiving it.
 ## Routine deploy
 
 ```bash
-cd /srv/genmars-portal
+cd /opt/gen-portal
 git pull
 docker compose up -d --build
 docker compose exec api python manage.py migrate
@@ -257,7 +261,7 @@ Take a backup **before** any deploy carrying a migration:
 The fastest correct move. Every image is tagged, so go back to the previous one:
 
 ```bash
-cd /srv/genmars-portal
+cd /opt/gen-portal
 git log --oneline -5
 git checkout <previous-commit>
 docker compose up -d --build

@@ -62,7 +62,7 @@ app.genmars.co.ke {
 	# that should be answering API requests. The path is the bind mount from
 	# compose.yaml.
 	handle /static/* {
-		root * /srv/genmars-portal
+		root * /opt/gen-portal
 		file_server
 	}
 
@@ -105,7 +105,7 @@ api.genmars.co.ke {
 	encode zstd gzip
 
 	handle /static/* {
-		root * /srv/genmars-portal
+		root * /opt/gen-portal
 		file_server
 	}
 

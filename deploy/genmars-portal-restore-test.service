@@ -3,15 +3,15 @@
 
 [Unit]
 Description=Genmars portal — restore test (proves the backups are usable)
-Documentation=file:///srv/genmars-portal/docs/DEPLOYMENT.md
+Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
 Requires=docker.service
 After=docker.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=/srv/genmars-portal
-ExecStart=/srv/genmars-portal/scripts/restore-test.sh
-EnvironmentFile=/srv/genmars-portal/.env
+WorkingDirectory=/opt/gen-portal
+ExecStart=/opt/gen-portal/scripts/restore-test.sh
+EnvironmentFile=/opt/gen-portal/.env
 
 [Install]
 WantedBy=multi-user.target
