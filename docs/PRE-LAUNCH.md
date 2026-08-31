@@ -95,9 +95,17 @@ tool enter the stack only when what we already run cannot do the job, and
 routing exception payloads to a third-party processor is a decision to defer
 while the controller/processor position with the ODPC is open (Charter 03 §V).
 
-With `DEBUG=False` and no `EMAIL_HOST_PASSWORD`, Django warns at boot that the
-channel is dead. Deploying without that password means **this item is not met**,
-whatever this document says.
+With `DEBUG=False`, Django now **refuses to boot** without a working mail
+configuration — an unsendable `EMAIL_BACKEND` or an empty `EMAIL_HOST_PASSWORD`
+both raise `ImproperlyConfigured`. That was a warning until 2026-08-28 and it
+was too weak: the development default is the *file* backend, so simply not
+setting `EMAIL_BACKEND` in production made sign-up, verification, password reset
+and error alerts all report success while delivering nothing, with no trace in
+any log.
+
+Zoho is live and verified (SPF, DKIM on selector `zmail`, DMARC `p=none`) — see
+`09-communication/README.md`. What the deploy still needs is the
+application-specific password in `backend/.env`.
 
 ### 5 — Deploy and rollback
 

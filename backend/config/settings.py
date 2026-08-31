@@ -142,7 +142,11 @@ CSRF_COOKIE_SAMESITE = "Lax"
 # the smoke test passes, someone signs in, and then every authenticated write —
 # change password, and everything added later — returns 403. Better to refuse
 # to boot than to ship that.
-CSRF_TRUSTED_ORIGINS = env("CSRF_TRUSTED_ORIGINS")
+# Stripped and emptied-out, because django-environ splits on commas and keeps
+# whatever it finds: a stray "CSRF_TRUSTED_ORIGINS= " parses to [" "], which is
+# truthy and would sail past the check below while being worth nothing. A
+# trailing comma does the same thing.
+CSRF_TRUSTED_ORIGINS = [o.strip() for o in env("CSRF_TRUSTED_ORIGINS") if o.strip()]
 
 if not DEBUG and not CSRF_TRUSTED_ORIGINS:
     raise ImproperlyConfigured(
@@ -338,14 +342,44 @@ LOGGING = {
     },
 }
 
-if not DEBUG and not EMAIL_HOST_PASSWORD:
-    # Not fatal — the app can serve requests without outbound mail. But
-    # "monitoring that reaches a human" is a Tier 1 item, and silently having no
-    # channel is exactly the state that looks fine until the day it matters.
-    import warnings
+# ── OUTBOUND MAIL IS LOAD-BEARING, SO IT IS CHECKED AT BOOT ─────────────────
+#
+# This was a warning. It is now fatal, because the failure it describes is
+# invisible from the outside and the app is not usable without mail:
+#
+#   · sign-up issues a code and returns 200
+#   · onboarding cannot start until that code is entered
+#   · password reset is the only recovery path there is
+#   · un-caught 500s are supposed to reach a human
+#
+# With the FILE backend left in place — which is the DEVELOPMENT DEFAULT, so it
+# is what you get by simply not setting EMAIL_BACKEND — every one of those
+# "succeeds". Django writes the message to a file inside the container, returns
+# cleanly, and the client sits waiting for a code that was never sent. Nothing
+# in any log says so, and the container quietly accumulates files containing
+# live verification codes.
+#
+# A portal nobody can sign up to is not degraded, it is broken. Refuse to boot.
 
-    warnings.warn(
-        "EMAIL_HOST_PASSWORD is unset: error reports cannot be delivered and "
-        "verification codes will not send. Tier 1 monitoring is NOT satisfied.",
-        RuntimeWarning,
-    )
+_UNSENDABLE_BACKENDS = (
+    "django.core.mail.backends.filebased.EmailBackend",
+    "django.core.mail.backends.console.EmailBackend",
+    "django.core.mail.backends.dummy.EmailBackend",
+    "django.core.mail.backends.locmem.EmailBackend",
+)
+
+if not DEBUG:
+    if EMAIL_BACKEND in _UNSENDABLE_BACKENDS:
+        raise ImproperlyConfigured(
+            f"EMAIL_BACKEND is {EMAIL_BACKEND!r}, which does not send mail. "
+            "Production needs "
+            "EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend — "
+            "without it sign-up, verification, password reset and error alerts "
+            "all appear to succeed while delivering nothing."
+        )
+    if not EMAIL_HOST_PASSWORD:
+        raise ImproperlyConfigured(
+            "EMAIL_HOST_PASSWORD is empty. Zoho requires an application-"
+            "specific password (Zoho Mail > Settings > Security > App "
+            "Passwords), not the account password, when two-factor is on."
+        )
