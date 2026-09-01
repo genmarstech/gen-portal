@@ -1,0 +1,133 @@
+name: ci
+
+# Charter 03 §III: "CI runs on every push. A red pipeline blocks deploy — there
+# is no manual override."
+#
+# gen-website has had this since launch. gen-portal did not, so its 148 tests —
+# including the ones that prove one client cannot read another's data — ran only
+# when someone remembered to run them. That is not a test suite, it is a
+# collection of scripts.
+#
+# It never touches the server. Deploys here are still by hand
+# (docs/DEPLOYMENT.md); this is the gate that says the code is fit to deploy.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          # MUST match backend/Dockerfile. Django 5.1 breaks on 3.14 —
+          # BaseContext.__copy__ calls a super().__copy__ that no longer
+          # exists — and the failures land in the monitoring tests, which look
+          # alarming and are not. Pinning here means CI fails for real reasons
+          # only, and catches the day the Dockerfile moves and this does not.
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - run: pip install -r requirements-dev.txt
+
+      # SQLite, no services needed — config/settings_test.py says why.
+      - name: Tests
+        env:
+          DEBUG: "True"
+        run: python -m pytest
+
+      # The guards in settings.py refuse to boot on a misconfiguration. Prove
+      # a REAL production configuration still starts, or the guards are just a
+      # way to make deploys fail.
+      - name: A production configuration boots
+        env:
+          DEBUG: "False"
+          DJANGO_SECRET_KEY: ci-only-not-a-real-secret-ci-only-not-a-real-secret
+          ALLOWED_HOSTS: app.genmars.co.ke,api.genmars.co.ke,ops.genmars.co.ke,127.0.0.1,api
+          CSRF_TRUSTED_ORIGINS: https://app.genmars.co.ke,https://api.genmars.co.ke,https://ops.genmars.co.ke
+          EMAIL_BACKEND: accounts.mail_backends.ResendBackend
+          RESEND_API_KEY: re_ci_placeholder_not_a_real_key
+        run: python manage.py check --deploy --fail-level WARNING
+
+      # Migrations that exist but were never generated for a model change are a
+      # deploy that fails at `migrate`, after the image is already built.
+      - name: No missing migrations
+        env:
+          DEBUG: "True"
+        run: python manage.py makemigrations --check --dry-run
+
+  frontend:
+    name: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: npm ci --no-audit --no-fund
+
+      # Guards against a brand constant used as a themeable value — the bug
+      # that produced a light panel with light text in dark mode.
+      - run: npm run check:theme
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+
+  image:
+    name: image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [backend, frontend]
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+
+      # Both images, because a Dockerfile can break while the source is fine —
+      # a missing public/ directory took the ops build down exactly that way.
+      - name: Backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

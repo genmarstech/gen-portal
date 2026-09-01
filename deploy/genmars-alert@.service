@@ -1,0 +1,25 @@
+# Templated failure handler. Any unit can wire itself to this:
+#
+#     OnFailure=genmars-alert@%n.service
+#
+# %n expands to the FAILING unit's name, which arrives here as %i and is passed
+# to the notify script so the mail can say what broke and include its journal.
+#
+#   sudo cp deploy/genmars-alert@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Test it without breaking anything real:
+#   sudo systemctl start genmars-alert@genmars-portal-backup.service
+
+[Unit]
+Description=Genmars — alert that %i failed
+Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
+
+[Service]
+Type=oneshot
+ExecStart=/opt/gen-portal/scripts/notify.sh %i
+
+# Reads backend/.env for the Resend key and the journal for context. Both need
+# more than a nobody-user, and this runs only when something has already gone
+# wrong.
+User=root

@@ -1,0 +1,14 @@
+[Unit]
+Description=Genmars — external uptime check, every 15 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+# Fifteen minutes is a deliberate floor, not a shrug. Faster costs nothing
+# technically but makes a flaky network into a mail flood, and an alert channel
+# people learn to ignore is worse than no alert channel at all.
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

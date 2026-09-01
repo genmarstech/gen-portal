@@ -1,0 +1,28 @@
+# Is every Genmars surface actually answering, from outside the containers?
+#
+#   sudo cp deploy/genmars-uptime.* /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now genmars-uptime.timer
+#   sudo systemctl start genmars-uptime.service     # run it once now
+#
+# Docker healthchecks and Caddy's upstream checks both ask the system about
+# itself. This asks from where a client stands: real DNS, real TLS, real URLs.
+# It is the only check here that notices Caddy failing to start, a certificate
+# not renewing, or a DNS record being changed.
+
+[Unit]
+Description=Genmars — external uptime and certificate check
+Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+# The whole point: a failure has to reach a human.
+OnFailure=genmars-alert@%n.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/gen-portal
+ExecStart=/opt/gen-portal/scripts/uptime-check.sh
+
+[Install]
+WantedBy=multi-user.target

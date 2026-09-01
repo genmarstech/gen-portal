@@ -7,6 +7,11 @@ Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
 Requires=docker.service
 After=docker.service
 
+# A restore test that fails is the single most important alert on this box: it
+# means the backups are not restorable, and it is discovered on a Sunday rather
+# than during an incident.
+OnFailure=genmars-alert@%n.service
+
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/gen-portal

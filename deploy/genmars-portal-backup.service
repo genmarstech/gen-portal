@@ -16,6 +16,8 @@ Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
 Requires=docker.service
 After=docker.service
 
+OnFailure=genmars-alert@%n.service
+
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/gen-portal
@@ -28,10 +30,13 @@ EnvironmentFile=/opt/gen-portal/.env
 # A failed backup must be loud. Without this the unit fails silently and the
 # only trace is a journal line nobody reads.
 #
-# OnFailure needs a matching genmars-portal-backup-failed@.service to actually
-# notify. Until that exists, the honest position is that failures are visible in
-# `systemctl list-timers` and the journal, and nowhere else — recorded in
-# docs/PRE-LAUNCH.md rather than pretended away.
+# The handler this points at now exists (deploy/genmars-alert@.service). It
+# mails info@genmars.co.ke through Resend — the same path Django uses, so no
+# mail transport had to be installed on the host — and includes the last 25
+# journal lines, so the alert says what broke rather than that something did.
+#
+# Charter 03 §IV Tier 1 asks for monitoring that reaches a human. A backup
+# failing into a journal nobody reads is not a backup.
 
 [Install]
 WantedBy=multi-user.target
