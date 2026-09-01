@@ -16,7 +16,7 @@ Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
 Requires=docker.service
 After=docker.service
 
-OnFailure=genmars-alert@%n.service
+OnFailure=genmars-alert@%N.service
 
 [Service]
 Type=oneshot

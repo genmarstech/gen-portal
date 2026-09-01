@@ -1,9 +1,19 @@
 # Templated failure handler. Any unit can wire itself to this:
 #
-#     OnFailure=genmars-alert@%n.service
+#     OnFailure=genmars-alert@%N.service
 #
-# %n expands to the FAILING unit's name, which arrives here as %i and is passed
-# to the notify script so the mail can say what broke and include its journal.
+# %N — NOT %n. Both name the failing unit, but %n keeps the type suffix, so
+# `OnFailure=genmars-alert@%n.service` instantiates
+# `genmars-alert@genmars-uptime.service.service`. That works, and it puts a unit
+# with a doubled suffix in `systemctl` output and a subject line reading
+# "genmars-uptime.service failed" in the mail — both exactly the wrong kind of
+# confusing at 3am. %N drops the suffix and gives `genmars-alert@genmars-uptime`.
+#
+# Verified on this host (systemd 259): for a unit spec-probe.service,
+# %n = spec-probe.service, %N = spec-probe.
+#
+# The name arrives here as %i and is passed to the notify script, so the mail
+# can say what broke and include that unit's journal.
 #
 #   sudo cp deploy/genmars-alert@.service /etc/systemd/system/
 #   sudo systemctl daemon-reload
