@@ -99,9 +99,22 @@ services:
       timeout: 3s
       retries: 5
 
+    # Run as the image's own redis user (999:1000), NOT as root.
+    #
+    # Without this the container will not start at all. The official entrypoint
+    # chowns /data when it is running as root, and `cap_drop: ALL` has taken
+    # CAP_CHOWN away — so it fails, restarts, and fails again, logging only
+    # "chown: .: Operation not permitted" while `api` waits forever on a
+    # dependency that never becomes healthy. Starting as the target user skips
+    # that branch entirely.
+    user: "999:1000"
+
     read_only: true
+    # uid/gid must match the user above: the tmpfs is created root-owned at
+    # mode 0770, which an unprivileged redis cannot enter, and it can no longer
+    # chown its way in.
     tmpfs:
-      - /data:size=8m,mode=0770,noexec,nosuid,nodev
+      - /data:size=8m,mode=0770,uid=999,gid=1000,noexec,nosuid,nodev
 
     security_opt:
       - no-new-privileges:true
