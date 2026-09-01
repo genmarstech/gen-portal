@@ -2,6 +2,18 @@
   min-height: 100vh;
   min-height: 100dvh;
   background: var(--bg);
+  /* A warm light source top-left, very faint. The same ground as
+     ops.genmars.co.ke, so a staff member moving between the two feels one
+     system rather than two projects. Derived from --accent with color-mix, so
+     it follows the palette instead of being a magic colour, and it holds in
+     both themes. */
+  background-image: radial-gradient(
+    900px 520px at 8% -10%,
+    color-mix(in srgb, var(--accent) 8%, transparent) 0%,
+    transparent 70%
+  );
+  background-repeat: no-repeat;
+  background-attachment: fixed;
   display: flex;
   flex-direction: column;
 }
