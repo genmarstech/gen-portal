@@ -90,11 +90,26 @@ cp backend/.env.example backend/.env    # then fill it in
 in `ALLOWED_HOSTS` makes that hostname return 400 on every request, which reads
 as a proxy fault rather than a settings one.
 
-`127.0.0.1` is the one that is easy to leave out and stops the deploy dead. The
-image's `HEALTHCHECK` curls `http://127.0.0.1:8010/api/health`; without it in
-`ALLOWED_HOSTS`, Django answers its own probe with `400 DisallowedHost`, `api`
-never reports healthy, and `web` never starts because it waits on it. The
-symptom is a stack that looks like it is still booting, indefinitely.
+`ALLOWED_HOSTS` needs **four** values, and the two internal ones are the ones
+that get left out:
+
+```
+ALLOWED_HOSTS=app.genmars.co.ke,api.genmars.co.ke,127.0.0.1,api
+```
+
+`127.0.0.1` — the image's `HEALTHCHECK` curls `http://127.0.0.1:8010/api/health`.
+Without it Django answers its own probe with `400 DisallowedHost`, `api` never
+reports healthy, and `web` never starts because it waits on it. The symptom is
+a stack that looks like it is still booting, indefinitely.
+
+`api` — Next's `/api/*` rewrite **rewrites the Host header to its destination**,
+so Django sees `api:8010`, not the browser's `app.genmars.co.ke`. Without it
+every sign-in, session check and dashboard load returns 400, while
+`curl http://127.0.0.1:8010/api/health` on the host looks perfectly healthy.
+
+Neither internal name admits anything from outside: both ports are published to
+loopback only, `api` resolves solely on the compose network, and Caddy always
+forwards the real Host for public traffic.
 
 Mail goes through Resend over HTTPS, not SMTP — Hetzner blocks outbound mail
 ports on new accounts, and that failure is a ten-second timeout per message
