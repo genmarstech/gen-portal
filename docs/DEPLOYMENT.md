@@ -191,6 +191,15 @@ ls staticfiles/admin/css/base.css   # must exist
 **Repeat this on every deploy that changes static assets** — the copy is a
 snapshot, not a live view.
 
+The Caddy drop-in serves this directory with `handle_path /static/*` and
+`root * /opt/gen-portal/staticfiles`. The prefix and the directory name differ
+on purpose — `STATIC_URL` is `/static/`, collectstatic writes to
+`staticfiles/` — and `handle_path` is what bridges them by stripping the
+prefix. Changing it to plain `handle` makes Caddy look for
+`/opt/gen-portal/static/`, which does not exist: the admin renders as unstyled
+HTML, with a 404 in the browser console and nothing in the Caddy or Django logs
+to explain it.
+
 > Do not "simplify" this into a bind mount of `./staticfiles` onto
 > `/app/staticfiles`. That masks the files the image already contains: on a
 > fresh clone the host directory is empty, so the container serves nothing and

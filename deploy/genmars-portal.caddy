@@ -59,10 +59,20 @@ app.genmars.co.ke {
 
 	# Django admin and DRF assets, served straight off disk. Static files have
 	# no business travelling through gunicorn, where each one occupies a worker
-	# that should be answering API requests. The path is the bind mount from
-	# compose.yaml.
-	handle /static/* {
-		root * /opt/gen-portal
+	# that should be answering API requests.
+	#
+	# `handle_path`, NOT `handle`. STATIC_URL is /static/ but collectstatic
+	# writes to staticfiles/ — the URL prefix and the directory name differ, and
+	# they always will. handle_path strips the matched prefix, so
+	# /static/admin/css/base.css resolves to staticfiles/admin/css/base.css.
+	#
+	# With plain `handle` and `root * /opt/gen-portal` this looked right and
+	# served nothing: Caddy went looking for /opt/gen-portal/static/, which does
+	# not exist. The symptom is the Django admin rendering as unstyled HTML,
+	# with a 404 in the browser console and nothing at all in the Caddy or
+	# Django logs to say why.
+	handle_path /static/* {
+		root * /opt/gen-portal/staticfiles
 		file_server
 	}
 
@@ -104,8 +114,10 @@ app.genmars.co.ke {
 api.genmars.co.ke {
 	encode zstd gzip
 
-	handle /static/* {
-		root * /opt/gen-portal
+	# See the note on the same block above: handle_path, and the staticfiles
+	# directory rather than the repository root.
+	handle_path /static/* {
+		root * /opt/gen-portal/staticfiles
 		file_server
 	}
 
