@@ -25,4 +25,11 @@ urlpatterns = [
     path("ops/orders/<str:reference>/notes/<int:pk>/publish", views.NotePublishView.as_view(), name="ops-note-publish"),
     path("ops/orders/<str:reference>/milestones", views.OrderMilestoneView.as_view(), name="ops-order-milestones"),
     path("ops/orders/<str:reference>/milestones/<int:pk>", views.MilestoneDetailView.as_view(), name="ops-milestone"),
+
+    # ---- engineering delivery ----
+    path("ops/delivery", views.DeliveryBoardView.as_view(), name="ops-delivery"),
+    path("ops/delivery/backfill", views.BackfillGatesView.as_view(), name="ops-delivery-backfill"),
+    path("ops/orders/<str:reference>/gates/<int:pk>", views.GateView.as_view(), name="ops-gate"),
+    path("ops/orders/<str:reference>/blockers", views.BlockerListView.as_view(), name="ops-blockers"),
+    path("ops/orders/<str:reference>/blockers/<int:pk>", views.BlockerDetailView.as_view(), name="ops-blocker"),
 ]

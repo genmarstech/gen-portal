@@ -18,12 +18,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import User
-from portal.models import Milestone, Order, ProgressNote
+from portal.models import Blocker, DeliveryGate, Milestone, Order, ProgressNote
 
 from . import selectors, services
 from .permissions import IsStaff
 from .serializers import (
+    BlockerSerializer,
+    BlockerWriteSerializer,
     ConvertSerializer,
+    DeliveryGateSerializer,
+    GateWriteSerializer,
     DecideSerializer,
     EnquiryDetailSerializer,
     EnquiryListSerializer,
@@ -255,3 +259,87 @@ class StaffDirectoryView(StaffView):
                 ]
             }
         )
+
+
+# ── engineering delivery ─────────────────────────────────────────────────────
+
+
+class DeliveryBoardView(StaffView):
+    """
+    What is blocked, and what is not done. The two questions worth a board.
+
+    Ordered blocked-first then least-complete by the selector, so this opens on
+    the work most at risk rather than the most recent.
+    """
+
+    def get(self, request):
+        return Response(
+            {
+                "counts": selectors.delivery_counts(),
+                "orders": selectors.delivery_overview(),
+            }
+        )
+
+
+class GateView(StaffView):
+    def post(self, request, reference: str, pk: int):
+        gate = get_object_or_404(DeliveryGate, pk=pk, order__reference=reference)
+        form = GateWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            gate = services.set_gate(
+                gate=gate,
+                actor=request.user,
+                met=form.validated_data["met"],
+                note=form.validated_data["note"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(DeliveryGateSerializer(gate).data)
+
+
+class BlockerListView(StaffView):
+    def post(self, request, reference: str):
+        order = get_object_or_404(Order, reference=reference)
+        form = BlockerWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            blocker = services.raise_blocker(
+                order=order,
+                actor=request.user,
+                summary=form.validated_data["summary"],
+                detail=form.validated_data["detail"],
+                waiting_on=form.validated_data["waiting_on"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(BlockerSerializer(blocker).data, status=http.HTTP_201_CREATED)
+
+
+class BlockerDetailView(StaffView):
+    def post(self, request, reference: str, pk: int):
+        """Clear it. There is no un-clear: a blocker that came back is a new
+        blocker, and collapsing the two loses that it happened twice."""
+        blocker = get_object_or_404(Blocker, pk=pk, order__reference=reference)
+        blocker = services.clear_blocker(
+            blocker=blocker, resolution=request.data.get("resolution", "")
+        )
+        return Response(BlockerSerializer(blocker).data)
+
+
+class BackfillGatesView(StaffView):
+    """
+    Give existing orders their gates.
+
+    Orders created before delivery gates existed have none. This is idempotent
+    (get_or_create), so it is safe to call repeatedly and safe to forget whether
+    it has been called.
+    """
+
+    def post(self, request):
+        created = 0
+        for order in Order.objects.all():
+            before = order.gates.count()
+            services.create_delivery_gates(order=order)
+            created += order.gates.count() - before
+        return Response({"gates_created": created})

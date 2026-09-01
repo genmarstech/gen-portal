@@ -253,3 +253,126 @@ class Enquiry(models.Model):
 
     def __str__(self) -> str:
         return f"{self.organisation.name} — {self.get_status_display()}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engineering delivery
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class DeliveryGate(models.Model):
+    """
+    One of the six definition-of-done gates, for one order.
+
+    ── WHY THIS MODEL EXISTS ───────────────────────────────────────────────────
+    Charter 03 §II lists six conditions and says plainly that partially done is
+    not done. gen-website publishes all six to anyone who visits /approach/.
+    Nothing anywhere recorded which of them were met for any actual piece of
+    work, so a promise the company makes in public was unauditable in private —
+    the exact shape of claim Charter 04 §IV exists to prevent.
+
+    ── WHY THE TEXT IS COPIED, NOT REFERENCED ─────────────────────────────────
+    `label` stores the wording as it stood when the gate was created, rather
+    than looking it up from a list at render time. If the definition of done is
+    ever reworded, orders already delivered must keep showing the standard they
+    were actually held to. A gate that silently re-labels itself is a record
+    that changes its own history.
+
+    The canonical list lives in `Gate.CHOICES` below and in gen-website's
+    `definitionOfDone`. Those two must be changed in the same sitting — see
+    gen-website/docs/PORTAL-INTEGRATION.md §3 on duplication.
+    """
+
+    class Gate(models.TextChoices):
+        REALISTIC_DATA = "realistic_data", "It works against realistic data, not the happy path only"
+        TESTS_IN_CI = "tests_in_ci", "Automated tests cover the critical paths, and they pass in CI"
+        DEPLOYED = "deployed", "It is deployed to the target environment, not just to a branch"
+        MONITORED = "monitored", "Errors surface in monitoring rather than in a client phone call"
+        RUNBOOK = "runbook", "The deploy and rollback procedure is written down"
+        CLIENT_CAN_USE = "client_can_use", "The client can perform the task the feature was built for, unaided"
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="gates")
+    gate = models.CharField(max_length=32, choices=Gate.choices)
+    label = models.CharField(
+        max_length=200,
+        help_text="The wording at the time this gate was created. Never rewritten.",
+    )
+
+    met_at = models.DateTimeField(null=True, blank=True)
+    met_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="gates_met",
+        limit_choices_to={"is_staff": True},
+        help_text="Charter 01 §V — nothing ships without a named owner.",
+    )
+    note = models.TextField(
+        blank=True,
+        help_text=(
+            "How this was satisfied. A tick with no evidence is an opinion; the "
+            "note is what makes it a record."
+        ),
+    )
+
+    position = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["position"]
+        unique_together = [("order", "gate")]
+
+    def __str__(self) -> str:
+        return f"{self.order.reference} — {self.get_gate_display()}"
+
+    @property
+    def is_met(self) -> bool:
+        return self.met_at is not None
+
+
+class Blocker(models.Model):
+    """
+    Something stopping delivery, and who it is waiting on.
+
+    NOT client-visible. A blocker is an internal working note and often names
+    the client as the party being waited on; publishing that unedited to the
+    client's own dashboard would turn a working tool into an accusation. What
+    the client sees is the weekly progress note, which is written for them.
+    """
+
+    class WaitingOn(models.TextChoices):
+        US = "us", "Us"
+        CLIENT = "client", "The client"
+        THIRD_PARTY = "third_party", "A third party"
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="blockers")
+    summary = models.CharField(max_length=200)
+    detail = models.TextField(blank=True)
+    waiting_on = models.CharField(
+        max_length=16, choices=WaitingOn.choices, default=WaitingOn.US
+    )
+
+    raised_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="blockers_raised",
+        limit_choices_to={"is_staff": True},
+    )
+    raised_at = models.DateTimeField(auto_now_add=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    resolution = models.TextField(blank=True)
+
+    class Meta:
+        ordering = ["cleared_at", "-raised_at"]
+
+    def __str__(self) -> str:
+        return f"{self.order.reference} — {self.summary}"
+
+    @property
+    def is_open(self) -> bool:
+        return self.cleared_at is None
+
+    @property
+    def age_days(self) -> int:
+        end = self.cleared_at or timezone.now()
+        return (end - self.raised_at).days

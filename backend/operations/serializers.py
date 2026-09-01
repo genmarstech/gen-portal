@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from portal.models import Enquiry, Milestone, Order, ProgressNote
+from portal.models import Blocker, DeliveryGate, Enquiry, Milestone, Order, ProgressNote
 
 
 class PersonSerializer(serializers.Serializer):
@@ -104,6 +104,46 @@ class ProgressNoteSerializer(serializers.ModelSerializer):
         read_only_fields = ["author", "published_at"]
 
 
+# ── engineering delivery ─────────────────────────────────────────────────────
+
+
+class DeliveryGateSerializer(serializers.ModelSerializer):
+    met_by = PersonSerializer(read_only=True)
+    is_met = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = DeliveryGate
+        # `label` rather than get_gate_display(): the stored wording is the
+        # standard this order was held to, and the choice text may have moved on.
+        fields = ["id", "gate", "label", "is_met", "met_at", "met_by", "note", "position"]
+
+
+class BlockerSerializer(serializers.ModelSerializer):
+    raised_by = PersonSerializer(read_only=True)
+    waiting_on_label = serializers.CharField(source="get_waiting_on_display", read_only=True)
+    is_open = serializers.BooleanField(read_only=True)
+    age_days = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Blocker
+        fields = [
+            "id", "summary", "detail", "waiting_on", "waiting_on_label",
+            "raised_by", "raised_at", "cleared_at", "resolution", "is_open", "age_days",
+        ]
+        read_only_fields = ["raised_by", "raised_at", "cleared_at"]
+
+
+class GateWriteSerializer(serializers.Serializer):
+    met = serializers.BooleanField()
+    note = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class BlockerWriteSerializer(serializers.Serializer):
+    summary = serializers.CharField(max_length=200)
+    detail = serializers.CharField(required=False, allow_blank=True, default="")
+    waiting_on = serializers.ChoiceField(choices=Blocker.WaitingOn.choices)
+
+
 class OrderListSerializer(serializers.ModelSerializer):
     organisation = serializers.CharField(source="organisation.name")
     contact = PersonSerializer(read_only=True)
@@ -127,6 +167,8 @@ class OrderListSerializer(serializers.ModelSerializer):
 class OrderDetailSerializer(OrderListSerializer):
     notes = ProgressNoteSerializer(many=True, read_only=True)
     milestones = MilestoneSerializer(many=True, read_only=True)
+    gates = DeliveryGateSerializer(many=True, read_only=True)
+    blockers = BlockerSerializer(many=True, read_only=True)
     enquiry_id = serializers.IntegerField(
         source="from_enquiry.id", default=None, read_only=True
     )
@@ -137,6 +179,8 @@ class OrderDetailSerializer(OrderListSerializer):
             "exclusions",
             "notes",
             "milestones",
+            "gates",
+            "blockers",
             "enquiry_id",
         ]
 

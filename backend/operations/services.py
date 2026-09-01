@@ -15,7 +15,7 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from accounts.models import User
-from portal.models import Enquiry, Order, ProgressNote
+from portal.models import Blocker, DeliveryGate, Enquiry, Order, ProgressNote
 
 REFERENCE_PREFIX = "GM"
 _MAX_REFERENCE_ATTEMPTS = 10
@@ -128,6 +128,8 @@ def convert_enquiry(
             "Could not allocate an order reference. Try again."
         ) from last_error
 
+    create_delivery_gates(order=order)
+
     enquiry.converted_to = order
     enquiry.status = Enquiry.Status.CONVERTED
     enquiry.decided_by = actor
@@ -198,3 +200,106 @@ def publish_note(*, note: ProgressNote) -> ProgressNote:
     note.published_at = timezone.now()
     note.save(update_fields=["published_at"])
     return note
+
+
+# ── engineering delivery ─────────────────────────────────────────────────────
+
+
+def create_delivery_gates(*, order: Order) -> list[DeliveryGate]:
+    """
+    Give an order its six definition-of-done gates.
+
+    Created WITH the order, not when someone remembers. Charter 03 §II is the
+    standard every engagement is held to, so a gate list that has to be opted
+    into is a standard that applies only to the orders somebody thought about.
+
+    Idempotent: get_or_create, so running it against an existing order backfills
+    without duplicating. That matters because orders created before this existed
+    have no gates and still need them.
+
+    The label is COPIED from the choice at creation time. If the definition of
+    done is reworded later, work already delivered keeps showing the standard it
+    was actually held to.
+    """
+    gates = []
+    for position, (value, label) in enumerate(DeliveryGate.Gate.choices, start=1):
+        gate, _ = DeliveryGate.objects.get_or_create(
+            order=order,
+            gate=value,
+            defaults={"label": label, "position": position},
+        )
+        gates.append(gate)
+    return gates
+
+
+@transaction.atomic
+def set_gate(
+    *, gate: DeliveryGate, actor: User, met: bool, note: str = ""
+) -> DeliveryGate:
+    """
+    Mark a definition-of-done gate met, or put it back.
+
+    A NOTE IS REQUIRED TO MEET ONE. "Automated tests cover the critical paths"
+    ticked with nothing beside it is an opinion; with "portal/tests/ +
+    operations/tests/, 148 green in CI" beside it, it is a record somebody can
+    check. Charter 03 §II is only worth anything if the six can be audited
+    afterwards, and a bare tick cannot be.
+
+    Un-meeting is deliberately allowed and deliberately keeps the note. Work
+    regresses — a test starts failing, a runbook goes stale — and a gate that
+    could only ever be ticked would make the checklist a ratchet that always
+    reads complete.
+    """
+    if met and not note.strip() and not gate.note.strip():
+        raise OperationsError(
+            "Say how it was satisfied. A tick nobody can check is not evidence.",
+            field="note",
+        )
+
+    if note.strip():
+        gate.note = note.strip()
+
+    if met:
+        gate.met_at = gate.met_at or timezone.now()
+        gate.met_by = gate.met_by or actor
+    else:
+        gate.met_at = None
+        gate.met_by = None
+
+    gate.save(update_fields=["met_at", "met_by", "note"])
+    return gate
+
+
+@transaction.atomic
+def raise_blocker(
+    *, order: Order, actor: User, summary: str, detail: str = "", waiting_on: str
+) -> Blocker:
+    if not summary.strip():
+        raise OperationsError("Say what is blocked.", field="summary")
+    if waiting_on not in Blocker.WaitingOn.values:
+        raise OperationsError("Who is it waiting on?", field="waiting_on")
+
+    return Blocker.objects.create(
+        order=order,
+        summary=summary.strip(),
+        detail=detail.strip(),
+        waiting_on=waiting_on,
+        raised_by=actor,
+    )
+
+
+@transaction.atomic
+def clear_blocker(*, blocker: Blocker, resolution: str = "") -> Blocker:
+    """
+    Close a blocker.
+
+    The resolution is optional but asked for, because the useful question three
+    months later is rarely "was it blocked" — it is "what unblocked it", and
+    that is the part nobody writes down unless there is a box for it.
+    """
+    if blocker.cleared_at is None:
+        blocker.cleared_at = timezone.now()
+    if resolution.strip():
+        blocker.resolution = resolution.strip()
+    blocker.save(update_fields=["cleared_at", "resolution"])
+    return blocker
