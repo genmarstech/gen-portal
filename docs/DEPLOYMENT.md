@@ -380,4 +380,4 @@ Record each successful run:
 
 | Date | Dump | Result | By |
 |---|---|---|---|
-| _(not yet run — the portal is not deployed)_ | | | |
+| 2026-09-01 | `portal-20260901-125232.dump` | Passed — 9 tables, data present | First deploy |
