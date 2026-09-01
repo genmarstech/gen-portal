@@ -76,11 +76,38 @@ export default function SignUpPage() {
 
           <Submit pending={pending}>Create account</Submit>
 
+          {/*
+            ABSOLUTE, and plain <a> rather than next/link.
+
+            Both documents live on the MARKETING site, not here. `/terms` and
+            `/privacy` were relative, which resolved to app.genmars.co.ke and
+            404'd — on the one paragraph a client has to read before agreeing to
+            it. next/link would also try to client-side navigate to a route this
+            app does not have.
+
+            target="_blank" because losing a half-filled signup form to read the
+            terms is how people stop reading the terms.
+          */}
           <p className={styles.terms}>
             By continuing you accept the{" "}
-            <Link href="/terms" className={styles.link}>terms of service</Link>{" "}
+            <a
+              href="https://genmars.co.ke/terms/"
+              className={styles.link}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              terms of service
+            </a>{" "}
             and the{" "}
-            <Link href="/privacy" className={styles.link}>privacy policy</Link>.
+            <a
+              href="https://genmars.co.ke/privacy/"
+              className={styles.link}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              privacy policy
+            </a>
+            .
           </p>
         </Fields>
       </form>
