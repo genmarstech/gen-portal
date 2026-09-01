@@ -76,8 +76,60 @@ def test_production_rejects_every_non_sending_backend(backend):
 
 
 def test_production_requires_a_password():
+    """The SMTP fallback path. Zoho is still what the human mailbox uses."""
     with environment(EMAIL_HOST_PASSWORD=None):
         with pytest.raises(ImproperlyConfigured, match="EMAIL_HOST_PASSWORD"):
+            reload_settings()
+
+
+# ── Resend ──────────────────────────────────────────────────────────────────
+# The intended production configuration. Transactional mail — verification
+# codes, password resets, error alerts — goes through Resend's HTTP API.
+
+RESEND = "accounts.mail_backends.ResendBackend"
+
+
+def test_production_requires_an_api_key_when_using_resend():
+    """
+    Same failure as an empty Zoho password, different credential. Booting
+    without it means every sign-up returns 200 and no code is ever sent.
+
+    Set to "" rather than unset, for the same reason as the trusted-origins
+    test below: settings read backend/.env, so on any machine with a real key
+    in that file, unsetting the environment variable lets django-environ supply
+    it from the file and this test passes without exercising the guard at all.
+    """
+    with environment(EMAIL_BACKEND=RESEND, RESEND_API_KEY="", EMAIL_HOST_PASSWORD=None):
+        with pytest.raises(ImproperlyConfigured, match="RESEND_API_KEY"):
+            reload_settings()
+
+
+def test_resend_boots_without_a_zoho_password():
+    """
+    The guard must check the credential the CONFIGURED backend needs, not the
+    one the previous backend needed.
+
+    This is the regression that matters. When the SMTP check ran
+    unconditionally, moving to Resend meant either keeping a Zoho password in
+    the environment purely to satisfy a check that no longer applied — a secret
+    kept alive for no reason — or the app refusing to boot on a correct
+    configuration.
+    """
+    with environment(
+        EMAIL_BACKEND=RESEND,
+        RESEND_API_KEY="re_a_real_looking_key",
+        EMAIL_HOST_PASSWORD=None,
+    ):
+        reload_settings()
+
+
+def test_resend_does_not_excuse_a_non_sending_backend():
+    """A key present but the file backend selected is still a silent outage."""
+    with environment(
+        EMAIL_BACKEND="django.core.mail.backends.filebased.EmailBackend",
+        RESEND_API_KEY="re_a_real_looking_key",
+    ):
+        with pytest.raises(ImproperlyConfigured, match="does not send mail"):
             reload_settings()
 
 
@@ -107,9 +159,16 @@ def test_a_correct_production_configuration_boots():
 def test_development_is_left_alone():
     """
     None of these guards may fire with DEBUG=True. A developer running locally
-    has no Zoho password and should not need one.
+    has neither a Zoho password nor a Resend key, and should need neither —
+    the file backend writes codes to backend/sent-emails/ where they can be
+    read.
     """
-    with environment(DEBUG="True", EMAIL_BACKEND=None, EMAIL_HOST_PASSWORD=None):
+    with environment(
+        DEBUG="True",
+        EMAIL_BACKEND=None,
+        EMAIL_HOST_PASSWORD=None,
+        RESEND_API_KEY=None,
+    ):
         reload_settings()
 
 

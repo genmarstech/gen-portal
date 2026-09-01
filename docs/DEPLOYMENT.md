@@ -85,10 +85,23 @@ cp backend/.env.example backend/.env    # then fill it in
 ```
 
 `backend/.env` needs a real `DJANGO_SECRET_KEY`, `DEBUG=False`, **both**
-hostnames in `ALLOWED_HOSTS` and **both** origins in `CSRF_TRUSTED_ORIGINS`, and
-the Zoho SMTP password. A missing `api.genmars.co.ke` in `ALLOWED_HOSTS` makes
-that hostname return 400 on every request, which reads as a proxy fault rather
-than a settings one.
+hostnames in `ALLOWED_HOSTS`, **both** origins in `CSRF_TRUSTED_ORIGINS`, and a
+`RESEND_API_KEY`. A missing `api.genmars.co.ke` in `ALLOWED_HOSTS` makes that
+hostname return 400 on every request, which reads as a proxy fault rather than
+a settings one.
+
+Mail goes through Resend over HTTPS, not SMTP — Hetzner blocks outbound mail
+ports on new accounts, and that failure is a ten-second timeout per message
+rather than anything that says "blocked". `EMAIL_BACKEND` and `RESEND_API_KEY`
+are both checked at boot: with `DEBUG=False`, a backend that cannot send, or a
+key that is empty, refuses to start.
+
+**Before the first real sign-up, verify the domain in Resend and publish its
+DNS records.** Until that is done every send returns 403 and no client can
+finish creating an account. Add to what is already there, never replace it:
+the existing SPF include and the `zmail` DKIM selector are what keep the human
+mailbox at Zoho delivering. There must be exactly one SPF TXT record on the
+domain — two is a permerror, and a permerror fails *both* senders.
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(64))"
@@ -323,9 +336,19 @@ journalctl -u caddy -n 50 --no-pager
 ```
 
 Un-caught 500s also email `info@genmars.co.ke` (`AdminEmailHandler`). If the
-portal is broken and no mail arrived, suspect the mail path itself — check
-`EMAIL_HOST_PASSWORD` is set, because with `DEBUG=False` and no password Django
-warns at boot and error reports go nowhere.
+portal is broken and no mail arrived, suspect the mail path itself:
+
+```bash
+docker compose logs api | grep -i resend
+```
+
+`resend accepted message id=…` means it left here and the rest is Resend's
+dashboard. `resend rejected message: HTTP 403 …` is almost always an unverified
+sending domain. `resend unreachable` is egress, not configuration.
+
+The id is safe to paste into a ticket — it is an opaque handle, not content.
+Nothing in that log line contains a verification code, and nothing should ever
+be added to it that does.
 
 ---
 

@@ -252,7 +252,35 @@ STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-# Real SMTP in production — Zoho, per 09-communication/README.md.
+# ── OUTBOUND MAIL ───────────────────────────────────────────────────────────
+#
+# Resend in production, over its HTTP API — accounts/mail_backends.py explains
+# why the API and not SMTP, and why it added no dependency to do it.
+#
+# Two systems send as @genmars.co.ke and they do different jobs. Do not
+# consolidate them without reading 09-communication/README.md first:
+#
+#   Zoho    the human mailbox. info@genmars.co.ke, what a person reads and
+#           replies from. Unchanged.
+#   Resend  transactional only. Verification codes, password resets, error
+#           alerts. Nobody reads a reply to these.
+#
+# ⚠ DNS: Resend cannot send as genmars.co.ke until the domain is verified in
+#   Resend and its records are published. That means ADDING to what is there,
+#   never replacing it — the existing SPF include and the `zmail` DKIM selector
+#   are what keeps the human mailbox delivering.
+#
+#     SPF    one record only, ever. Merge the includes into the single existing
+#            TXT: v=spf1 include:zohomail.com include:amazonses.com ~all
+#            (Resend's dashboard states the include to use — take it from there,
+#            not from here.) Two separate SPF records is a permerror, and a
+#            permerror fails BOTH senders, not just the new one.
+#     DKIM   a second selector alongside zmail, on the name Resend gives you.
+#            Selectors are independent; adding one does not disturb the other.
+#     DMARC  already p=none, so nothing to change to start. Read the reports
+#            before tightening — with two senders there is now more to get
+#            wrong, and p=quarantine on a misaligned sender silently bins
+#            verification codes.
 #
 # In development the FILE backend beats the console one: server stdout is
 # buffered on Windows, so console output is unreadable exactly when you need to
@@ -263,15 +291,28 @@ EMAIL_BACKEND = env(
 EMAIL_FILE_PATH = env("EMAIL_FILE_PATH", default=str(BASE_DIR / "sent-emails"))
 DEFAULT_FROM_EMAIL = env("DEFAULT_FROM_EMAIL", default="info@genmars.co.ke")
 
-# SMTP, used when EMAIL_BACKEND is switched to the smtp backend in production.
-# Zoho on 587 with STARTTLS — see 09-communication/README.md. Port 465 would
-# need EMAIL_USE_SSL instead; setting both is a configuration error Django will
-# not warn about, it will simply fail to connect.
+RESEND_BACKEND = "accounts.mail_backends.ResendBackend"
+
+# The API key. Secret: it can send mail as us to anyone, so it belongs in
+# backend/.env (git-ignored) and nowhere else. Rotate it in the Resend
+# dashboard if it is ever printed, pasted, or committed.
+RESEND_API_KEY = env("RESEND_API_KEY", default="")
+
+# SMTP, retained as the fallback path — if Resend is ever unreachable, pointing
+# EMAIL_BACKEND at Django's smtp backend with Zoho credentials restores mail
+# without a code change. Zoho on 587 with STARTTLS, per
+# 09-communication/README.md. Port 465 would need EMAIL_USE_SSL instead; setting
+# both is a configuration error Django will not warn about, it will simply fail
+# to connect.
 EMAIL_HOST = env("EMAIL_HOST", default="smtp.zoho.com")
 EMAIL_PORT = env.int("EMAIL_PORT", default=587)
 EMAIL_USE_TLS = env.bool("EMAIL_USE_TLS", default=True)
 EMAIL_HOST_USER = env("EMAIL_HOST_USER", default="")
 EMAIL_HOST_PASSWORD = env("EMAIL_HOST_PASSWORD", default="")
+
+# Applies to both backends: Django's SMTP backend reads it, and the Resend
+# backend passes it to urlopen(). A request that hangs holds a gunicorn worker,
+# and enough of those is an outage.
 EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -372,14 +413,26 @@ if not DEBUG:
     if EMAIL_BACKEND in _UNSENDABLE_BACKENDS:
         raise ImproperlyConfigured(
             f"EMAIL_BACKEND is {EMAIL_BACKEND!r}, which does not send mail. "
-            "Production needs "
-            "EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend — "
-            "without it sign-up, verification, password reset and error alerts "
-            "all appear to succeed while delivering nothing."
+            f"Production needs EMAIL_BACKEND={RESEND_BACKEND} — without it "
+            "sign-up, verification, password reset and error alerts all appear "
+            "to succeed while delivering nothing."
         )
-    if not EMAIL_HOST_PASSWORD:
-        raise ImproperlyConfigured(
-            "EMAIL_HOST_PASSWORD is empty. Zoho requires an application-"
-            "specific password (Zoho Mail > Settings > Security > App "
-            "Passwords), not the account password, when two-factor is on."
-        )
+
+    # A configured backend with no credential is the same outage as no backend
+    # at all, so each one is checked for the credential IT needs. Checking the
+    # wrong one is worse than checking nothing: it passes, and the reassurance
+    # is false.
+    if EMAIL_BACKEND == RESEND_BACKEND:
+        if not RESEND_API_KEY:
+            raise ImproperlyConfigured(
+                "RESEND_API_KEY is empty while EMAIL_BACKEND is the Resend "
+                "backend. Create a key in the Resend dashboard and set it in "
+                "backend/.env. Without it every verification code is dropped."
+            )
+    elif EMAIL_BACKEND == "django.core.mail.backends.smtp.EmailBackend":
+        if not EMAIL_HOST_PASSWORD:
+            raise ImproperlyConfigured(
+                "EMAIL_HOST_PASSWORD is empty. Zoho requires an application-"
+                "specific password (Zoho Mail > Settings > Security > App "
+                "Passwords), not the account password, when two-factor is on."
+            )
