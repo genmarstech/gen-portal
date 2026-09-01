@@ -53,6 +53,28 @@ ONBOARDING = "/onboarding"
 class EmailSerializer(serializers.Serializer):
     email = serializers.EmailField(max_length=254)
 
+    def validate_email(self, value: str) -> str:
+        """
+        Normalise once, here, because four views look accounts up by this value
+        directly rather than through `identity`.
+
+        Addresses are stored lower-cased (User.objects.create_user normalises),
+        and every lookup inside identity.py lowercases before querying. The
+        views did not, so `Muchemiedwin68@gmail.com` did not match the stored
+        `muchemiedwin68@gmail.com` — and the failures were silent by design:
+        verify answered "that code is not right, or it has expired" because an
+        unknown address must not be distinguishable from a bad code, and
+        request-code answered 200 because whether an address is registered is
+        not public. A visitor whose keyboard or autofill capitalised one letter
+        could not verify, could not resend, could not reset, and was told
+        nothing that pointed at the cause.
+
+        Doing it in the serializer rather than at each query is deliberate: it
+        is one place, it covers every subclass below, and a view added later
+        gets it without knowing it needs it.
+        """
+        return value.strip().lower()
+
 
 class SignInSerializer(EmailSerializer):
     # No max/min here: a length rule on sign-in would reject a legitimate long

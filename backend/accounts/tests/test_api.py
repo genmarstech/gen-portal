@@ -505,3 +505,100 @@ def test_verifying_an_email_leads_to_onboarding_not_the_dashboard(client):
     )
 
     assert res.json()["next"] == "/onboarding"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Address case
+#
+# Found in production on 2026-09-01: a real signup could not be completed. The
+# account existed, the code had been emailed and delivered, and the address was
+# retyped on the verify screen with one capital letter. Four views looked the
+# user up with the raw submitted value while everything else in the system
+# stores and queries lower-cased, so nothing matched.
+#
+# The failures were invisible on purpose, which is what made it expensive:
+# verify cannot say "no such address" without handing out an enumeration
+# oracle, and request-code cannot say it either. So the visitor saw "that code
+# is not right, or it has expired" against a code that was neither, asked for
+# another, was told one had been sent, and none had.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_verify_accepts_the_address_in_any_case(client):
+    client.post(
+        reverse("sign-up"),
+        {"email": "new@example.com", "password": PASSWORD},
+        content_type="application/json",
+    )
+    r = client.post(
+        reverse("verify"),
+        {"email": "New@Example.COM", "code": code_from_last_email()},
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.json()
+    assert User.objects.get(email="new@example.com").is_email_verified
+
+
+def test_verify_tolerates_surrounding_whitespace(client):
+    """Pasted addresses arrive with a trailing space more often than anyone expects."""
+    client.post(
+        reverse("sign-up"),
+        {"email": "spaced@example.com", "password": PASSWORD},
+        content_type="application/json",
+    )
+    r = client.post(
+        reverse("verify"),
+        {"email": "  spaced@example.com  ", "code": code_from_last_email()},
+        content_type="application/json",
+    )
+    assert r.status_code == 200, r.json()
+
+
+def test_resending_a_code_works_in_any_case(client):
+    client.post(
+        reverse("sign-up"),
+        {"email": "resend@example.com", "password": PASSWORD},
+        content_type="application/json",
+    )
+    before = len(mail.outbox)
+
+    r = client.post(
+        reverse("request-code"),
+        {"email": "ReSend@Example.com"},
+        content_type="application/json",
+    )
+
+    # 200 either way — the response cannot reveal whether the address is known.
+    # So the assertion has to be that an email was actually SENT, which is the
+    # thing that was silently not happening.
+    assert r.status_code == 200
+    assert len(mail.outbox) == before + 1
+    assert mail.outbox[-1].to == ["resend@example.com"]
+
+
+def test_password_reset_starts_in_any_case(client, user):
+    before = len(mail.outbox)
+    r = client.post(
+        reverse("forgot"),
+        {"email": EMAIL.upper()},
+        content_type="application/json",
+    )
+    assert r.status_code == 200
+    assert len(mail.outbox) == before + 1
+    assert mail.outbox[-1].to == [EMAIL]
+
+
+def test_signing_up_again_in_a_different_case_does_not_make_a_second_account(client):
+    """
+    The address is unique and stored lower-cased, so a second signup differing
+    only in case must be treated as the existing account — a code to the owner,
+    and no hint to a prober that the address is taken.
+    """
+    for address in ("dup@example.com", "DUP@Example.com"):
+        client.post(
+            reverse("sign-up"),
+            {"email": address, "password": PASSWORD},
+            content_type="application/json",
+        )
+    assert User.objects.filter(email="dup@example.com").count() == 1
+    assert User.objects.count() == 1
