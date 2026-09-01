@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AuthShell } from "@/components/auth/AuthShell";
 import { Field, Fields, FormError, PasswordField, Submit } from "@/components/auth/Form";
 import { ReturnNotice } from "@/components/auth/ReturnNotice";
-import { ApiError, auth } from "@/lib/api";
-import { advance, useReturnTo, withReturnTo } from "@/lib/returnTo";
+import { ApiError, auth, session } from "@/lib/api";
+import { advance, readReturnTo, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "../auth.module.css";
 
 /**
@@ -22,6 +22,51 @@ import styles from "../auth.module.css";
 export default function SignUpPage() {
   const router = useRouter();
   const returnTo = useReturnTo();
+
+  /**
+   * Already signed in, and sent here anyway? Turn them straight around.
+   *
+   * genmars.co.ke sends people here before it lets them request work, and it
+   * decides who to send from a flag in its own local storage — which is all a
+   * static site can know. Cleared storage, a second browser, or a private
+   * window and it sends someone who has had an account for months. Showing
+   * them a sign-up form would be the site telling them to create the account
+   * they are already signed in to.
+   *
+   * The server is the only thing that actually knows, so ask it. Only when a
+   * return target is present: a bare visit to /sign-up is someone choosing to
+   * be here, and bouncing them off it would be wrong.
+   *
+   * Only a COMPLETE account bounces. Unverified or not yet onboarded means the
+   * journey they were sent on is genuinely unfinished, and they belong on the
+   * form.
+   *
+   * readReturnTo() rather than the hook, because this runs on mount and the
+   * hook resolves a render later — the same ordering that cost the onboarding
+   * guard its return target.
+   */
+  useEffect(() => {
+    const returning = readReturnTo();
+    if (!returning) return;
+
+    let cancelled = false;
+    session()
+      .then((s) => {
+        if (cancelled) return;
+        if (s.authenticated && s.email_verified && !s.needs_onboarding) {
+          window.location.assign(returning);
+        }
+      })
+      .catch(() => {
+        // Offline, or the API is down. Leave the form up: it is the more
+        // useful of the two failures, and submitting will surface the real
+        // error rather than this one.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
