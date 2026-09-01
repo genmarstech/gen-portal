@@ -44,6 +44,18 @@ log = logging.getLogger(__name__)
 
 ENDPOINT = "https://api.resend.com/emails"
 
+# ── THIS HEADER IS LOAD-BEARING. DO NOT REMOVE IT. ──────────────────────────
+# Resend sits behind Cloudflare, and Cloudflare blocks urllib's default
+# User-Agent ("Python-urllib/3.x") outright: every request comes back
+# 403 "error code: 1010" — a Cloudflare page, not a Resend error, so the body
+# says nothing about mail and there is no entry in the Resend dashboard to find.
+# Verified from the production container: with no User-Agent, 403; with any
+# ordinary one, the request reaches Resend and is answered normally.
+#
+# Identifying rather than impersonating a browser: if this ever gets blocked
+# again, we want them able to see who it is.
+USER_AGENT = "gen-portal (+https://genmars.co.ke)"
+
 
 class ResendBackend(BaseEmailBackend):
     """
@@ -104,6 +116,7 @@ class ResendBackend(BaseEmailBackend):
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
             },
             method="POST",
         )

@@ -84,11 +84,17 @@ Two env files, neither in the repository:
 cp backend/.env.example backend/.env    # then fill it in
 ```
 
-`backend/.env` needs a real `DJANGO_SECRET_KEY`, `DEBUG=False`, **both**
-hostnames in `ALLOWED_HOSTS`, **both** origins in `CSRF_TRUSTED_ORIGINS`, and a
-`RESEND_API_KEY`. A missing `api.genmars.co.ke` in `ALLOWED_HOSTS` makes that
-hostname return 400 on every request, which reads as a proxy fault rather than
-a settings one.
+`backend/.env` needs a real `DJANGO_SECRET_KEY`, `DEBUG=False`, both hostnames
+**and `127.0.0.1`** in `ALLOWED_HOSTS`, **both** origins in
+`CSRF_TRUSTED_ORIGINS`, and a `RESEND_API_KEY`. A missing `api.genmars.co.ke`
+in `ALLOWED_HOSTS` makes that hostname return 400 on every request, which reads
+as a proxy fault rather than a settings one.
+
+`127.0.0.1` is the one that is easy to leave out and stops the deploy dead. The
+image's `HEALTHCHECK` curls `http://127.0.0.1:8010/api/health`; without it in
+`ALLOWED_HOSTS`, Django answers its own probe with `400 DisallowedHost`, `api`
+never reports healthy, and `web` never starts because it waits on it. The
+symptom is a stack that looks like it is still booting, indefinitely.
 
 Mail goes through Resend over HTTPS, not SMTP — Hetzner blocks outbound mail
 ports on new accounts, and that failure is a ten-second timeout per message

@@ -91,6 +91,24 @@ def test_builds_the_payload_resend_expects(capture):
 
 
 @override_settings(RESEND_API_KEY="re_test_key")
+def test_a_user_agent_is_always_sent(capture):
+    """
+    Regression, found by deploying rather than by reading.
+
+    Resend is behind Cloudflare, which blocks urllib's default User-Agent with
+    a 403 "error code: 1010". That is a Cloudflare page, not a Resend error:
+    the body mentions neither mail nor the API key, and nothing appears in the
+    Resend dashboard to correlate against. Every verification code in
+    production would have failed this way.
+    """
+    ResendBackend().send_messages(
+        [EmailMessage("S", "B", "info@genmars.co.ke", ["a@b.co.ke"])]
+    )
+    ua = capture[0]["headers"]["user-agent"]
+    assert ua and "urllib" not in ua.lower()
+
+
+@override_settings(RESEND_API_KEY="re_test_key")
 def test_every_recipient_is_addressed(capture):
     """cc and bcc are recipients too. Dropping them loses mail silently."""
     ResendBackend().send_messages(
