@@ -67,7 +67,19 @@ class EnquiryAdmin(admin.ModelAdmin):
     create an Order. Converting is a deliberate act, not a status flip.
     """
 
-    list_display = ["organisation", "submitted_by", "status", "timeline", "created_at"]
+    list_display = [
+        "organisation", "submitted_by", "status", "converted_to", "timeline",
+        "created_at",
+    ]
     list_filter = ["status"]
     search_fields = ["organisation__name", "submitted_by__email"]
-    readonly_fields = ["organisation", "submitted_by", "created_at"]
+
+    # The triage fields are written by the operations app, which enforces the
+    # rules the admin cannot: an enquiry converts once, a decline needs a
+    # reason, and CONVERTED is a side effect of creating an order rather than a
+    # status anyone may pick. Editable here they are four ways to produce a
+    # record that says a decision happened and cannot say what it decided.
+    readonly_fields = [
+        "organisation", "submitted_by", "created_at",
+        "converted_to", "decided_by", "decided_at",
+    ]

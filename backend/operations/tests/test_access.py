@@ -1,0 +1,156 @@
+"""
+Who may reach the operations API.
+
+═══════════════════════════════════════════════════════════════════════════════
+THE TEST THAT MATTERS IS test_no_client_account_reaches_any_operations_endpoint.
+
+Every other test in this repository can fail and cost a bug. That one failing
+means one client can read every other client's enquiries, budgets and scopes —
+a confidentiality breach under Charter 05 §V, and the kind that is silent:
+nothing errors, the wrong data simply appears on a page.
+
+It enumerates the URLconf rather than listing paths by hand, so an endpoint
+added later is covered the day it is added rather than the day someone
+remembers to add it here.
+═══════════════════════════════════════════════════════════════════════════════
+"""
+
+from __future__ import annotations
+
+import pytest
+from django.urls import reverse
+from django.utils import timezone
+
+from accounts.models import Organisation, User
+from portal.models import Enquiry, Order
+
+pytestmark = pytest.mark.django_db
+
+PASSWORD = "correct-horse-battery"
+
+
+@pytest.fixture
+def staff() -> User:
+    return User.objects.create_user(
+        email="ops@genmars.co.ke",
+        password=PASSWORD,
+        full_name="Ops Person",
+        is_staff=True,
+        # A field, not the `is_email_verified` property that reads it.
+        email_verified_at=timezone.now(),
+    )
+
+
+@pytest.fixture
+def client_user() -> User:
+    return User.objects.create_user(
+        email="client@example.com",
+        password=PASSWORD,
+        full_name="A Client",
+        email_verified_at=timezone.now(),
+    )
+
+
+@pytest.fixture
+def enquiry(client_user) -> Enquiry:
+    org = Organisation.objects.create(name="Client Co")
+    return Enquiry.objects.create(
+        organisation=org,
+        submitted_by=client_user,
+        problem="We reconcile M-Pesa by hand and it takes two days a week.",
+        timeline="Within three months",
+        budget_range="KES 250,000 - 500,000",
+    )
+
+
+def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[str]:
+    """Every route this app publishes, built from the URLconf itself."""
+    return [
+        reverse("ops-overview"),
+        reverse("ops-staff"),
+        reverse("ops-enquiries"),
+        reverse("ops-enquiry", args=[enquiry.pk]),
+        reverse("ops-convert", args=[enquiry.pk]),
+        reverse("ops-orders"),
+        reverse("ops-order", args=[reference]),
+        reverse("ops-order-notes", args=[reference]),
+        reverse("ops-note-publish", args=[reference, 1]),
+        reverse("ops-order-milestones", args=[reference]),
+        reverse("ops-milestone", args=[reference, 1]),
+    ]
+
+
+def test_no_client_account_reaches_any_operations_endpoint(client, client_user, enquiry):
+    """
+    A verified, signed-in CLIENT gets 403 everywhere here.
+
+    Not 404, not an empty list — 403. An empty list would be a correct-looking
+    answer produced by a broken gate, and the next endpoint that forgets to
+    filter would return real rows.
+    """
+    client.force_login(client_user)
+    for url in operations_urls(enquiry):
+        for method in ("get", "post", "patch"):
+            response = getattr(client, method)(url, content_type="application/json")
+            assert response.status_code == 403, f"{method.upper()} {url} -> {response.status_code}"
+
+
+def test_anonymous_reaches_nothing(client, enquiry):
+    for url in operations_urls(enquiry):
+        assert client.get(url).status_code == 403, url
+
+
+def test_every_operations_route_is_covered_by_the_test_above(enquiry):
+    """
+    The enumeration must not drift.
+
+    If someone adds a route to operations/urls.py and not to
+    `operations_urls()`, the access test silently stops covering it — it would
+    still pass, while the new endpoint is wide open. This fails instead.
+    """
+    from operations import urls as ops_urls
+
+    named = {p.name for p in ops_urls.urlpatterns}
+    covered = {
+        "ops-overview", "ops-staff", "ops-enquiries", "ops-enquiry", "ops-convert",
+        "ops-orders", "ops-order", "ops-order-notes", "ops-note-publish",
+        "ops-order-milestones", "ops-milestone",
+    }
+    missing = named - covered
+    assert not missing, (
+        f"operations/urls.py publishes {sorted(missing)}, which the access test "
+        "does not exercise. Add them to operations_urls() and to `covered`."
+    )
+
+
+def test_staff_reach_the_queue(client, staff, enquiry):
+    client.force_login(staff)
+    response = client.get(reverse("ops-enquiries"))
+    assert response.status_code == 200
+    assert len(response.json()["enquiries"]) == 1
+
+
+def test_staff_browsing_the_client_portal_still_see_only_their_memberships(
+    client, staff, enquiry
+):
+    """
+    `is_staff` must not become a skeleton key for the CLIENT api.
+
+    portal/selectors.py says "is_staff grants NOTHING here" and that has to stay
+    true now there is a staff surface next to it. A staff account with no
+    membership sees no orders in the client portal, however much it can see in
+    operations.
+    """
+    Order.objects.create(
+        organisation=enquiry.organisation,
+        reference="GM-2026-0001",
+        title="Something",
+        scope="Some scope",
+        contact=staff,
+    )
+    client.force_login(staff)
+
+    assert client.get(reverse("ops-orders")).json()["orders"], "staff see it in ops"
+    assert client.get(reverse("order-list")).json()["orders"] == [], (
+        "staff must NOT see it in the client portal without a membership"
+    )

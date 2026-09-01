@@ -35,6 +35,10 @@ INSTALLED_APPS = [
     "rest_framework",
     "accounts",
     "portal",
+    # Staff-facing operations API. Same accounts, same database, same rows the
+    # client portal reads — the write side of them. See operations/permissions.py
+    # for why it does not reuse portal/selectors.py.
+    "operations",
 ]
 
 MIDDLEWARE = [
@@ -196,6 +200,11 @@ SILENCED_SYSTEM_CHECKS = ["security.W004", "security.W008"]
 NUM_PROXIES = 1
 
 REST_FRAMEWORK = {
+    # One error shape everywhere: {"detail": ..., "field": ...}. DRF's default
+    # for a validation error puts the field name in the KEY and leaves `detail`
+    # unset, which every frontend here reads as "unknown error" and replaces
+    # with a generic message. See config/exceptions.py.
+    "EXCEPTION_HANDLER": "config.exceptions.api_exception_handler",
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "rest_framework.authentication.SessionAuthentication",
     ],

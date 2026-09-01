@@ -209,6 +209,44 @@ class Enquiry(models.Model):
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.NEW)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # ── triage, written by the operations app ────────────────────────────────
+
+    converted_to = models.OneToOneField(
+        "portal.Order",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="from_enquiry",
+        help_text=(
+            "The order this enquiry became. Status CONVERTED without this was a "
+            "dead end: it recorded that a decision happened and lost what it "
+            "decided, so nobody could get from an enquiry to the work it turned "
+            "into. SET_NULL rather than CASCADE — deleting an order must not "
+            "erase the enquiry that produced it, which is the record of why we "
+            "took the work on."
+        ),
+    )
+
+    outcome_note = models.TextField(
+        blank=True,
+        help_text=(
+            "Why this was declined, or anything the conversion needs remembered. "
+            "Charter 04 §III — a decline we cannot explain six months later is a "
+            "decision we did not really make."
+        ),
+    )
+
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="enquiries_decided",
+        limit_choices_to={"is_staff": True},
+        help_text="Charter 01 §V — nothing ships without a named owner.",
+    )
+    decided_at = models.DateTimeField(null=True, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
         verbose_name_plural = "enquiries"
