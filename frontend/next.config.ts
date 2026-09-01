@@ -17,6 +17,17 @@ const nextConfig: NextConfig = {
    */
   output: "standalone",
 
+  /**
+   * Trace from THIS directory, not from wherever Next infers.
+   *
+   * A stray package-lock.json further up the tree makes Next pick that
+   * directory as the workspace root, and with `output: standalone` the trace
+   * decides which node_modules get copied into the runtime image. Getting it
+   * wrong produces an image that builds cleanly and crashes on boot with a
+   * missing module, so it is pinned rather than inferred.
+   */
+  outputFileTracingRoot: __dirname,
+
   reactStrictMode: true,
   poweredByHeader: false,
   eslint: { ignoreDuringBuilds: false },
