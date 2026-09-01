@@ -14,6 +14,8 @@ import {
   Submit,
 } from "@/components/auth/Form";
 import { ApiError, auth } from "@/lib/api";
+import { ReturnNotice } from "@/components/auth/ReturnNotice";
+import { advance, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "../auth.module.css";
 
 /**
@@ -26,9 +28,14 @@ import styles from "../auth.module.css";
  * The failure message is whatever the API returns and is NOT elaborated on
  * here. One message covers unknown-address and wrong-password; reconstructing
  * the difference in the UI would undo the enumeration defence in the backend.
+ *
+ * `?return=` arrives when the marketing site sent someone here before letting
+ * them request work. It is honoured only once the account is complete, and only
+ * for an origin we own — see lib/returnTo.ts.
  */
 export default function SignInPage() {
   const router = useRouter();
+  const returnTo = useReturnTo();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +47,7 @@ export default function SignInPage() {
     setPending(true);
     try {
       const { next } = await auth.signIn(email, password);
-      router.push(next);
+      advance(router, next, returnTo);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Something went wrong. Try again.",
@@ -57,7 +64,7 @@ export default function SignInPage() {
       footer={
         <>
           No account?{" "}
-          <Link href="/sign-up" className={styles.link}>
+          <Link href={withReturnTo("/sign-up", returnTo)} className={styles.link}>
             Create one
           </Link>
         </>
@@ -65,6 +72,8 @@ export default function SignInPage() {
     >
       <form onSubmit={onSubmit} noValidate>
         <FormError>{error}</FormError>
+
+        <ReturnNotice returnTo={returnTo} />
 
         <Fields>
           <Field

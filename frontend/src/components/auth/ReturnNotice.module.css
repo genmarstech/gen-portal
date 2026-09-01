@@ -1,0 +1,17 @@
+/* Quiet. It is an explanation, not an announcement, and it sits above a form
+   that is the actual point of the screen. */
+.notice {
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  border-left: 2px solid var(--accent);
+  background: var(--bg-raised);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+}
+
+.host {
+  color: var(--ink);
+  white-space: nowrap;
+}

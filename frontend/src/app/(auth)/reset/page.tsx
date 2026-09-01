@@ -6,6 +6,7 @@ import { Suspense, useState } from "react";
 import { AuthShell } from "@/components/auth/AuthShell";
 import { CodeInput, Fields, FormError, PasswordField, Submit } from "@/components/auth/Form";
 import { ApiError, auth } from "@/lib/api";
+import { advance, useReturnTo } from "@/lib/returnTo";
 import styles from "../auth.module.css";
 
 /**
@@ -18,6 +19,7 @@ import styles from "../auth.module.css";
 function ResetForm() {
   const router = useRouter();
   const params = useSearchParams();
+  const returnTo = useReturnTo();
   const email = params.get("email") ?? "";
 
   const [code, setCode] = useState("");
@@ -31,7 +33,7 @@ function ResetForm() {
     setPending(true);
     try {
       const { next } = await auth.reset(email, code, password);
-      router.push(next);
+      advance(router, next, returnTo);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
       setPending(false);

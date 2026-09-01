@@ -5,5 +5,9 @@ __pycache__/
 sent-emails/
 .env
 .env.*
+# The example carries no secrets and is the file DEPLOYMENT.md tells you to
+# copy. Without this negation `.env.*` above hides it, and the documented first
+# step of a deploy refers to a file that is not in the repository.
+!.env.example
 staticfiles/
 .pytest_cache/

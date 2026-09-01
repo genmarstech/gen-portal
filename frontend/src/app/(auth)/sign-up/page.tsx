@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { AuthShell } from "@/components/auth/AuthShell";
 import { Field, Fields, FormError, PasswordField, Submit } from "@/components/auth/Form";
+import { ReturnNotice } from "@/components/auth/ReturnNotice";
 import { ApiError, auth } from "@/lib/api";
+import { advance, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "../auth.module.css";
 
 /**
@@ -19,6 +21,7 @@ import styles from "../auth.module.css";
  */
 export default function SignUpPage() {
   const router = useRouter();
+  const returnTo = useReturnTo();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -31,7 +34,7 @@ export default function SignUpPage() {
     setPending(true);
     try {
       const { next } = await auth.signUp(email, password, fullName);
-      router.push(next);
+      advance(router, next, returnTo);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
       setPending(false);
@@ -48,12 +51,14 @@ export default function SignUpPage() {
       footer={
         <>
           Already have an account?{" "}
-          <Link href="/sign-in" className={styles.link}>Sign in</Link>
+          <Link href={withReturnTo("/sign-in", returnTo)} className={styles.link}>Sign in</Link>
         </>
       }
     >
       <form onSubmit={onSubmit} noValidate>
         <FormError>{error}</FormError>
+
+        <ReturnNotice returnTo={returnTo} />
 
         <Fields>
           <Field

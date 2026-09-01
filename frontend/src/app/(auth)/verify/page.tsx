@@ -6,6 +6,7 @@ import { Suspense, useEffect, useState } from "react";
 import { AuthShell } from "@/components/auth/AuthShell";
 import { CodeInput, Fields, FormError, Submit } from "@/components/auth/Form";
 import { ApiError, auth, session } from "@/lib/api";
+import { advance, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "../auth.module.css";
 
 const RESEND_SECONDS = 30;
@@ -20,6 +21,7 @@ const RESEND_SECONDS = 30;
 function VerifyForm() {
   const router = useRouter();
   const params = useSearchParams();
+  const returnTo = useReturnTo();
 
   /**
    * The address being verified.
@@ -57,7 +59,7 @@ function VerifyForm() {
     setPending(true);
     try {
       const { next } = await auth.verify(email, value);
-      router.push(next);
+      advance(router, next, returnTo);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Something went wrong. Try again.");
       setCode("");
@@ -76,7 +78,11 @@ function VerifyForm() {
       title="Enter the code we sent"
       panelHeadline={<>One code,<br />then you are in.</>}
       panelSub="We verify the address once. We do not send marketing to it."
-      footer={<Link href="/sign-in" className={styles.link}>Back to sign in</Link>}
+      footer={
+        <Link href={withReturnTo("/sign-in", returnTo)} className={styles.link}>
+          Back to sign in
+        </Link>
+      }
     >
       <p className={styles.sent}>
         Six digits, sent to{" "}
@@ -127,7 +133,7 @@ function VerifyForm() {
 
           <Submit pending={pending} disabled={code.length !== 6}>Verify</Submit>
 
-          <Link href="/sign-up" className={styles.inlineLink}>
+          <Link href={withReturnTo("/sign-up", returnTo)} className={styles.inlineLink}>
             Wrong address? Change it
           </Link>
         </Fields>

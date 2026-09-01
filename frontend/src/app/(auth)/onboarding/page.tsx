@@ -13,6 +13,7 @@ import {
 } from "@/components/auth/Form";
 import { LoadingMark } from "@/components/LoadingMark";
 import { ApiError, portal, session } from "@/lib/api";
+import { advance, readReturnTo, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "./page.module.css";
 
 /**
@@ -60,6 +61,7 @@ type Step = 0 | 1;
 
 export default function OnboardingPage() {
   const router = useRouter();
+  const returnTo = useReturnTo();
 
   const [ready, setReady] = useState(false);
   const [step, setStep] = useState<Step>(0);
@@ -82,22 +84,33 @@ export default function OnboardingPage() {
    * to be told at the end that it did nothing. The name is pre-filled because
    * we already asked for it at sign-up — asking twice suggests we were not
    * listening the first time.
+   *
+   * Reads the return target with readReturnTo() rather than using the hook's
+   * state. The hook resolves in its own effect, so on the first pass its value
+   * is still null — and this guard redirects. That ordering dropped the return
+   * target on exactly the visitors it exists for: anyone arriving from the
+   * marketing site already signed in. Inside an effect `window` is present, so
+   * reading it directly is both safe and correct.
    */
   useEffect(() => {
     let cancelled = false;
+    const returning = readReturnTo();
     session()
       .then((s) => {
         if (cancelled) return;
         if (!s.authenticated) {
-          router.replace("/sign-in");
+          router.replace(withReturnTo("/sign-in", returning));
           return;
         }
         if (!s.email_verified) {
-          router.replace("/verify");
+          router.replace(withReturnTo("/verify", returning));
           return;
         }
+        // Already onboarded. If they arrived mid-journey from the marketing
+        // site, that journey is complete — send them back rather than parking
+        // them on a dashboard they did not ask for.
         if (!s.needs_onboarding) {
-          router.replace("/dashboard");
+          advance(router, "/dashboard", returning);
           return;
         }
         setFullName(s.full_name ?? "");
@@ -149,7 +162,7 @@ export default function OnboardingPage() {
         timeline,
         budget_range: budget,
       });
-      router.push(next);
+      advance(router, next, returnTo);
     } catch (err) {
       setError(
         err instanceof ApiError ? err.message : "Something went wrong. Try again.",
