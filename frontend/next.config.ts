@@ -28,6 +28,16 @@ const nextConfig: NextConfig = {
    * cookies work with SameSite=Lax and there is no CORS to configure.
    * In development, proxy it so the same relative paths work.
    */
+  /**
+   * Server-side proxy to Django, so the browser only ever talks to one origin.
+   *
+   * ⚠ This is resolved at BUILD time and written into
+   * .next/routes-manifest.json. Setting API_ORIGIN in the runtime environment
+   * has no effect on it — in the container it must be passed as a build arg
+   * (see frontend/Dockerfile). The fallback below is for `next dev` on a
+   * developer's machine, where Django is on loopback; inside compose that same
+   * value points the web container at itself and every /api/* call 500s.
+   */
   async rewrites() {
     const api = process.env.API_ORIGIN ?? "http://127.0.0.1:8010";
     return [{ source: "/api/:path*", destination: `${api}/api/:path*` }];

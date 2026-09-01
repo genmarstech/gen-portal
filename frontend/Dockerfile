@@ -33,6 +33,21 @@ RUN --mount=type=cache,target=/root/.npm \
 
 FROM node:22-alpine AS build
 
+# Where Next's /api/* rewrite points.
+#
+# THIS IS A BUILD ARG, NOT A RUNTIME VARIABLE, and it cannot be turned into one.
+# next.config.ts is evaluated by `next build`, which writes the resolved
+# destination into .next/routes-manifest.json; the standalone server then reads
+# the manifest and never looks at the environment again. Setting API_ORIGIN
+# only in compose looks correct, is visible in `docker compose exec web env`,
+# and does nothing at all — the image keeps whatever default was baked in, and
+# every /api/* call 500s with ECONNREFUSED to a port inside this container.
+#
+# The default is the compose service name because that is where this image is
+# built to run. Local development outside compose overrides it.
+ARG API_ORIGIN=http://api:8010
+ENV API_ORIGIN=${API_ORIGIN}
+
 WORKDIR /app
 
 ENV NEXT_TELEMETRY_DISABLED=1 \

@@ -211,6 +211,11 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      # Must match the `environment:` value below, and it is the one that
+      # actually takes effect — Next resolves rewrites at BUILD time. See the
+      # comment on ARG API_ORIGIN in frontend/Dockerfile before changing either.
+      args:
+        API_ORIGIN: http://api:8010
     image: ghcr.io/genmarstech/gen-portal-web:latest
     container_name: genmars-portal-web
     restart: unless-stopped
@@ -222,6 +227,10 @@ services:
       # Server-side rewrites reach Django over the compose network by name.
       # In the browser everything is same-origin through Caddy, so this is only
       # for requests Next itself makes.
+      #
+      # Kept for readability and for anything that reads it at runtime, but the
+      # REWRITE is decided by the build arg above — this value alone does not
+      # change where /api/* goes.
       API_ORIGIN: http://api:8010
 
     # Loopback only. Do not change to "3010:3010".
