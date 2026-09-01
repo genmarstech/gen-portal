@@ -265,22 +265,37 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 #   Resend  transactional only. Verification codes, password resets, error
 #           alerts. Nobody reads a reply to these.
 #
-# ⚠ DNS: Resend cannot send as genmars.co.ke until the domain is verified in
-#   Resend and its records are published. That means ADDING to what is there,
-#   never replacing it — the existing SPF include and the `zmail` DKIM selector
-#   are what keeps the human mailbox delivering.
+# DNS. Verified live 2026-09-01, and the arrangement is worth understanding
+# before anyone "tidies" it:
 #
-#     SPF    one record only, ever. Merge the includes into the single existing
-#            TXT: v=spf1 include:zohomail.com include:amazonses.com ~all
-#            (Resend's dashboard states the include to use — take it from there,
-#            not from here.) Two separate SPF records is a permerror, and a
-#            permerror fails BOTH senders, not just the new one.
-#     DKIM   a second selector alongside zmail, on the name Resend gives you.
-#            Selectors are independent; adding one does not disturb the other.
-#     DMARC  already p=none, so nothing to change to start. Read the reports
-#            before tightening — with two senders there is now more to get
-#            wrong, and p=quarantine on a misaligned sender silently bins
-#            verification codes.
+#     resend._domainkey.genmars.co.ke  TXT   DKIM public key
+#     send.genmars.co.ke               TXT   v=spf1 include:amazonses.com ~all
+#     send.genmars.co.ke               MX    feedback-smtp.eu-west-1.amazonses.com
+#     genmars.co.ke                    TXT   v=spf1 include:zohomail.com ~all
+#
+# ⚠ DO NOT ADD Resend's include to the ROOT SPF record. It is a natural
+#   instinct and it is wrong here. Resend sends with the envelope-from on
+#   send.genmars.co.ke — a bounce subdomain that carries its OWN SPF record,
+#   already published and verified — and SPF is evaluated against the envelope
+#   domain, not the From: header. The root record exists for Zoho, which does
+#   send as the root. Adding include:amazonses.com to it would authorise all of
+#   Amazon SES to send as our root envelope domain in exchange for nothing.
+#
+#   The rule the instinct comes from is still true and still worth keeping:
+#   there must be exactly ONE SPF TXT record on any given name. Two is a
+#   permerror, and a permerror fails every sender on that name at once. It just
+#   does not apply here, because these are two different names.
+#
+#   DMARC passes on both paths: DKIM signs d=genmars.co.ke (strict alignment),
+#   and send.genmars.co.ke aligns with the root under relaxed alignment, which
+#   is the default.
+#
+#     DKIM   `resend` sits alongside Zoho's `zmail`. Selectors are independent;
+#            adding one does not disturb the other.
+#     DMARC  p=none today, so nothing to change to start. Read the reports
+#            before tightening — with two senders there is more to get wrong,
+#            and p=quarantine on a misaligned sender silently bins verification
+#            codes.
 #
 # In development the FILE backend beats the console one: server stdout is
 # buffered on Windows, so console output is unreadable exactly when you need to

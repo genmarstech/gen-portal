@@ -117,12 +117,32 @@ rather than anything that says "blocked". `EMAIL_BACKEND` and `RESEND_API_KEY`
 are both checked at boot: with `DEBUG=False`, a backend that cannot send, or a
 key that is empty, refuses to start.
 
-**Before the first real sign-up, verify the domain in Resend and publish its
-DNS records.** Until that is done every send returns 403 and no client can
-finish creating an account. Add to what is already there, never replace it:
-the existing SPF include and the `zmail` DKIM selector are what keep the human
-mailbox at Zoho delivering. There must be exactly one SPF TXT record on the
-domain — two is a permerror, and a permerror fails *both* senders.
+The domain must be verified in Resend before the first real sign-up — until it
+is, every send returns 403 and no client can finish creating an account.
+**Done and verified live on 2026-09-01:**
+
+| Name | Type | Value |
+|---|---|---|
+| `resend._domainkey.genmars.co.ke` | TXT | DKIM public key |
+| `send.genmars.co.ke` | TXT | `v=spf1 include:amazonses.com ~all` |
+| `send.genmars.co.ke` | MX | `feedback-smtp.eu-west-1.amazonses.com` |
+| `genmars.co.ke` | TXT | `v=spf1 include:zohomail.com ~all` (Zoho, unchanged) |
+
+> **Do not add Resend's include to the root SPF record.** It is the obvious
+> instinct and it is wrong here. Resend sends with the envelope-from on
+> `send.genmars.co.ke`, a bounce subdomain carrying its own SPF record, and SPF
+> is evaluated against the envelope domain rather than the `From:` header. The
+> root record is there for Zoho, which does send as the root. Merging them
+> would authorise all of Amazon SES to send as our root envelope domain and buy
+> nothing.
+>
+> The rule behind the instinct still holds: exactly **one** SPF TXT record per
+> name, because two is a permerror that fails every sender on that name. These
+> are simply two different names.
+
+DMARC passes on both paths — DKIM signs `d=genmars.co.ke` (strict alignment),
+and `send.genmars.co.ke` aligns with the root under relaxed alignment, the
+default.
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(64))"
