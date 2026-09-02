@@ -156,6 +156,28 @@ export type ClientContract = {
   signed_by_name: string;
 };
 
+/**
+ * An invoice, as the client sees it.
+ *
+ * `amount_kes` is a STRING. It arrives as one and is parsed only at the last
+ * moment for display (see `money`) — never used in arithmetic, never sent
+ * anywhere. This is a number somebody pays from a bank account.
+ */
+export type ClientInvoice = {
+  number: string;
+  description: string;
+  amount_kes: string;
+  status: "issued" | "paid" | "void";
+  status_label: string;
+  issued_on: string;
+  due_on: string | null;
+  overdue: boolean;
+  paid_on: string | null;
+  /** The reference we matched the payment against, so it can be checked. */
+  payment_reference: string;
+  void_reason: string;
+};
+
 export type OrderDetail = OrderSummary & {
   organisation: string;
   scope: string;
@@ -166,6 +188,8 @@ export type OrderDetail = OrderSummary & {
   milestones: Milestone[];
   /** Null while an order is still being scoped — an ordinary state, not an error. */
   contract: ClientContract | null;
+  /** Everything ever billed on this order, voids included — see the API. */
+  invoices: ClientInvoice[];
 };
 
 async function get<T>(path: string): Promise<T> {

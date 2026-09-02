@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date
+from decimal import Decimal
 
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
@@ -22,6 +23,7 @@ from portal.models import (
     Contract,
     DeliveryGate,
     Enquiry,
+    Invoice,
     Milestone,
     Order,
     ProgressNote,
@@ -859,3 +861,230 @@ def set_staff_active(*, actor: User, user: User, active: bool) -> User:
         actor.email,
     )
     return user
+
+
+# ── invoicing ────────────────────────────────────────────────────────────────
+
+
+def next_invoice_number(today: date | None = None) -> str:
+    """
+    The next invoice number, e.g. GM-INV-2026-0007.
+
+    Counts EVERY invoice for the year including voided ones, because a voided
+    invoice keeps its number forever. Reusing it would put two different
+    documents in the world under one reference, which is the single thing an
+    invoice number exists to prevent.
+    """
+    year = (today or timezone.localdate()).year
+    prefix = f"{REFERENCE_PREFIX}-INV-{year}-"
+    used = Invoice.objects.filter(number__startswith=prefix).count()
+    return f"{prefix}{used + 1:04d}"
+
+
+@transaction.atomic
+def issue_invoice(
+    *,
+    order: Order,
+    actor: User,
+    milestone: Milestone | None = None,
+    description: str = "",
+    amount_kes: Decimal | None = None,
+    due_on: date | None = None,
+    issued_on: date | None = None,
+) -> Invoice:
+    """
+    Ask a client for money.
+
+    ── WHY THE GUARDS ARE HERE ────────────────────────────────────────────────
+
+    Billing is the most consequential outward-facing act in this system. An
+    invoice reaches a client's accounts department, gets paid, and turns up in
+    two sets of books. Getting it wrong is not a UI bug, it is a conversation
+    about money with someone who trusted us.
+
+      · A SIGNED contract is required. Charter 02 §I is explicit that work
+        begins when a SOW is signed, and billing for work that was never agreed
+        in writing is asking someone to pay for something they did not buy.
+        This is the guard most likely to be resented in a hurry and the one
+        most worth keeping.
+
+      · The amount must be positive. A zero invoice asks for nothing and a
+        negative one is a credit note, which is a different document with
+        different accounting treatment — not something to smuggle through here.
+
+      · A milestone is billed ONCE. The second invoice for the same milestone
+        is double-billing, and it looks exactly like a legitimate invoice to
+        whoever receives it. A VOIDED one does not count, which is how a
+        correction is made.
+
+      · Amount and description are COPIED. See Invoice's docstring: an invoice
+        that recalculates is not an invoice.
+    """
+    if not order.contracts.filter(status=Contract.Status.SIGNED).exists():
+        raise OperationsError(
+            "There is no signed statement of work on this order. Charter 02 §I — "
+            "the agreement comes before the work, and before the bill.",
+        )
+
+    if milestone is not None:
+        if milestone.order_id != order.pk:
+            raise OperationsError("That milestone belongs to a different order.")
+        clash = milestone.invoices.exclude(status=Invoice.Status.VOID).first()
+        if clash is not None:
+            raise OperationsError(
+                f"{milestone.name} was already invoiced as {clash.number}. "
+                "Void that invoice if it was wrong.",
+            )
+        description = description.strip() or milestone.name
+        if amount_kes is None:
+            amount_kes = milestone.amount_kes
+
+    description = description.strip()
+    if not description:
+        raise OperationsError(
+            "Say what this bills. The client's accounts department reads this "
+            "line and nothing else.",
+            field="description",
+        )
+    if amount_kes is None:
+        raise OperationsError("An invoice needs an amount.", field="amount_kes")
+
+    amount_kes = Decimal(amount_kes)
+    if amount_kes <= 0:
+        raise OperationsError(
+            "An invoice must ask for a positive amount. A refund or a "
+            "correction is a credit note, not an invoice.",
+            field="amount_kes",
+        )
+
+    issued_on = issued_on or timezone.localdate()
+    if due_on and due_on < issued_on:
+        raise OperationsError(
+            "That due date is before the invoice date, so it would arrive "
+            "already overdue.",
+            field="due_on",
+        )
+
+    # Same retry-on-collision as convert_enquiry: the number comes from a count,
+    # so two invoices issued in the same instant can pick the same one.
+    for attempt in range(5):
+        try:
+            with transaction.atomic():
+                invoice = Invoice.objects.create(
+                    number=next_invoice_number(issued_on),
+                    order=order,
+                    milestone=milestone,
+                    description=description,
+                    amount_kes=amount_kes,
+                    issued_on=issued_on,
+                    due_on=due_on,
+                    issued_by=actor,
+                )
+            break
+        except IntegrityError:
+            if attempt == 4:
+                raise
+    else:  # pragma: no cover - the loop always breaks or raises
+        raise OperationsError("Could not allocate an invoice number.")
+
+    if milestone is not None:
+        milestone.status = Milestone.Status.INVOICED
+        milestone.save(update_fields=["status"])
+
+    log.info("invoice %s issued for %s by %s", invoice.number, order.reference, actor.email)
+    return invoice
+
+
+@transaction.atomic
+def record_payment(
+    *,
+    invoice: Invoice,
+    actor: User,
+    paid_on: date | None = None,
+    reference: str = "",
+) -> Invoice:
+    """
+    Write down that money arrived. It does not move any.
+
+    See Invoice's docstring — Genmars processes no payments, and this must not
+    imply otherwise. The reference is what makes the row checkable against a
+    bank statement, so it is asked for rather than optional-in-practice.
+    """
+    if invoice.status == Invoice.Status.VOID:
+        raise OperationsError(
+            f"{invoice.number} was voided. A voided invoice is not owed, so a "
+            "payment against it needs a new invoice first.",
+        )
+    if invoice.status == Invoice.Status.PAID:
+        raise OperationsError(f"{invoice.number} is already recorded as paid.")
+
+    reference = reference.strip()
+    if not reference:
+        raise OperationsError(
+            "Record the payment reference — the M-Pesa code or bank reference. "
+            "Without it this row cannot be checked against the account.",
+            field="reference",
+        )
+
+    paid_on = paid_on or timezone.localdate()
+    if paid_on < invoice.issued_on:
+        raise OperationsError(
+            "That payment date is before the invoice was issued.",
+            field="paid_on",
+        )
+
+    invoice.status = Invoice.Status.PAID
+    invoice.paid_on = paid_on
+    invoice.payment_reference = reference
+    invoice.recorded_by = actor
+    invoice.save(
+        update_fields=["status", "paid_on", "payment_reference", "recorded_by"]
+    )
+
+    if invoice.milestone_id:
+        invoice.milestone.mark_paid()
+
+    log.info("payment recorded on %s by %s", invoice.number, actor.email)
+    return invoice
+
+
+@transaction.atomic
+def void_invoice(*, invoice: Invoice, actor: User, reason: str) -> Invoice:
+    """
+    Withdraw an invoice that should not have been sent.
+
+    A PAID invoice cannot be voided. Voiding it would erase the record of money
+    that actually arrived, leaving the client's statement showing a payment
+    against a document we say never existed. If the money needs to go back,
+    that is a refund and a credit note — a real transaction, not the deletion
+    of a row.
+
+    The invoice keeps its number. Gaps in a sequence are explainable; a reused
+    number is not.
+    """
+    if invoice.status == Invoice.Status.PAID:
+        raise OperationsError(
+            f"{invoice.number} has been paid. Voiding it would erase the record "
+            "of money that arrived — a refund is a credit note, not a void.",
+        )
+    if invoice.status == Invoice.Status.VOID:
+        raise OperationsError(f"{invoice.number} is already void.")
+
+    reason = reason.strip()
+    if not reason:
+        raise OperationsError(
+            "Say why this invoice is being withdrawn.", field="reason"
+        )
+
+    invoice.status = Invoice.Status.VOID
+    invoice.void_reason = reason
+    invoice.voided_at = timezone.now()
+    invoice.save(update_fields=["status", "void_reason", "voided_at"])
+
+    # The milestone becomes billable again — that is the whole point of a void.
+    if invoice.milestone_id and invoice.milestone.status == Milestone.Status.INVOICED:
+        invoice.milestone.status = Milestone.Status.PENDING
+        invoice.milestone.save(update_fields=["status"])
+
+    log.info("invoice %s voided by %s: %s", invoice.number, actor.email, reason)
+    return invoice

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import Contract, Milestone, Order, ProgressNote
+from .models import Contract, Invoice, Milestone, Order, ProgressNote
 
 
 class ContactSerializer(serializers.Serializer):
@@ -97,6 +97,51 @@ class ClientContractSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ClientInvoiceSerializer(serializers.ModelSerializer):
+    """
+    An invoice, as the CLIENT sees it.
+
+    ── VOIDED INVOICES ARE SHOWN, NOT HIDDEN ───────────────────────────────────
+
+    The tempting behaviour is to filter them out — they are not owed, so why
+    clutter the page. But a voided invoice is one we already SENT. It is sitting
+    in their inbox and possibly in their accounts system. Hiding it here means
+    they hold a document the portal says does not exist, and the only way they
+    find out it was withdrawn is by paying it.
+
+    So it is listed, marked void, with the reason. That reason is written for
+    them to read (services.void_invoice requires one), which is the point.
+
+    ── WHAT IS OMITTED ─────────────────────────────────────────────────────────
+
+    `issued_by` — which of the three of us pressed the button is our
+    bookkeeping, not a fact about their bill.
+    """
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    # A STRING. This is the number they are being asked to pay.
+    amount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    overdue = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invoice
+        fields = [
+            "number", "description", "amount_kes", "status", "status_label",
+            "issued_on", "due_on", "overdue", "paid_on",
+            # The reference we matched their payment against. Shown so they can
+            # confirm we credited the payment they actually made, rather than
+            # taking "paid" on trust.
+            "payment_reference",
+            "void_reason",
+        ]
+        read_only_fields = fields
+
+    def get_overdue(self, invoice: Invoice) -> bool:
+        return invoice.is_overdue()
+
+
 class OrderDetailSerializer(serializers.ModelSerializer):
     status_label = serializers.CharField(source="get_status_display", read_only=True)
     contact = ContactSerializer(read_only=True)
@@ -104,6 +149,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
     notes = serializers.SerializerMethodField()
     milestones = MilestoneSerializer(many=True, read_only=True)
     contract = serializers.SerializerMethodField()
+    invoices = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -125,6 +171,7 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "notes",
             "milestones",
             "contract",
+            "invoices",
         ]
         read_only_fields = fields
 
@@ -144,6 +191,14 @@ class OrderDetailSerializer(serializers.ModelSerializer):
 
         contract = live_contract_for(order)
         return ClientContractSerializer(contract).data if contract else None
+
+    def get_invoices(self, order: Order):
+        """
+        Everything ever billed on this order, newest first — voids included.
+        See ClientInvoiceSerializer for why.
+        """
+        invoices = order.invoices.all()
+        return ClientInvoiceSerializer(invoices, many=True).data
 
     def get_notes(self, order: Order):
         """

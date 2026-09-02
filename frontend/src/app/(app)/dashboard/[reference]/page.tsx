@@ -195,6 +195,58 @@ export default function OrderPage() {
         </section>
       ) : null}
 
+      {/* ---------- invoices ---------- */}
+      {order.invoices.length > 0 ? (
+        <section className={styles.section}>
+          <h2 className={styles.h2}>Invoices</h2>
+          <ul className={styles.invoices}>
+            {order.invoices.map((i) => (
+              <li
+                key={i.number}
+                className={`${styles.invoice} ${
+                  i.status === "void" ? styles.invoiceVoid : ""
+                }`}
+              >
+                <span className={styles.iNumber}>{i.number}</span>
+                <span className={styles.iDescription}>{i.description}</span>
+                <span className={styles.iAmount}>{money(i.amount_kes)}</span>
+                <span
+                  className={`${styles.iStatus} ${
+                    i.overdue ? styles.i_overdue : styles[`i_${i.status}`] ?? ""
+                  }`}
+                >
+                  {i.overdue ? "Overdue" : i.status_label}
+                </span>
+
+                <span className={styles.iMeta}>
+                  Issued {date(i.issued_on)}
+                  {i.due_on ? ` · due ${date(i.due_on)}` : ""}
+                  {i.paid_on ? ` · paid ${date(i.paid_on)}` : ""}
+                  {/* The reference we matched it against, so they can confirm
+                      we credited the payment they actually made rather than
+                      taking "paid" on trust. */}
+                  {i.payment_reference ? ` · ref ${i.payment_reference}` : ""}
+                </span>
+
+                {/* A voided invoice is one we already SENT. Hiding it would
+                    leave them holding a document this page says does not
+                    exist, and they would find out by paying it. */}
+                {i.status === "void" && i.void_reason ? (
+                  <span className={styles.iVoidReason}>
+                    Withdrawn — {i.void_reason}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          <p className={styles.mNote}>
+            We do not take payments through this portal. Invoices are settled
+            the way they always have been, and what you see here is what we
+            have recorded against your account.
+          </p>
+        </section>
+      ) : null}
+
       {/* ---------- contact ---------- */}
       <section className={styles.section}>
         <h2 className={styles.h2}>Your point of contact</h2>

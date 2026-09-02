@@ -136,6 +136,24 @@ def export_payload(user: User) -> dict:
                     }
                     for m in o.milestones.all()
                 ],
+                # Charter 05 §VIII again. What they were billed and what they
+                # paid is among the first things anyone wants a copy of, and a
+                # client who leaves should not have to ask us for their own
+                # billing history.
+                "invoices": [
+                    {
+                        "number": i.number,
+                        "description": i.description,
+                        "amount_kes": str(i.amount_kes),
+                        "status": i.get_status_display(),
+                        "issued_on": i.issued_on.isoformat(),
+                        "due_on": i.due_on.isoformat() if i.due_on else None,
+                        "paid_on": i.paid_on.isoformat() if i.paid_on else None,
+                        "payment_reference": i.payment_reference,
+                        "void_reason": i.void_reason,
+                    }
+                    for i in o.invoices.all()
+                ],
             }
             for o in orders_for(user)
         ],

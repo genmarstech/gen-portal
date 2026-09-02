@@ -16,6 +16,7 @@ from portal.models import (
     Contract,
     DeliveryGate,
     Enquiry,
+    Invoice,
     Milestone,
     Order,
     ProgressNote,
@@ -215,6 +216,71 @@ class VoidSerializer(serializers.Serializer):
     reason = serializers.CharField()
 
 
+class InvoiceSerializer(serializers.ModelSerializer):
+    """
+    An invoice, as operations sees it.
+
+    `amount_kes` is a STRING — DRF's default for Decimal, and the right one.
+    JSON numbers are IEEE floats and money that has been through a float is
+    money you cannot reconcile against a bank statement.
+    """
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    milestone_name = serializers.CharField(source="milestone.name", read_only=True, default="")
+    issued_by_name = serializers.SerializerMethodField()
+    overdue = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Invoice
+        fields = [
+            "id", "number", "description", "amount_kes", "status", "status_label",
+            "issued_on", "due_on", "overdue", "paid_on", "payment_reference",
+            "milestone", "milestone_name", "issued_by_name", "void_reason",
+        ]
+        read_only_fields = fields
+
+    def get_issued_by_name(self, invoice: Invoice) -> str:
+        who = invoice.issued_by
+        return (who.full_name or who.email) if who else ""
+
+    def get_overdue(self, invoice: Invoice) -> bool:
+        return invoice.is_overdue()
+
+
+class InvoiceWriteSerializer(serializers.Serializer):
+    """
+    Issuing an invoice.
+
+    Everything is optional because billing a milestone needs only the milestone
+    — the description and amount are copied from it. services.issue_invoice
+    decides what is actually required and refuses clearly; duplicating that
+    here would mean two places to keep in step.
+    """
+
+    # `default=None` matters: without it the key is ABSENT from validated_data
+    # when the caller omits it, and views.py reads it positionally. A KeyError
+    # 500 on the ad-hoc-invoice path, which the service-level tests never saw
+    # because they bypass the serializer.
+    milestone = serializers.PrimaryKeyRelatedField(
+        queryset=Milestone.objects.all(), required=False, allow_null=True, default=None
+    )
+    description = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+    amount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True, default=None
+    )
+    due_on = serializers.DateField(required=False, allow_null=True, default=None)
+    issued_on = serializers.DateField(required=False, allow_null=True, default=None)
+
+
+class PaymentSerializer(serializers.Serializer):
+    reference = serializers.CharField(max_length=120)
+    paid_on = serializers.DateField(required=False, allow_null=True, default=None)
+
+
+class VoidInvoiceSerializer(serializers.Serializer):
+    reason = serializers.CharField()
+
+
 class OrderListSerializer(serializers.ModelSerializer):
     organisation = serializers.CharField(source="organisation.name")
     contact = PersonSerializer(read_only=True)
@@ -241,6 +307,7 @@ class OrderDetailSerializer(OrderListSerializer):
     gates = DeliveryGateSerializer(many=True, read_only=True)
     blockers = BlockerSerializer(many=True, read_only=True)
     contracts = ContractSerializer(many=True, read_only=True)
+    invoices = InvoiceSerializer(many=True, read_only=True)
     service = ServiceSerializer(read_only=True)
     enquiry_id = serializers.IntegerField(
         source="from_enquiry.id", default=None, read_only=True
@@ -255,6 +322,7 @@ class OrderDetailSerializer(OrderListSerializer):
             "gates",
             "blockers",
             "contracts",
+            "invoices",
             "service",
             "enquiry_id",
         ]

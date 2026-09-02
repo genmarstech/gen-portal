@@ -98,6 +98,10 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-contract-void", args=[reference, 1]),
         # the team itself
         reverse("ops-staff-member", args=[1]),
+        # invoicing
+        reverse("ops-invoices", args=[reference]),
+        reverse("ops-invoice-payment", args=[reference, 1]),
+        reverse("ops-invoice-void", args=[reference, 1]),
     ]
 
 
@@ -142,6 +146,7 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
         "ops-services", "ops-service", "ops-contracts", "ops-contract-sign",
         "ops-contract-void",
         "ops-staff-member",
+        "ops-invoices", "ops-invoice-payment", "ops-invoice-void",
     }
     missing = named - covered
     assert not missing, (

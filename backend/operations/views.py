@@ -22,6 +22,7 @@ from portal.models import (
     Blocker,
     Contract,
     DeliveryGate,
+    Invoice,
     Milestone,
     Order,
     ProgressNote,
@@ -31,6 +32,10 @@ from portal.models import (
 from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
+    InvoiceSerializer,
+    InvoiceWriteSerializer,
+    PaymentSerializer,
+    VoidInvoiceSerializer,
     BlockerSerializer,
     StaffInviteSerializer,
     StaffWriteSerializer,
@@ -615,3 +620,78 @@ class ContractVoidView(StaffView):
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(ContractSerializer(contract).data)
+
+
+class InvoiceListView(StaffView):
+    """
+    The invoices on an order, and issuing one.
+
+    CanCommit, not IsStaff. Billing is the same authority as pricing and
+    signing — Charter 02 §I keeps money with the founder and the commercial
+    partners, and an invoice is the moment that decision reaches a client's
+    accounts department.
+    """
+
+    permission_classes = [CanCommit]
+
+    def get(self, request, reference: str):
+        order = get_object_or_404(Order, reference=reference)
+        invoices = order.invoices.select_related("milestone", "issued_by")
+        return Response({"invoices": InvoiceSerializer(invoices, many=True).data})
+
+    def post(self, request, reference: str):
+        order = get_object_or_404(Order, reference=reference)
+        form = InvoiceWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            invoice = services.issue_invoice(
+                order=order,
+                actor=request.user,
+                milestone=form.validated_data["milestone"],
+                description=form.validated_data["description"],
+                amount_kes=form.validated_data["amount_kes"],
+                due_on=form.validated_data["due_on"],
+                issued_on=form.validated_data["issued_on"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(InvoiceSerializer(invoice).data, status=http.HTTP_201_CREATED)
+
+
+class InvoicePaymentView(StaffView):
+    """Record that money arrived. It does not move any — see Invoice's docstring."""
+
+    permission_classes = [CanCommit]
+
+    def post(self, request, reference: str, pk: int):
+        invoice = get_object_or_404(Invoice, pk=pk, order__reference=reference)
+        form = PaymentSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            invoice = services.record_payment(
+                invoice=invoice,
+                actor=request.user,
+                reference=form.validated_data["reference"],
+                paid_on=form.validated_data["paid_on"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(InvoiceSerializer(invoice).data)
+
+
+class InvoiceVoidView(StaffView):
+    """Withdraw an invoice that should not have been sent."""
+
+    permission_classes = [CanCommit]
+
+    def post(self, request, reference: str, pk: int):
+        invoice = get_object_or_404(Invoice, pk=pk, order__reference=reference)
+        form = VoidInvoiceSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            invoice = services.void_invoice(
+                invoice=invoice, actor=request.user, reason=form.validated_data["reason"]
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(InvoiceSerializer(invoice).data)

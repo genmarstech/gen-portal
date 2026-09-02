@@ -16,6 +16,23 @@ urlpatterns = [
     path("ops/staff", views.StaffDirectoryView.as_view(), name="ops-staff"),
     path("ops/staff/<int:pk>", views.StaffDetailView.as_view(), name="ops-staff-member"),
 
+    # invoicing
+    path(
+        "ops/orders/<str:reference>/invoices",
+        views.InvoiceListView.as_view(),
+        name="ops-invoices",
+    ),
+    path(
+        "ops/orders/<str:reference>/invoices/<int:pk>/payment",
+        views.InvoicePaymentView.as_view(),
+        name="ops-invoice-payment",
+    ),
+    path(
+        "ops/orders/<str:reference>/invoices/<int:pk>/void",
+        views.InvoiceVoidView.as_view(),
+        name="ops-invoice-void",
+    ),
+
     path("ops/enquiries", views.EnquiryListView.as_view(), name="ops-enquiries"),
     path("ops/enquiries/<int:pk>", views.EnquiryDetailView.as_view(), name="ops-enquiry"),
     path("ops/enquiries/<int:pk>/convert", views.EnquiryConvertView.as_view(), name="ops-convert"),

@@ -301,3 +301,94 @@
   line-height: 1.75;
   color: var(--ink);
 }
+
+/* ---------- invoices ---------- */
+
+.invoices {
+  list-style: none;
+  display: grid;
+  gap: var(--sp-3);
+}
+
+.invoice {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 0.35rem var(--sp-3);
+  align-items: baseline;
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+/* An invoice we withdrew. Still shown — they have it — but plainly not owed. */
+.invoiceVoid {
+  opacity: 0.6;
+}
+
+.iNumber {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+.iDescription {
+  font-size: 0.9375rem;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/* Tabular figures so a column of amounts aligns on the decimal. */
+.iAmount {
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.iStatus {
+  padding: 0.05rem 0.5rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  white-space: nowrap;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-muted);
+}
+
+.i_paid {
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+.i_void {
+  color: var(--ink-faint);
+  border-color: var(--rule);
+}
+
+/* The only thing on this page asking the reader to do something. */
+.i_overdue {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.iMeta,
+.iVoidReason {
+  grid-column: 1 / -1;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+.iVoidReason {
+  color: var(--danger);
+}
+
+@media (max-width: 34rem) {
+  .invoice {
+    grid-template-columns: 1fr auto;
+  }
+
+  .iNumber {
+    grid-column: 1 / -1;
+  }
+}

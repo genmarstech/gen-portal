@@ -18,6 +18,8 @@ own release.
 
 from __future__ import annotations
 
+from datetime import date
+
 from django.conf import settings
 from django.db import models
 from django.utils import timezone
@@ -571,3 +573,140 @@ class Contract(models.Model):
     @property
     def deliverable_list(self) -> list[str]:
         return [line.strip() for line in self.deliverables.splitlines() if line.strip()]
+
+
+class Invoice(models.Model):
+    """
+    A request for payment, frozen at the moment it was issued.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE SAME SNAPSHOT RULE AS Contract, AND FOR A SHARPER REASON.
+
+    An invoice that recalculates from the milestone is not an invoice. Edit the
+    milestone amount in October and every invoice sent in June silently changes
+    what it asked for — including ones already paid, which now disagree with the
+    client's bank statement. There is no way to explain that to a client, and no
+    way to audit it afterwards.
+
+    So issuing COPIES the amount and the description as they stood. Nothing
+    after that touches them. Correcting an invoice means VOIDING it and issuing
+    a new one, which is what a paper trail is.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── PAYMENT IS RECORDED, NOT COLLECTED ──────────────────────────────────────
+
+    Genmars does not process payments and this model must not imply that it
+    does. There is no card form, no M-Pesa STK push, no payment gateway. Money
+    arrives in a bank account or a till number, and someone here writes down
+    that it arrived, with the reference from the statement.
+
+    Charter 04 §IV forbids claiming a capability we do not have, and a "Pay now"
+    button that only marks a row would be exactly that claim — the worst kind,
+    because the client would believe they had paid.
+    """
+
+    class Status(models.TextChoices):
+        ISSUED = "issued", "Issued"
+        PAID = "paid", "Paid"
+        VOID = "void", "Void"
+
+    number = models.CharField(
+        max_length=32,
+        unique=True,
+        db_index=True,
+        help_text="GM-INV-2026-0001. Sequential, never reused — including voids.",
+    )
+
+    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name="invoices")
+    # Usually a milestone, because that is how Charter 05 §VI structures money.
+    # Nullable for the occasional thing that is genuinely not one — a change
+    # request billed on its own, or a retainer month.
+    milestone = models.ForeignKey(
+        Milestone,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoices",
+    )
+
+    # ---- the snapshot ----
+    description = models.CharField(
+        max_length=300, help_text="What this bills, as it stood at issue."
+    )
+    amount_kes = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text=(
+            "A Decimal, never a float. Money through a float is money you "
+            "cannot reconcile, and this is the number on a document someone pays."
+        ),
+    )
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.ISSUED
+    )
+
+    issued_on = models.DateField()
+    due_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Stated so 'overdue' is a fact rather than a feeling.",
+    )
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoices_issued",
+        limit_choices_to={"is_staff": True},
+    )
+
+    # ---- payment, recorded ----
+    paid_on = models.DateField(null=True, blank=True)
+    payment_reference = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text=(
+            "The reference from the statement — an M-Pesa code, a bank "
+            "reference. What lets this row be checked against the account."
+        ),
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="invoices_recorded",
+        limit_choices_to={"is_staff": True},
+    )
+
+    # ---- void ----
+    void_reason = models.TextField(
+        blank=True,
+        help_text="Why. A voided invoice with no reason is an unanswered question.",
+    )
+    voided_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-issued_on", "-number"]
+
+    def __str__(self) -> str:
+        return f"{self.number} — {self.order.reference} ({self.get_status_display()})"
+
+    @property
+    def is_outstanding(self) -> bool:
+        return self.status == self.Status.ISSUED
+
+    def is_overdue(self, today: date | None = None) -> bool:
+        """
+        Unpaid and past its due date.
+
+        A method rather than a property because it takes `today`: "overdue" is
+        a claim about a moment, and a test that cannot choose the moment is a
+        test that passes in the morning and fails at night.
+        """
+        if not self.is_outstanding or not self.due_on:
+            return False
+        return self.due_on < (today or timezone.localdate())
