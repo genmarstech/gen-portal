@@ -84,6 +84,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Work
             </Link>
             <Link
+              href="/offers"
+              className={`${styles.link} ${pathname.startsWith("/offers") ? styles.active : ""}`}
+            >
+              Offers
+            </Link>
+            <Link
               href="/invoices"
               className={`${styles.link} ${pathname.startsWith("/invoices") ? styles.active : ""}`}
             >

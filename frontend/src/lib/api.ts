@@ -198,6 +198,29 @@ export type ClientInvoice = {
   order_reference?: string | null;
 };
 
+/**
+ * A price Genmars has put to this client.
+ *
+ * `list_price_kes` is sent on purpose: if we discounted, the client should see
+ * what from. A price with no reference point is one they cannot judge, and
+ * hiding it would make the discount a sales tactic rather than a fact.
+ */
+export type ClientOffer = {
+  reference: string;
+  title: string;
+  detail: string;
+  tier_name: string;
+  amount_kes: string;
+  list_price_kes: string | null;
+  discount_kes: string | null;
+  status: "sent" | "accepted" | "declined" | "withdrawn" | "expired";
+  status_label: string;
+  expires_on: string;
+  expired: boolean;
+  sent_at: string | null;
+  decided_at: string | null;
+};
+
 export type Notification = {
   id: number;
   kind: string;
@@ -365,6 +388,11 @@ export const portal = {
     post<{ unread: number }>("/notifications", id === undefined ? {} : { id }),
 
   catalogue: () => get<{ services: CatalogueService[] }>("/services"),
+
+  offers: () => get<{ offers: ClientOffer[] }>("/offers"),
+  /** Accepting files an enquiry. It does not start work — a signed SOW does. */
+  decideOffer: (reference: string, decision: "accept" | "decline", reason?: string) =>
+    post<ClientOffer>(`/offers/${reference}/decision`, { decision, reason }),
 
   /** Charter 05 §VIII — a plain link, so the browser downloads it. */
   exportUrl: "/api/account/export",
