@@ -21,11 +21,13 @@ from portal.models import (
     Invoice,
     Milestone,
     Notification,
+    Offer,
     Order,
     PaymentRecord,
     ProgressNote,
     Service,
     ServiceTier,
+    Task,
 )
 
 
@@ -682,4 +684,93 @@ class ActivitySerializer(serializers.ModelSerializer):
             "summary", "detail", "organisation_name", "created_at",
         ]
         read_only_fields = fields
+
+
+class OfferSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    organisation_name = serializers.CharField(source="organisation.name", read_only=True)
+    amount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    list_price_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    discount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    expired = serializers.SerializerMethodField()
+    created_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Offer
+        fields = [
+            "id", "reference", "organisation", "organisation_name",
+            "title", "detail", "tier_name",
+            "amount_kes", "list_price_kes", "discount_kes",
+            "status", "status_label", "expires_on", "expired",
+            "sent_at", "decided_at", "decline_reason",
+            "created_by_name", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_expired(self, offer: Offer) -> bool:
+        return offer.is_expired()
+
+    def get_created_by_name(self, offer: Offer) -> str:
+        who = offer.created_by
+        return (who.full_name or who.email) if who else ""
+
+
+class OfferWriteSerializer(serializers.Serializer):
+    organisation = serializers.IntegerField()
+    title = serializers.CharField(max_length=200)
+    detail = serializers.CharField()
+    amount_kes = serializers.DecimalField(max_digits=12, decimal_places=2)
+    expires_on = serializers.DateField()
+    tier = serializers.IntegerField(required=False, allow_null=True, default=None)
+
+
+class TaskSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    priority_label = serializers.CharField(source="get_priority_display", read_only=True)
+    assignee_name = serializers.SerializerMethodField()
+    assignee_email = serializers.CharField(source="assignee.email", read_only=True)
+    order_reference = serializers.CharField(
+        source="order.reference", read_only=True, default=None
+    )
+    overdue = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Task
+        fields = [
+            "id", "title", "detail", "assignee", "assignee_name", "assignee_email",
+            "status", "status_label", "priority", "priority_label",
+            "due_on", "overdue", "blocked_reason", "done_at",
+            "order", "order_reference", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_assignee_name(self, task: Task) -> str:
+        return task.assignee.full_name or task.assignee.email
+
+    def get_overdue(self, task: Task) -> bool:
+        return task.is_overdue()
+
+
+class TaskWriteSerializer(serializers.Serializer):
+    assignee = serializers.IntegerField()
+    title = serializers.CharField(max_length=200)
+    detail = serializers.CharField(required=False, allow_blank=True, default="")
+    order = serializers.CharField(required=False, allow_blank=True, default="")
+    due_on = serializers.DateField(required=False, allow_null=True, default=None)
+    priority = serializers.ChoiceField(
+        choices=Task.Priority.choices, required=False, default=Task.Priority.NORMAL
+    )
+
+
+class TaskStatusSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=Task.Status.choices)
+    blocked_reason = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
 

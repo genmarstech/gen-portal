@@ -1021,6 +1021,8 @@ class Notification(models.Model):
         ORDER_UPDATE = "order_update", "Order update"
         ENQUIRY_RECEIVED = "enquiry_received", "Enquiry received"
         INCIDENT_RAISED = "incident_raised", "Incident raised"
+        OFFER_SENT = "offer_sent", "Offer received"
+        TASK_ASSIGNED = "task_assigned", "Task assigned to you"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1434,4 +1436,240 @@ class ActivityLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.created_at:%Y-%m-%d %H:%M} {self.action} {self.subject}"
+
+
+class Offer(models.Model):
+    """
+    A price put to a specific client, for a specific piece of work.
+
+    ══════════════════════════════════════════════════════════════════════════
+    AN OFFER IS A COMMITMENT, NOT A SUGGESTION.
+
+    Once it is sent, the client can accept it, and the number on it is the
+    number we then have to honour. That makes this the same authority as
+    pricing and signing — Charter 02 §I — and it is why the amount is FROZEN
+    the moment it is sent.
+
+    An offer that recalculated from the catalogue would change under a client
+    who was still deciding. They would open it on Friday at a price they had
+    read on Tuesday, and neither of us could explain what happened. Same
+    snapshot rule as Contract and Invoice, and for the same reason.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY IT EXPIRES ──────────────────────────────────────────────────────────
+
+    Every offer states a date it stops being valid. Not to pressure anybody —
+    because an open-ended price is one we are still bound by in a year, after
+    costs have moved. `expires_on` is required for exactly that reason.
+
+    ── ACCEPTING DOES NOT START WORK ───────────────────────────────────────────
+
+    It files an enquiry with the offer attached, which the commercial partners
+    qualify like any other. Charter 02 §I puts a signed statement of work
+    before delivery, and no click by a client should be able to skip it.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        SENT = "sent", "Sent"
+        ACCEPTED = "accepted", "Accepted"
+        DECLINED = "declined", "Declined"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+        EXPIRED = "expired", "Expired"
+
+    reference = models.CharField(max_length=32, unique=True, db_index=True)
+    organisation = models.ForeignKey(
+        Organisation, on_delete=models.PROTECT, related_name="offers"
+    )
+
+    # What it is for. The service is a pointer for reporting; the wording below
+    # is what the client actually reads and is copied, not looked up.
+    service = models.ForeignKey(
+        Service,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="offers",
+    )
+    tier_name = models.CharField(max_length=120, blank=True)
+
+    title = models.CharField(max_length=200, help_text="What is being offered.")
+    detail = models.TextField(
+        help_text="What it includes, in the client's language. Copied at send."
+    )
+
+    amount_kes = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text="Frozen when sent. Decimal, never a float.",
+    )
+    # What the catalogue said at the time, so a discount is visible as a
+    # decision rather than buried in a number nobody can check.
+    list_price_kes = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.DRAFT
+    )
+    expires_on = models.DateField(help_text="After this it is not ours to honour.")
+
+    sent_at = models.DateTimeField(null=True, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decline_reason = models.TextField(blank=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="offers_made",
+        limit_choices_to={"is_staff": True},
+    )
+    accepted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="offers_accepted",
+    )
+    enquiry = models.OneToOneField(
+        "portal.Enquiry",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="from_offer",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.reference} — {self.organisation.name} ({self.get_status_display()})"
+
+    @property
+    def discount_kes(self) -> Decimal | None:
+        """What was taken off the list price, if anything."""
+        if self.list_price_kes is None:
+            return None
+        difference = self.list_price_kes - self.amount_kes
+        return difference if difference > 0 else None
+
+    def is_expired(self, today: date | None = None) -> bool:
+        """
+        Past its date and still awaiting a decision.
+
+        A method taking `today` rather than a property, for the same reason as
+        Invoice.is_overdue: expiry is a claim about a moment, and a test that
+        cannot choose the moment passes in the morning and fails at night.
+        """
+        if self.status not in (self.Status.SENT, self.Status.DRAFT):
+            return False
+        return self.expires_on < (today or timezone.localdate())
+
+    @property
+    def is_open(self) -> bool:
+        return self.status in (self.Status.DRAFT, self.Status.SENT)
+
+
+class Task(models.Model):
+    """
+    A piece of work assigned to somebody here.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS NOT A PROJECT PLAN, AND IT MUST NOT BECOME ONE.
+
+    Delivery is already tracked: Order has milestones, DeliveryGate has the six
+    gates, Blocker has what is stuck and who is waiting on whom. Those describe
+    the CLIENT'S work and the client can see them.
+
+    This is the internal layer above that — "Asha is writing the SOW for
+    GM-2026-0004 by Thursday" — which no client should see and which does not
+    belong in a milestone. Keeping them separate is what stops a client-facing
+    delivery record filling up with internal chores.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY IT CAN POINT AT AN ORDER BUT NEVER REQUIRES ONE ─────────────────────
+
+    Plenty of real work is not against an order: chasing a supplier, writing a
+    policy, fixing the backup script. Forcing a task to belong to an order
+    would mean either inventing one or not writing the task down.
+    """
+
+    class Status(models.TextChoices):
+        TODO = "todo", "To do"
+        DOING = "doing", "In progress"
+        BLOCKED = "blocked", "Blocked"
+        DONE = "done", "Done"
+
+    class Priority(models.TextChoices):
+        # Three, on purpose. Five levels means everything is a 4.
+        LOW = "low", "Low"
+        NORMAL = "normal", "Normal"
+        HIGH = "high", "High"
+
+    title = models.CharField(max_length=200)
+    detail = models.TextField(blank=True)
+
+    assignee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="tasks",
+        limit_choices_to={"is_staff": True},
+        help_text="One person. Work assigned to everyone is assigned to nobody.",
+    )
+    assigned_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="tasks_assigned",
+        limit_choices_to={"is_staff": True},
+    )
+
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="tasks",
+        help_text="Optional. Plenty of real work is not against an order.",
+    )
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.TODO
+    )
+    priority = models.CharField(
+        max_length=8, choices=Priority.choices, default=Priority.NORMAL
+    )
+    due_on = models.DateField(null=True, blank=True)
+
+    done_at = models.DateTimeField(null=True, blank=True)
+    blocked_reason = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text="Blocked on what. A blocked task with no reason is a stalled one.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["status", "due_on", "-priority", "id"]
+        indexes = [
+            models.Index(fields=["assignee", "status"], name="task_assignee_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.title} → {self.assignee}"
+
+    @property
+    def is_open(self) -> bool:
+        return self.status != self.Status.DONE
+
+    def is_overdue(self, today: date | None = None) -> bool:
+        if not self.is_open or not self.due_on:
+            return False
+        return self.due_on < (today or timezone.localdate())
 

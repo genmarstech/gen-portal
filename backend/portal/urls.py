@@ -11,6 +11,12 @@ urlpatterns = [
     # silently discarded.
     path("enquiries", views.EnquiryCreateView.as_view(), name="enquiry-create"),
     path("invoices", views.InvoiceListView.as_view(), name="invoice-list"),
+    path("offers", views.OfferListView.as_view(), name="offer-list"),
+    path(
+        "offers/<str:reference>/decision",
+        views.OfferDecisionView.as_view(),
+        name="offer-decision",
+    ),
     path("notifications", views.NotificationListView.as_view(), name="notifications"),
     path("services", views.ServiceCatalogueView.as_view(), name="service-catalogue"),
     path("orders", views.OrderListView.as_view(), name="order-list"),

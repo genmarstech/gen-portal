@@ -30,7 +30,7 @@ from . import mpesa
 from django.utils import timezone
 
 from . import selectors
-from .models import Enquiry, Notification, Service
+from .models import Enquiry, Notification, Offer, Service
 from .selectors import (
     export_payload,
     invoice_for,
@@ -40,6 +40,7 @@ from .selectors import (
 )
 from .serializers import (
     ClientInvoiceSerializer,
+    ClientOfferSerializer,
     ClientServiceSerializer,
     EnquirySerializer,
     InvoiceDocumentSerializer,
@@ -519,4 +520,74 @@ class ServiceCatalogueView(APIView):
         return Response(
             {"services": ClientServiceSerializer(services_qs, many=True).data}
         )
+
+
+class OfferListView(APIView):
+    """
+    Offers put to this client.
+
+    Drafts are excluded: an offer we have not sent is not one they have
+    received, and showing it would put a price in front of somebody before we
+    had decided to.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        offers = (
+            Offer.objects.filter(
+                organisation_id__in=selectors.organisation_ids_for(request.user)
+            )
+            .exclude(status=Offer.Status.DRAFT)
+            .select_related("organisation")
+        )
+        return Response({"offers": ClientOfferSerializer(offers, many=True).data})
+
+
+class OfferDecisionView(APIView):
+    """
+    Accept or decline.
+
+    Scoped through the user's organisations in the lookup itself, so an offer
+    reference belonging to someone else matches nothing rather than being found
+    and then refused.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, reference: str):
+        offer = (
+            Offer.objects.filter(
+                reference=reference,
+                organisation_id__in=selectors.organisation_ids_for(request.user),
+            )
+            .exclude(status=Offer.Status.DRAFT)
+            .first()
+        )
+        if offer is None:
+            return Response(
+                {"detail": "No such offer."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        decision = request.data.get("decision")
+        try:
+            if decision == "accept":
+                offer = services.accept_offer(offer=offer, actor=request.user)
+            elif decision == "decline":
+                offer = services.decline_offer(
+                    offer=offer,
+                    actor=request.user,
+                    reason=request.data.get("reason", ""),
+                )
+            else:
+                return Response(
+                    {"detail": "Say whether you are accepting or declining."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except services.OperationsError as exc:
+            return Response(
+                {"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST
+            )
+
+        return Response(ClientOfferSerializer(offer).data)
 

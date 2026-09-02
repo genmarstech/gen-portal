@@ -18,6 +18,7 @@ from .models import (
     Invoice,
     Milestone,
     Notification,
+    Offer,
     Order,
     PaymentRecord,
     ProgressNote,
@@ -503,4 +504,42 @@ class ClientServiceSerializer(serializers.ModelSerializer):
         model = Service
         fields = ["slug", "name", "summary", "price_unit", "is_active", "tiers"]
         read_only_fields = fields
+
+
+class ClientOfferSerializer(serializers.ModelSerializer):
+    """
+    An offer, as the client sees it.
+
+    `list_price_kes` is included on purpose. If we discounted, they should see
+    what from — a price presented without its reference point is a number they
+    have no way to judge, and hiding it would make the discount a sales tactic
+    rather than a fact.
+
+    `created_by` is omitted: which of us drafted it is our bookkeeping.
+    """
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    amount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    list_price_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    discount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    expired = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Offer
+        fields = [
+            "reference", "title", "detail", "tier_name",
+            "amount_kes", "list_price_kes", "discount_kes",
+            "status", "status_label", "expires_on", "expired",
+            "sent_at", "decided_at",
+        ]
+        read_only_fields = fields
+
+    def get_expired(self, offer: Offer) -> bool:
+        return offer.is_expired()
 

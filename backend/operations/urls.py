@@ -59,6 +59,12 @@ urlpatterns = [
     path("ops/tiers/<int:pk>/price", views.TierPriceView.as_view(), name="ops-tier-price"),
     path("ops/activity", views.ActivityView.as_view(), name="ops-activity"),
 
+    # ---- offers and internal work ----
+    path("ops/offers", views.OfferListView.as_view(), name="ops-offers"),
+    path("ops/offers/<int:pk>/action", views.OfferActionView.as_view(), name="ops-offer-action"),
+    path("ops/tasks", views.TaskListView.as_view(), name="ops-tasks"),
+    path("ops/tasks/<int:pk>", views.TaskDetailView.as_view(), name="ops-task"),
+
     # ---- incidents ----
     path("ops/incidents", views.IncidentListView.as_view(), name="ops-incidents"),
     path("ops/incidents/<int:pk>", views.IncidentDetailView.as_view(), name="ops-incident"),

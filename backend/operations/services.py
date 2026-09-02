@@ -31,11 +31,13 @@ from portal.models import (
     Milestone,
     MpesaPayment,
     Notification,
+    Offer,
     Order,
     PaymentRecord,
     ProgressNote,
     Service,
     ServiceTier,
+    Task,
 )
 
 log = logging.getLogger(__name__)
@@ -2016,4 +2018,359 @@ def set_tier_price(
         tier.service.slug, tier.slug, before, tier.price_kes, actor.email,
     )
     return tier
+
+
+# ── offers ───────────────────────────────────────────────────────────────────
+
+
+def next_offer_reference(today: date | None = None) -> str:
+    year = (today or timezone.localdate()).year
+    prefix = f"{REFERENCE_PREFIX}-OFR-{year}-"
+    used = Offer.objects.filter(reference__startswith=prefix).count()
+    return f"{prefix}{used + 1:04d}"
+
+
+@transaction.atomic
+def make_offer(
+    *,
+    organisation: Organisation,
+    actor: User,
+    title: str,
+    detail: str,
+    amount_kes: Decimal,
+    expires_on: date,
+    service: Service | None = None,
+    tier: ServiceTier | None = None,
+) -> Offer:
+    """
+    Put a price to a client. Created as a DRAFT — sending is a separate act.
+
+    ── WHY DRAFT AND SEND ARE TWO STEPS ────────────────────────────────────────
+
+    Once sent, the client can accept it and the number becomes ours to honour.
+    That is not something to do with one click on a form that might have a typo
+    in the amount. Drafting is cheap and editable; sending is a commitment and
+    freezes it.
+
+    ── WHY THE LIST PRICE IS STORED ────────────────────────────────────────────
+
+    So a discount is a visible decision rather than a number nobody can check.
+    "We offered 60,000" says nothing on its own; "we offered 60,000 against a
+    list price of 75,000" is a fact somebody can review.
+    """
+    title = title.strip()
+    if not title:
+        raise OperationsError("Say what is being offered.", field="title")
+
+    detail = detail.strip()
+    if not detail:
+        raise OperationsError(
+            "Say what it includes. The client reads this and decides on it.",
+            field="detail",
+        )
+
+    amount_kes = Decimal(amount_kes)
+    if amount_kes <= 0:
+        raise OperationsError(
+            "An offer has to be for a positive amount.", field="amount_kes"
+        )
+
+    if expires_on is None:
+        raise OperationsError(
+            "Say when it expires. An open-ended price is one we are still bound "
+            "by in a year, after costs have moved.",
+            field="expires_on",
+        )
+    if expires_on < timezone.localdate():
+        raise OperationsError(
+            "That date has already passed.", field="expires_on"
+        )
+
+    for attempt in range(5):
+        try:
+            with transaction.atomic():
+                offer = Offer.objects.create(
+                    reference=next_offer_reference(),
+                    organisation=organisation,
+                    service=service or (tier.service if tier else None),
+                    tier_name=tier.name if tier else "",
+                    title=title,
+                    detail=detail,
+                    amount_kes=amount_kes,
+                    list_price_kes=tier.price_kes if tier else None,
+                    expires_on=expires_on,
+                    created_by=actor,
+                )
+            break
+        except IntegrityError:
+            if attempt == 4:
+                raise
+    else:  # pragma: no cover
+        raise OperationsError("Could not allocate an offer reference.")
+
+    log.info("offer %s drafted for %s by %s", offer.reference, organisation.name, actor.email)
+    return offer
+
+
+@transaction.atomic
+def send_offer(*, offer: Offer, actor: User) -> Offer:
+    """
+    Put it in front of the client. From here the amount is frozen.
+
+    See Offer's docstring: an offer that recalculated from the catalogue would
+    change under a client who was still deciding, and neither of us could
+    explain what happened.
+    """
+    if offer.status != Offer.Status.DRAFT:
+        raise OperationsError(
+            f"{offer.reference} is {offer.get_status_display().lower()} and cannot be sent again."
+        )
+    if offer.is_expired():
+        raise OperationsError(
+            "That offer expires before it would be sent. Move the date first.",
+            field="expires_on",
+        )
+
+    offer.status = Offer.Status.SENT
+    offer.sent_at = timezone.now()
+    offer.save(update_fields=["status", "sent_at"])
+
+    _notify(
+        users=_client_recipients(offer.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.OFFER_SENT,
+        title=f"An offer from Genmars: {offer.title}",
+        body=f"KES {offer.amount_kes:,.2f}, valid until {offer.expires_on:%-d %B %Y}.",
+        url="/offers",
+    )
+    record(
+        actor=actor,
+        action=ActivityLog.Action.OFFER_SENT,
+        subject=offer.reference,
+        organisation=offer.organisation,
+        summary=(
+            f"{offer.reference} sent to {offer.organisation.name}: "
+            f"{offer.title}, KES {offer.amount_kes:,.2f}"
+        ),
+        amount_kes=str(offer.amount_kes),
+        list_price_kes=str(offer.list_price_kes) if offer.list_price_kes else None,
+        expires_on=str(offer.expires_on),
+    )
+
+    log.info("offer %s sent by %s", offer.reference, actor.email)
+    return offer
+
+
+@transaction.atomic
+def accept_offer(*, offer: Offer, actor: User) -> Offer:
+    """
+    The client says yes.
+
+    ── ACCEPTING DOES NOT START WORK ───────────────────────────────────────────
+
+    It files an enquiry carrying the offer, which the commercial partners
+    qualify like any other. Charter 02 §I puts a signed statement of work
+    before delivery, and no click by a client may skip that.
+    """
+    if offer.status != Offer.Status.SENT:
+        raise OperationsError(
+            f"{offer.reference} is {offer.get_status_display().lower()}."
+        )
+    if offer.is_expired():
+        raise OperationsError(
+            f"{offer.reference} expired on {offer.expires_on:%-d %B %Y}. "
+            "Ask us for a fresh one — we would rather requote than hold you to "
+            "a price we set months ago.",
+        )
+
+    enquiry = Enquiry.objects.create(
+        organisation=offer.organisation,
+        submitted_by=actor,
+        problem=f"Accepted offer {offer.reference}: {offer.title}",
+        service=offer.service,
+        tier=offer.tier_name,
+        budget_range=f"KES {offer.amount_kes:,.2f} (offered)",
+    )
+
+    offer.status = Offer.Status.ACCEPTED
+    offer.decided_at = timezone.now()
+    offer.accepted_by = actor
+    offer.enquiry = enquiry
+    offer.save(update_fields=["status", "decided_at", "accepted_by", "enquiry"])
+
+    notify_enquiry_received(enquiry)
+    record(
+        actor=actor,
+        action=ActivityLog.Action.OFFER_ACCEPTED,
+        subject=offer.reference,
+        organisation=offer.organisation,
+        summary=f"{offer.organisation.name} accepted {offer.reference} at KES {offer.amount_kes:,.2f}",
+        amount_kes=str(offer.amount_kes),
+    )
+
+    log.info("offer %s accepted by %s", offer.reference, actor.email)
+    return offer
+
+
+@transaction.atomic
+def decline_offer(*, offer: Offer, actor: User, reason: str = "") -> Offer:
+    """The client says no. The reason is optional and worth asking for."""
+    if offer.status != Offer.Status.SENT:
+        raise OperationsError(
+            f"{offer.reference} is {offer.get_status_display().lower()}."
+        )
+
+    offer.status = Offer.Status.DECLINED
+    offer.decided_at = timezone.now()
+    offer.decline_reason = reason.strip()
+    offer.save(update_fields=["status", "decided_at", "decline_reason"])
+    log.info("offer %s declined", offer.reference)
+    return offer
+
+
+@transaction.atomic
+def withdraw_offer(*, offer: Offer, actor: User, reason: str) -> Offer:
+    """
+    Take it back before it is accepted.
+
+    An accepted offer cannot be withdrawn — the client acted on it, and undoing
+    that unilaterally is not something this system should make easy.
+    """
+    if offer.status == Offer.Status.ACCEPTED:
+        raise OperationsError(
+            f"{offer.reference} has been accepted. That is a conversation with "
+            "the client, not a status change.",
+        )
+    if not offer.is_open:
+        raise OperationsError(
+            f"{offer.reference} is {offer.get_status_display().lower()}."
+        )
+
+    reason = reason.strip()
+    if not reason:
+        raise OperationsError("Say why it is being withdrawn.", field="reason")
+
+    offer.status = Offer.Status.WITHDRAWN
+    offer.decided_at = timezone.now()
+    offer.decline_reason = reason
+    offer.save(update_fields=["status", "decided_at", "decline_reason"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.OFFER_WITHDRAWN,
+        subject=offer.reference,
+        organisation=offer.organisation,
+        summary=f"{offer.reference} withdrawn: {reason}",
+    )
+    return offer
+
+
+# ── tasks ────────────────────────────────────────────────────────────────────
+
+
+@transaction.atomic
+def assign_task(
+    *,
+    actor: User,
+    assignee: User,
+    title: str,
+    detail: str = "",
+    order: Order | None = None,
+    due_on: date | None = None,
+    priority: str = Task.Priority.NORMAL,
+) -> Task:
+    """
+    Give somebody a piece of work.
+
+    ── ONE ASSIGNEE, ALWAYS ────────────────────────────────────────────────────
+
+    Work assigned to everyone is assigned to nobody. The model enforces it by
+    having a single non-null FK rather than a many-to-many, which is a decision
+    rather than an omission.
+
+    ── THEY HAVE TO BE ABLE TO DO IT ───────────────────────────────────────────
+
+    Assigning to a revoked account produces a task that will never move and an
+    owner who will never see it. Refused, with the reason.
+    """
+    title = title.strip()
+    if not title:
+        raise OperationsError("Say what needs doing.", field="title")
+
+    if not assignee.is_staff:
+        raise OperationsError(
+            "Tasks are internal work. Only Genmars staff can be assigned one.",
+            field="assignee",
+        )
+    if not assignee.is_active:
+        raise OperationsError(
+            f"{assignee.full_name or assignee.email} no longer has access, so "
+            "they would never see this.",
+            field="assignee",
+        )
+
+    if priority not in Task.Priority.values:
+        raise OperationsError("That is not a priority we use.", field="priority")
+
+    task = Task.objects.create(
+        title=title,
+        detail=detail.strip(),
+        assignee=assignee,
+        assigned_by=actor,
+        order=order,
+        due_on=due_on,
+        priority=priority,
+    )
+
+    # Only the person it lands on. A team-wide notification for one person's
+    # task is how people learn to ignore notifications.
+    _notify(
+        users=[assignee],
+        audience=Notification.Audience.STAFF,
+        kind=Notification.Kind.TASK_ASSIGNED,
+        title=f"Assigned to you: {task.title}",
+        body=(f"Due {task.due_on:%-d %B}" if task.due_on else "No due date"),
+        url="/team",
+    )
+    record(
+        actor=actor,
+        action=ActivityLog.Action.TASK_ASSIGNED,
+        subject=order.reference if order else "",
+        summary=f"{task.title} assigned to {assignee.full_name or assignee.email}",
+        assignee=assignee.email,
+        due_on=str(due_on) if due_on else None,
+    )
+
+    log.info("task %s assigned to %s by %s", task.pk, assignee.email, actor.email)
+    return task
+
+
+@transaction.atomic
+def set_task_status(
+    *, task: Task, actor: User, status: str, blocked_reason: str = ""
+) -> Task:
+    """Move it along. Blocked needs a reason — a blocked task without one is stalled."""
+    if status not in Task.Status.values:
+        raise OperationsError("That is not a status we use.", field="status")
+
+    if status == Task.Status.BLOCKED and not blocked_reason.strip():
+        raise OperationsError(
+            "Blocked on what? Without that this is just a task nobody is doing.",
+            field="blocked_reason",
+        )
+
+    task.status = status
+    task.blocked_reason = blocked_reason.strip() if status == Task.Status.BLOCKED else ""
+    task.done_at = timezone.now() if status == Task.Status.DONE else None
+    task.save(update_fields=["status", "blocked_reason", "done_at"])
+
+    if status == Task.Status.DONE:
+        record(
+            actor=actor,
+            action=ActivityLog.Action.TASK_DONE,
+            subject=task.order.reference if task.order_id else "",
+            summary=f"{task.title} completed by {actor.full_name or actor.email}",
+        )
+
+    return task
 

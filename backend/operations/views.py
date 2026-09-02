@@ -29,16 +29,23 @@ from portal.models import (
     Invoice,
     Milestone,
     Notification,
+    Offer,
     Order,
     ProgressNote,
     Service,
     ServiceTier,
+    Task,
 )
 
 from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
     ActivitySerializer,
+    OfferSerializer,
+    OfferWriteSerializer,
+    TaskSerializer,
+    TaskStatusSerializer,
+    TaskWriteSerializer,
     DirectInvoiceSerializer,
     TierPriceSerializer,
     TierSerializer,
@@ -1026,4 +1033,147 @@ class ActivityView(StaffView):
                 ],
             }
         )
+
+
+class OfferListView(StaffView):
+    """
+    Offers across every client, and drafting one.
+
+    CanCommit. An offer is a price put to a client that they can accept — the
+    same authority as invoicing and signing, Charter 02 §I.
+    """
+
+    permission_classes = [CanCommit]
+
+    def get(self, request):
+        offers = Offer.objects.select_related("organisation", "created_by").all()
+        state = request.query_params.get("status")
+        if state in Offer.Status.values:
+            offers = offers.filter(status=state)
+        return Response({"offers": OfferSerializer(offers, many=True).data})
+
+    def post(self, request):
+        form = OfferWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        organisation = get_object_or_404(
+            Organisation, pk=form.validated_data["organisation"]
+        )
+        tier = None
+        if form.validated_data["tier"]:
+            tier = ServiceTier.objects.filter(
+                pk=form.validated_data["tier"]
+            ).select_related("service").first()
+
+        try:
+            offer = services.make_offer(
+                organisation=organisation,
+                actor=request.user,
+                title=form.validated_data["title"],
+                detail=form.validated_data["detail"],
+                amount_kes=form.validated_data["amount_kes"],
+                expires_on=form.validated_data["expires_on"],
+                tier=tier,
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(OfferSerializer(offer).data, status=http.HTTP_201_CREATED)
+
+
+class OfferActionView(StaffView):
+    """Send or withdraw. Accepting and declining belong to the client."""
+
+    permission_classes = [CanCommit]
+
+    def post(self, request, pk: int):
+        offer = get_object_or_404(Offer, pk=pk)
+        action = request.data.get("action")
+
+        try:
+            if action == "send":
+                offer = services.send_offer(offer=offer, actor=request.user)
+            elif action == "withdraw":
+                offer = services.withdraw_offer(
+                    offer=offer,
+                    actor=request.user,
+                    reason=request.data.get("reason", ""),
+                )
+            else:
+                return Response(
+                    {"detail": "Say whether to send or withdraw it."},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(OfferSerializer(offer).data)
+
+
+class TaskListView(StaffView):
+    """
+    Internal work. Everyone here can see all of it and assign it.
+
+    Deliberately not gated to a role: knowing what the company is working on is
+    not privileged information inside the company, and a gate on assigning work
+    is a gate on getting it done.
+    """
+
+    def get(self, request):
+        tasks = Task.objects.select_related("assignee", "order").all()
+
+        assignee = request.query_params.get("assignee")
+        if assignee == "me":
+            tasks = tasks.filter(assignee=request.user)
+        elif assignee:
+            tasks = tasks.filter(assignee_id=assignee)
+
+        state = request.query_params.get("status")
+        if state in Task.Status.values:
+            tasks = tasks.filter(status=state)
+
+        return Response({"tasks": TaskSerializer(tasks, many=True).data})
+
+    def post(self, request):
+        form = TaskWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        assignee = get_object_or_404(User, pk=form.validated_data["assignee"])
+        order = None
+        if form.validated_data["order"]:
+            order = Order.objects.filter(
+                reference=form.validated_data["order"]
+            ).first()
+
+        try:
+            task = services.assign_task(
+                actor=request.user,
+                assignee=assignee,
+                title=form.validated_data["title"],
+                detail=form.validated_data["detail"],
+                order=order,
+                due_on=form.validated_data["due_on"],
+                priority=form.validated_data["priority"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(TaskSerializer(task).data, status=http.HTTP_201_CREATED)
+
+
+class TaskDetailView(StaffView):
+    """Move a task along."""
+
+    def patch(self, request, pk: int):
+        task = get_object_or_404(Task, pk=pk)
+        form = TaskStatusSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            task = services.set_task_status(
+                task=task,
+                actor=request.user,
+                status=form.validated_data["status"],
+                blocked_reason=form.validated_data["blocked_reason"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(TaskSerializer(task).data)
 
