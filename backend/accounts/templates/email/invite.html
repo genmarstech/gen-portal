@@ -1,0 +1,44 @@
+{% extends "email/base.html" %}
+{% block content %}
+{% comment %}
+This arrives unsolicited, from a company the reader may not have heard of, and
+asks them to set a password. That is the shape of a phishing email. The two
+things that make it credible — a human name they recognise and the organisation
+they already work for — are in the first sentence, ahead of the code.
+{% endcomment %}
+<p style="margin:0 0 16px 0;">
+  <strong style="color:#2e2b34; font-weight:600;">{{ invited_by }}</strong> at Genmars Tech has given you
+  access to the <strong style="color:#2e2b34; font-weight:600;">{{ organisation }}</strong> client portal.
+</p>
+
+{% include "email/_code.html" %}
+
+{% include "email/_button.html" with url="https://app.genmars.co.ke/invite" label="Set your password" %}
+<p style="margin:0 0 18px 0; font-size:13px; color:#7a7480;">
+  Or go to
+  <a href="https://app.genmars.co.ke/invite" style="color:#834f49;">app.genmars.co.ke/invite</a>
+  and enter the code.
+</p>
+
+<p style="margin:0 0 18px 0;">
+  The account exists already but cannot be signed into by anyone &mdash;
+  including us &mdash; until you set that password.
+</p>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6; margin-top:6px;">
+  <tr>
+    <td style="padding-top:18px; font-size:14px; line-height:1.65; color:#5f5867;">
+      Inside the portal you will find the scope of work we have agreed, a
+      written progress note each week, and what has been invoiced and paid.
+    </td>
+  </tr>
+</table>
+{% endblock %}
+
+{% block footnote %}
+<p style="margin:0 0 8px 0;">
+  If you were not expecting this you can ignore it. The code expires on its own
+  and nothing happens.
+</p>
+{% endblock %}

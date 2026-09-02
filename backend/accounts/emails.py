@@ -13,14 +13,57 @@ Two things this must never do:
 Voice follows Charter 04 §III — plain, specific, no inflation. These are the
 first emails many clients will get from us, and "Your verification code" beats
 anything with an exclamation mark in it.
+
+── BOTH PARTS ARE WRITTEN, NEITHER IS GENERATED ────────────────────────────
+Every message goes out as text AND html. The text is not a stripped-down
+fallback produced from the markup — it is written to be read on its own,
+because that is what a plain-text client, a screen reader, a spam filter and
+anyone with images off actually gets. A verification code that only exists
+inside a <div> is a code some recipients cannot use.
+
+Keeping them in step is a real cost and it is paid deliberately: a template
+that renders the code and a text body that does not would be caught by the
+tests in test_emails.py, which assert the code appears in both.
 """
+
+
 
 from __future__ import annotations
 
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
 
 from .models import EmailCode
+
+
+def _send(
+    *,
+    to: str,
+    subject: str,
+    text: str,
+    template: str,
+    context: dict,
+) -> None:
+    """
+    One message, two parts.
+
+    The HTML is attached as an alternative, so a client that cannot or will not
+    render it falls back to `text` rather than to nothing. `subject` is passed
+    into the context as well because the layout uses it for <title>, which is
+    what some clients show when a message is opened in a browser window.
+    """
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=text,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to],
+    )
+    message.attach_alternative(
+        render_to_string(template, {"subject": subject, **context}),
+        "text/html",
+    )
+    message.send(fail_silently=False)
 
 
 def _minutes() -> int:
@@ -28,9 +71,10 @@ def _minutes() -> int:
 
 
 def send_verification_code(email: str, code: str) -> None:
-    send_mail(
+    _send(
+        to=email,
         subject="Your Genmars verification code",
-        message=(
+        text=(
             f"Your code is {code}\n\n"
             f"It expires in {_minutes()} minutes and can be used once.\n\n"
             "If you did not create a Genmars account, you can ignore this "
@@ -38,16 +82,23 @@ def send_verification_code(email: str, code: str) -> None:
             "Genmars Tech Limited\n"
             "genmars.co.ke"
         ),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-        fail_silently=False,
+        template="email/verification.html",
+        context={
+            "heading": "Confirm your email address",
+            # The inbox preview line. Left unset, clients scrape the first
+            # words of the body — which here is the code, on a lock screen.
+            "preheader": "A code to confirm your email address.",
+            "code": code,
+            "minutes": _minutes(),
+        },
     )
 
 
 def send_password_reset_code(email: str, code: str) -> None:
-    send_mail(
+    _send(
+        to=email,
         subject="Reset your Genmars password",
-        message=(
+        text=(
             f"Your reset code is {code}\n\n"
             f"It expires in {_minutes()} minutes and can be used once.\n\n"
             "If you did not ask to reset your password, you can ignore this "
@@ -56,9 +107,13 @@ def send_password_reset_code(email: str, code: str) -> None:
             "Genmars Tech Limited\n"
             "genmars.co.ke"
         ),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-        fail_silently=False,
+        template="email/password_reset.html",
+        context={
+            "heading": "Set a new password",
+            "preheader": "A code to set a new password.",
+            "code": code,
+            "minutes": _minutes(),
+        },
     )
 
 
@@ -79,9 +134,10 @@ def send_invite(
     into, which is true and is the reassurance that matters: nobody, including
     us, can use it until they choose a password.
     """
-    send_mail(
+    _send(
+        to=email,
         subject=f"{invited_by} has added you to {organisation} on Genmars",
-        message=(
+        text=(
             f"{invited_by} at Genmars Tech has given you access to the "
             f"{organisation} client portal.\n\n"
             f"Your code is {code}\n\n"
@@ -97,9 +153,15 @@ def send_invite(
             "Genmars Tech Limited\n"
             "genmars.co.ke"
         ),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-        fail_silently=False,
+        template="email/invite.html",
+        context={
+            "heading": f"Access to {organisation}",
+            "preheader": f"{invited_by} has given you access to the {organisation} portal.",
+            "code": code,
+            "minutes": _minutes(),
+            "organisation": organisation,
+            "invited_by": invited_by,
+        },
     )
 
 
@@ -120,9 +182,10 @@ def send_progress_note(
     that has not been tested under real conditions. This reports what happened
     and stops.
     """
-    send_mail(
+    _send(
+        to=email,
         subject=f"{reference} — progress note, week of {week_of}",
-        message=(
+        text=(
             f"{title}\n"
             f"Week of {week_of}\n\n"
             f"{body}\n\n"
@@ -131,9 +194,16 @@ def send_progress_note(
             "Genmars Tech Limited\n"
             "genmars.co.ke"
         ),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-        fail_silently=False,
+        template="email/progress_note.html",
+        context={
+            "heading": title,
+            # The first line of the note, so the inbox shows what happened
+            # rather than repeating the subject.
+            "preheader": body.strip().splitlines()[0][:120] if body.strip() else "",
+            "reference": reference,
+            "week_of": week_of,
+            "body": body,
+        },
     )
 
 
@@ -145,9 +215,10 @@ def send_staff_invite(email: str, code: str, role: str, invited_by: str) -> None
     client's scope, prices and progress. Somebody accepting it should know that
     before they choose a password, not discover it afterwards.
     """
-    send_mail(
+    _send(
+        to=email,
         subject=f"{invited_by} has added you to Genmars Operations",
-        message=(
+        text=(
             f"{invited_by} has set up a Genmars account for you, as {role}.\n\n"
             f"Your code is {code}\n\n"
             f"Go to https://ops.genmars.co.ke and sign in, or set your password "
@@ -160,7 +231,13 @@ def send_staff_invite(email: str, code: str, role: str, invited_by: str) -> None
             "Genmars Tech Limited\n"
             "genmars.co.ke"
         ),
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        recipient_list=[email],
-        fail_silently=False,
+        template="email/staff_invite.html",
+        context={
+            "heading": "Your Genmars Operations account",
+            "preheader": f"{invited_by} has set up an account for you, as {role}.",
+            "code": code,
+            "minutes": _minutes(),
+            "role": role,
+            "invited_by": invited_by,
+        },
     )

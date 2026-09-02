@@ -1,0 +1,9 @@
+{% extends "email/base.html" %}
+{% block content %}
+<p style="margin:0 0 4px 0;">Here is the code to confirm your email address.</p>
+{% include "email/_code.html" %}
+<p style="margin:0;">
+  If you did not create a Genmars account, you can ignore this message.
+  Nothing has been set up and nobody has your address.
+</p>
+{% endblock %}

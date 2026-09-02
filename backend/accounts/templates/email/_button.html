@@ -1,0 +1,18 @@
+{% comment %}
+A link styled as a button. Bulletproof-ish: a table cell with a background and
+an <a> filling it, rather than a styled <a> alone, because Outlook ignores
+padding on inline elements and produces a coloured word instead of a button.
+
+The href is always shown in full underneath by the caller. A button whose
+destination cannot be read before clicking is asking for trust that the
+recipient has no way to check.
+{% endcomment %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:4px 0 16px 0;">
+  <tr>
+    <td style="background-color:#db7b51; border-radius:4px;">
+      <a href="{{ url }}" style="display:inline-block; padding:11px 22px;
+         font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+         font-size:14px; line-height:1.2; color:#ffffff; text-decoration:none;">{{ label }}</a>
+    </td>
+  </tr>
+</table>

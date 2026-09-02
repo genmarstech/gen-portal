@@ -1,0 +1,26 @@
+{% extends "email/base.html" %}
+{% block content %}
+{% comment %}
+The note itself is IN the email, not behind a link. Charter 05 §III promises the
+client a written update every week; making them authenticate to read three
+sentences is friction we added, not a service we provided.
+
+No call to action and no response-time promise — Charter 03 §IV. This reports
+what happened and stops.
+{% endcomment %}
+<p style="margin:0 0 20px 0; font-size:13px; color:#7a7480;">
+  {{ reference }} &middot; week of {{ week_of }}
+</p>
+
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap;">{{ body }}</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6; margin-top:24px;">
+  <tr>
+    <td style="padding-top:18px; font-size:14px; line-height:1.65; color:#5f5867;">
+      Scope, milestones and every earlier note are in the portal:<br>
+      <a href="https://app.genmars.co.ke/dashboard/{{ reference }}" style="color:#834f49;">app.genmars.co.ke/dashboard/{{ reference }}</a>
+    </td>
+  </tr>
+</table>
+{% endblock %}

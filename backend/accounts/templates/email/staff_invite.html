@@ -1,0 +1,35 @@
+{% extends "email/base.html" %}
+{% block content %}
+<p style="margin:0 0 16px 0;">
+  <strong style="color:#2e2b34; font-weight:600;">{{ invited_by }}</strong> has set up a Genmars account
+  for you, as <strong style="color:#2e2b34; font-weight:600;">{{ role }}</strong>.
+</p>
+
+{% include "email/_code.html" %}
+
+{% include "email/_button.html" with url="https://app.genmars.co.ke/invite" label="Set your password" %}
+<p style="margin:0 0 18px 0; font-size:13px; color:#7a7480;">
+  Then sign in at
+  <a href="https://ops.genmars.co.ke" style="color:#834f49;">ops.genmars.co.ke</a>.
+</p>
+
+<p style="margin:0 0 18px 0;">
+  The account cannot be signed into by anyone &mdash; including whoever invited
+  you &mdash; until you set that password.
+</p>
+
+{% comment %}
+Called out rather than buried in a paragraph. This account reads every client's
+scope, prices and progress, and somebody accepting it should know that before
+they choose a password, not discover it afterwards.
+{% endcomment %}
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="background-color:#f4efec; border-left:3px solid #db7b51; border-radius:2px;">
+  <tr>
+    <td style="padding:14px 16px; font-size:14px; line-height:1.6; color:#5f5867;">
+      It gives you access to client work across the whole company: scope,
+      prices, progress and contracts. Treat it accordingly.
+    </td>
+  </tr>
+</table>
+{% endblock %}

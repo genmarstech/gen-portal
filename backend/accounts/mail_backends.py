@@ -96,6 +96,29 @@ class ResendBackend(BaseEmailBackend):
                 sent += 1
         return sent
 
+    @staticmethod
+    def _html_alternative(message) -> str | None:
+        """
+        The text/html part, if the caller attached one.
+
+        Reads `alternatives` defensively: a plain EmailMessage has no such
+        attribute, and the entries are (content, mimetype) tuples on Django 5.1
+        but a dataclass on newer versions. Getting this wrong drops the HTML
+        rather than raising, which is exactly the failure this method exists to
+        end, so both shapes are handled.
+        """
+        for alternative in getattr(message, "alternatives", None) or []:
+            content = getattr(alternative, "content", None)
+            mimetype = getattr(alternative, "mimetype", None)
+            if content is None:
+                try:
+                    content, mimetype = alternative
+                except (TypeError, ValueError):  # pragma: no cover - defensive
+                    continue
+            if mimetype == "text/html":
+                return content
+        return None
+
     def _send(self, message) -> bool:
         recipients = message.recipients()
         if not recipients:
@@ -107,6 +130,21 @@ class ResendBackend(BaseEmailBackend):
             "subject": message.subject,
             "text": message.body,
         }
+
+        # ── THE HTML PART ───────────────────────────────────────────────────
+        # Django carries alternatives on the message; this backend used to send
+        # only `text`, so an HTML part attached by the caller was accepted
+        # without complaint and silently thrown away. Anything built on
+        # EmailMultiAlternatives would have looked like it worked.
+        #
+        # `text` is still always sent and is still written to be read on its
+        # own: it is what a plain-text client, a screen reader and a spam
+        # filter see, and a verification code that only exists inside a <div>
+        # is a code some recipients cannot use.
+        html = self._html_alternative(message)
+        if html is not None:
+            payload["html"] = html
+
         if message.reply_to:
             payload["reply_to"] = list(message.reply_to)
 
