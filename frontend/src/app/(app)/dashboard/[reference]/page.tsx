@@ -80,18 +80,59 @@ export default function OrderPage() {
         </div>
       </header>
 
-      {/* ---------- what was agreed ---------- */}
+      {/* ---------- what was agreed ----------
+        WHEN A CONTRACT EXISTS, THIS RENDERS THE CONTRACT, NOT THE ORDER.
+
+        The order's scope is what the work has since moved to; the contract is
+        what the client agreed to. Rendering the live order under a heading
+        reading "what was agreed" would tell them they signed something they
+        did not — which is the exact failure the snapshot on the contract
+        exists to prevent, reintroduced at the last step.
+
+        With no contract yet the order's scope is shown, and labelled as not
+        yet agreed. That is honest: an order at scoping has a proposal, not an
+        agreement, and Charter 02 §I is explicit that work begins when a
+        statement of work is signed.
+      */}
       <section className={styles.section}>
         <h2 className={styles.h2}>What was agreed</h2>
+
+        {order.contract ? (
+          <p className={styles.agreedMeta}>
+            {order.contract.reference}
+            {order.contract.signed_on
+              ? ` · signed ${order.contract.signed_on}${
+                  order.contract.signed_by_name ? ` by ${order.contract.signed_by_name}` : ""
+                }`
+              : " · issued, not yet signed"}
+          </p>
+        ) : (
+          <p className={styles.agreedMeta}>
+            Nothing signed yet. This is the scope as it stands while we agree
+            it — work begins once a statement of work is signed.
+          </p>
+        )}
+
         <div className={styles.pair}>
           <div>
             <h3 className={styles.h3}>In scope</h3>
-            <Prose text={order.scope} />
+            <Prose text={order.contract ? order.contract.scope : order.scope} />
+
+            {order.contract && order.contract.deliverable_list.length > 0 ? (
+              <>
+                <h3 className={styles.h3}>You receive</h3>
+                <ul className={styles.deliverables}>
+                  {order.contract.deliverable_list.map((d) => (
+                    <li key={d}>{d}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
           </div>
           <div className={styles.exclusions}>
             <h3 className={styles.h3}>Not included</h3>
-            {order.exclusions.trim() ? (
-              <Prose text={order.exclusions} />
+            {(order.contract ? order.contract.exclusions : order.exclusions).trim() ? (
+              <Prose text={order.contract ? order.contract.exclusions : order.exclusions} />
             ) : (
               <p className={styles.none}>
                 No exclusions were recorded for this engagement.

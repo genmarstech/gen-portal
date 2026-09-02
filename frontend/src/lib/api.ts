@@ -130,6 +130,32 @@ export type Milestone = {
   status_label: string;
 };
 
+/**
+ * The statement of work in force, as the client sees it.
+ *
+ * Every value is a SNAPSHOT taken when the contract was issued — deliberately
+ * NOT the order's live scope. If the two disagree, the contract is what was
+ * agreed and the order is where the work has since moved to; showing the live
+ * scope inside a document panel would tell the client they signed something
+ * they did not.
+ */
+export type ClientContract = {
+  reference: string;
+  version: number;
+  title: string;
+  scope: string;
+  exclusions: string;
+  deliverables: string;
+  deliverable_list: string[];
+  /** A STRING. This is the figure on a document they signed. */
+  total_kes: string;
+  payment_terms: string;
+  target_date: string | null;
+  issued_at: string | null;
+  signed_on: string | null;
+  signed_by_name: string;
+};
+
 export type OrderDetail = OrderSummary & {
   organisation: string;
   scope: string;
@@ -138,6 +164,8 @@ export type OrderDetail = OrderSummary & {
   started_on: string | null;
   notes: ProgressNote[];
   milestones: Milestone[];
+  /** Null while an order is still being scoped — an ordinary state, not an error. */
+  contract: ClientContract | null;
 };
 
 async function get<T>(path: string): Promise<T> {

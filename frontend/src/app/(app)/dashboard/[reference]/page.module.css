@@ -284,3 +284,20 @@
   font-size: 1.05rem;
   color: var(--ink);
 }
+
+/* Which document this section is quoting, and whether it is signed. Without
+   it "what was agreed" is an assertion with nothing behind it. */
+.agreedMeta {
+  margin-bottom: var(--sp-5);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+.deliverables {
+  margin-top: var(--sp-3);
+  padding-left: var(--sp-5);
+  font-size: 0.9375rem;
+  line-height: 1.75;
+  color: var(--ink);
+}
