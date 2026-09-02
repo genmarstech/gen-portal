@@ -24,6 +24,7 @@ from portal.models import (
     Blocker,
     Contract,
     DeliveryGate,
+    Incident,
     Invoice,
     Milestone,
     Notification,
@@ -36,6 +37,9 @@ from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
     DirectInvoiceSerializer,
+    IncidentSerializer,
+    IncidentWriteSerializer,
+    PostMortemSerializer,
     InvoiceSerializer,
     NotificationSerializer,
     InvoiceWriteSerializer,
@@ -867,4 +871,87 @@ class DemandView(StaffView):
 
     def get(self, request):
         return Response({"demand": selectors.demand()})
+
+
+class IncidentListView(StaffView):
+    """
+    Every incident, and raising one.
+
+    IsStaff, not CanCommit. Anyone here can be the person who notices something
+    is broken, and a gate on writing it down is a gate on finding out.
+    """
+
+    def get(self, request):
+        incidents = Incident.objects.select_related("raised_by").all()
+        state = request.query_params.get("status")
+        if state in Incident.Status.values:
+            incidents = incidents.filter(status=state)
+        return Response({"incidents": IncidentSerializer(incidents, many=True).data})
+
+    def post(self, request):
+        form = IncidentWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            incident = services.raise_incident(
+                actor=request.user,
+                title=form.validated_data["title"],
+                severity=form.validated_data["severity"],
+                started_at=form.validated_data["started_at"],
+                detected_at=form.validated_data["detected_at"],
+                summary=form.validated_data["summary"],
+                client_impact=form.validated_data["client_impact"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(
+            IncidentSerializer(incident).data, status=http.HTTP_201_CREATED
+        )
+
+
+class IncidentDetailView(StaffView):
+    """One incident, and writing its post-mortem."""
+
+    def get(self, request, pk: int):
+        incident = get_object_or_404(Incident, pk=pk)
+        return Response(IncidentSerializer(incident).data)
+
+    def patch(self, request, pk: int):
+        incident = get_object_or_404(Incident, pk=pk)
+        form = PostMortemSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        incident = services.write_post_mortem(
+            incident=incident,
+            actor=request.user,
+            what_happened=form.validated_data["what_happened"],
+            why=form.validated_data["why"],
+            prevention=form.validated_data["prevention"],
+        )
+        return Response(IncidentSerializer(incident).data)
+
+
+class IncidentStatusView(StaffView):
+    """Mitigate or close. The post-mortem guard lives in the service."""
+
+    def post(self, request, pk: int):
+        incident = get_object_or_404(Incident, pk=pk)
+        action = request.data.get("action")
+
+        try:
+            if action == "mitigate":
+                incident = services.mitigate_incident(
+                    incident=incident, actor=request.user
+                )
+            elif action == "close":
+                incident = services.close_incident(
+                    incident=incident, actor=request.user
+                )
+            else:
+                return Response(
+                    {"detail": "Say whether to mitigate or close it."},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(IncidentSerializer(incident).data)
 

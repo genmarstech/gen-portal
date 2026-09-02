@@ -54,6 +54,11 @@ urlpatterns = [
 
     path("ops/demand", views.DemandView.as_view(), name="ops-demand"),
 
+    # ---- incidents ----
+    path("ops/incidents", views.IncidentListView.as_view(), name="ops-incidents"),
+    path("ops/incidents/<int:pk>", views.IncidentDetailView.as_view(), name="ops-incident"),
+    path("ops/incidents/<int:pk>/status", views.IncidentStatusView.as_view(), name="ops-incident-status"),
+
     path("ops/enquiries", views.EnquiryListView.as_view(), name="ops-enquiries"),
     path("ops/enquiries/<int:pk>", views.EnquiryDetailView.as_view(), name="ops-enquiry"),
     path("ops/enquiries/<int:pk>/convert", views.EnquiryConvertView.as_view(), name="ops-convert"),

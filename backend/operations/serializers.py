@@ -16,6 +16,7 @@ from portal.models import (
     Contract,
     DeliveryGate,
     Enquiry,
+    Incident,
     Invoice,
     Milestone,
     Notification,
@@ -569,4 +570,69 @@ class NotificationSerializer(serializers.ModelSerializer):
         model = Notification
         fields = ["id", "kind", "title", "body", "url", "created_at", "read"]
         read_only_fields = fields
+
+
+class IncidentSerializer(serializers.ModelSerializer):
+    """An incident, as operations sees it."""
+
+    severity_label = serializers.CharField(source="get_severity_display", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    raised_by_name = serializers.SerializerMethodField()
+    # Seconds, formatted by the client. The gap between starting and being
+    # noticed is the number that says whether monitoring works.
+    undetected_seconds = serializers.SerializerMethodField()
+    has_post_mortem = serializers.BooleanField(read_only=True)
+    needs_post_mortem = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Incident
+        fields = [
+            "id", "reference", "title", "severity", "severity_label",
+            "status", "status_label",
+            "started_at", "detected_at", "mitigated_at", "resolved_at",
+            "undetected_seconds",
+            "summary", "client_impact",
+            "what_happened", "why", "prevention",
+            "has_post_mortem", "needs_post_mortem",
+            "raised_by_name", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_raised_by_name(self, incident: Incident) -> str:
+        who = incident.raised_by
+        return (who.full_name or who.email) if who else ""
+
+    def get_undetected_seconds(self, incident: Incident) -> int | None:
+        gap = incident.undetected_for()
+        return int(gap.total_seconds()) if gap is not None else None
+
+
+class IncidentWriteSerializer(serializers.Serializer):
+    title = serializers.CharField(max_length=200)
+    severity = serializers.ChoiceField(choices=Incident.Severity.choices)
+    started_at = serializers.DateTimeField()
+    detected_at = serializers.DateTimeField(
+        required=False, allow_null=True, default=None
+    )
+    summary = serializers.CharField()
+    client_impact = serializers.CharField(
+        required=False, allow_blank=True, default=""
+    )
+
+
+class PostMortemSerializer(serializers.Serializer):
+    """
+    Every field optional: the parts are written as they become known.
+
+    A post-mortem completed in one sitting on the day is a guess about the
+    cause. Letting the parts land separately is what makes them true.
+    """
+
+    what_happened = serializers.CharField(
+        required=False, allow_blank=True, default=None
+    )
+    why = serializers.CharField(required=False, allow_blank=True, default=None)
+    prevention = serializers.CharField(
+        required=False, allow_blank=True, default=None
+    )
 

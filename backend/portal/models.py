@@ -18,7 +18,7 @@ own release.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -1020,6 +1020,7 @@ class Notification(models.Model):
         INVOICE_VOIDED = "invoice_voided", "Invoice voided"
         ORDER_UPDATE = "order_update", "Order update"
         ENQUIRY_RECEIVED = "enquiry_received", "Enquiry received"
+        INCIDENT_RAISED = "incident_raised", "Incident raised"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1129,4 +1130,158 @@ class ServiceTier(models.Model):
     @property
     def included(self) -> list[str]:
         return [line.strip() for line in self.includes.splitlines() if line.strip()]
+
+
+class Incident(models.Model):
+    """
+    Something broke, and what we did about it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS EXISTS BECAUSE THE WEBSITE ALREADY PROMISES IT.
+
+    genmars.co.ke/approach publishes, to anyone who reads it:
+
+        "Every SEV-1 produces a written post-mortem: what happened, why, and
+         what prevents recurrence. Post-mortems are blameless, and they are
+         kept permanently."
+
+    Charter 04 §IV forbids anything untrue on a Genmars surface, and a promise
+    with no mechanism behind it is a claim we cannot keep on a day we are busy
+    — which is precisely the day it gets made. So the promise is enforced here
+    rather than remembered: services.close_incident REFUSES to close a SEV-1
+    whose post-mortem is unwritten.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── "BLAMELESS" IS A SCHEMA DECISION, NOT A VALUE STATEMENT ─────────────────
+
+    There is no `responsible_person` field, and there should never be one. A
+    column for who caused it turns the record into an accusation and guarantees
+    the next incident gets written up carefully rather than honestly. `raised_by`
+    and `closed_by` exist because someone has to be accountable for the WRITING;
+    they are not the cause.
+
+    ── "KEPT PERMANENTLY" MEANS THERE IS NO DELETE ─────────────────────────────
+
+    Closing is a status, never a removal. An incident that stops being findable
+    the moment it stops being urgent is how the same failure happens twice.
+    """
+
+    class Severity(models.TextChoices):
+        # Wording copied from the published table, deliberately. If these ever
+        # disagree with the website, the website is right and this is a bug.
+        SEV1 = "sev1", "SEV-1 — system down, or data at risk"
+        SEV2 = "sev2", "SEV-2 — major function broken, workaround exists"
+        SEV3 = "sev3", "SEV-3 — minor defect, cosmetic issue"
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        # Bleeding stopped, root cause not yet fixed. A real and common state,
+        # and collapsing it into "closed" is how a workaround becomes permanent.
+        MITIGATED = "mitigated", "Mitigated"
+        CLOSED = "closed", "Closed"
+
+    reference = models.CharField(max_length=32, unique=True, db_index=True)
+    title = models.CharField(
+        max_length=200, help_text="What broke, in the words someone would search for."
+    )
+    severity = models.CharField(max_length=8, choices=Severity.choices)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.OPEN
+    )
+
+    # ---- the timeline ----
+    #
+    # `started_at` is when the failure BEGAN, not when we noticed. The gap
+    # between the two is the most useful number in the whole record: it is how
+    # long a thing was broken with nobody looking, and it is the number that
+    # says whether monitoring works.
+    started_at = models.DateTimeField(
+        help_text="When it actually began — not when we noticed."
+    )
+    detected_at = models.DateTimeField(help_text="When a human first knew.")
+    mitigated_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    # ---- impact ----
+    summary = models.TextField(help_text="What was happening, plainly.")
+    client_impact = models.TextField(
+        blank=True,
+        help_text=(
+            "What clients could and could not do. Blank means none — say so "
+            "rather than leaving it to be assumed."
+        ),
+    )
+    affected = models.ManyToManyField(
+        Organisation,
+        blank=True,
+        related_name="incidents",
+        help_text="Named clients, where the impact was specific rather than general.",
+    )
+
+    # ---- the post-mortem ----
+    #
+    # Three fields because the published promise names three things. Splitting
+    # them matters: a single free-text box gets filled with what happened and
+    # stops, and "what prevents recurrence" is the only part that changes the
+    # future.
+    what_happened = models.TextField(blank=True, help_text="The sequence, in order.")
+    why = models.TextField(
+        blank=True,
+        help_text="The cause. Not the trigger — the reason the trigger mattered.",
+    )
+    prevention = models.TextField(
+        blank=True,
+        help_text="What now makes this not happen again, and where that lives.",
+    )
+
+    raised_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="incidents_raised",
+        limit_choices_to={"is_staff": True},
+    )
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="incidents_closed",
+        limit_choices_to={"is_staff": True},
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-started_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.reference} — {self.title}"
+
+    @property
+    def is_open(self) -> bool:
+        return self.status != self.Status.CLOSED
+
+    @property
+    def needs_post_mortem(self) -> bool:
+        """A SEV-1 with any of the three parts unwritten."""
+        return self.severity == self.Severity.SEV1 and not self.has_post_mortem
+
+    @property
+    def has_post_mortem(self) -> bool:
+        return all(
+            field.strip() for field in (self.what_happened, self.why, self.prevention)
+        )
+
+    def undetected_for(self) -> timedelta | None:
+        """
+        How long it ran before anybody knew.
+
+        The number that says whether monitoring works, which is why it is
+        computed rather than typed: a field would be filled in optimistically.
+        """
+        if not self.started_at or not self.detected_at:
+            return None
+        return self.detected_at - self.started_at
 

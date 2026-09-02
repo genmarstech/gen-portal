@@ -25,6 +25,7 @@ from portal.models import (
     Contract,
     DeliveryGate,
     Enquiry,
+    Incident,
     Invoice,
     Milestone,
     MpesaPayment,
@@ -1633,3 +1634,206 @@ def record_mpesa_result(parsed: dict) -> MpesaPayment | None:
 
     log.info("mpesa %s paid %s", payment.receipt, invoice.number)
     return payment
+
+
+# ── incidents ────────────────────────────────────────────────────────────────
+
+
+def next_incident_reference(today: date | None = None) -> str:
+    year = (today or timezone.localdate()).year
+    prefix = f"{REFERENCE_PREFIX}-INC-{year}-"
+    used = Incident.objects.filter(reference__startswith=prefix).count()
+    return f"{prefix}{used + 1:04d}"
+
+
+@transaction.atomic
+def raise_incident(
+    *,
+    actor: User,
+    title: str,
+    severity: str,
+    started_at,
+    detected_at=None,
+    summary: str = "",
+    client_impact: str = "",
+) -> Incident:
+    """
+    Record that something broke.
+
+    ── WHY started_at IS REQUIRED AND SEPARATE FROM detected_at ────────────────
+
+    They are almost never the same moment, and the gap between them is the most
+    useful number in the record: it is how long the failure ran with nobody
+    looking. Collapsing them into one field loses exactly the measurement that
+    tells you whether monitoring works — and a system with no such measurement
+    will keep believing it does.
+
+    Detection defaults to now, because the usual case is writing this up on
+    finding out. Start time never defaults; it has to be thought about.
+    """
+    title = title.strip()
+    if not title:
+        raise OperationsError("Say what broke.", field="title")
+
+    if severity not in Incident.Severity.values:
+        raise OperationsError("That is not a severity we use.", field="severity")
+
+    if started_at is None:
+        raise OperationsError(
+            "When did it start? Not when you noticed — the gap between the two "
+            "is how long it ran unseen, and it is the point of recording it.",
+            field="started_at",
+        )
+
+    detected_at = detected_at or timezone.now()
+    if detected_at < started_at:
+        raise OperationsError(
+            "It cannot have been detected before it began.", field="detected_at"
+        )
+
+    summary = summary.strip()
+    if not summary:
+        raise OperationsError(
+            "Describe what was happening. A title alone is not a record.",
+            field="summary",
+        )
+
+    for attempt in range(5):
+        try:
+            with transaction.atomic():
+                incident = Incident.objects.create(
+                    reference=next_incident_reference(),
+                    title=title,
+                    severity=severity,
+                    started_at=started_at,
+                    detected_at=detected_at,
+                    summary=summary,
+                    client_impact=client_impact.strip(),
+                    raised_by=actor,
+                )
+            break
+        except IntegrityError:
+            if attempt == 4:
+                raise
+    else:  # pragma: no cover - the loop always breaks or raises
+        raise OperationsError("Could not allocate an incident reference.")
+
+    _notify(
+        users=_staff_recipients(),
+        audience=Notification.Audience.STAFF,
+        kind=Notification.Kind.INCIDENT_RAISED,
+        title=f"{incident.get_severity_display().split(' — ')[0]}: {incident.title}",
+        body=incident.summary[:200],
+        url="/incidents",
+    )
+
+    log.info(
+        "incident %s raised (%s) by %s", incident.reference, severity, actor.email
+    )
+    return incident
+
+
+@transaction.atomic
+def write_post_mortem(
+    *,
+    incident: Incident,
+    actor: User,
+    what_happened: str | None = None,
+    why: str | None = None,
+    prevention: str | None = None,
+) -> Incident:
+    """
+    Fill in any of the three parts. They can be written as they become known.
+
+    Deliberately partial: a post-mortem written in one sitting on the day of the
+    incident is a guess about the cause. Letting the parts land separately is
+    what makes it likely they are true.
+    """
+    fields = []
+    for name, value in (
+        ("what_happened", what_happened),
+        ("why", why),
+        ("prevention", prevention),
+    ):
+        if value is not None:
+            setattr(incident, name, value.strip())
+            fields.append(name)
+
+    if not fields:
+        return incident
+
+    incident.save(update_fields=fields)
+    log.info("post-mortem updated on %s by %s", incident.reference, actor.email)
+    return incident
+
+
+@transaction.atomic
+def close_incident(*, incident: Incident, actor: User, resolved_at=None) -> Incident:
+    """
+    Close it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE GUARD THAT MAKES A PUBLISHED PROMISE TRUE.
+
+    genmars.co.ke/approach tells the public that every SEV-1 produces a written
+    post-mortem. A promise kept by memory is kept until the first busy week, and
+    the busy week is exactly when the SEV-1 happens.
+
+    So a SEV-1 cannot be closed until all three parts are written. This will be
+    resented at 2am by whoever wants the board clear, and that is the moment it
+    is doing its job: the incident is still closable the instant somebody writes
+    down what prevents it recurring, which is the only part that changes
+    anything.
+
+    SEV-2 and SEV-3 close freely. The website does not promise a post-mortem for
+    those, and a rule that applies to everything gets worked around.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    if incident.status == Incident.Status.CLOSED:
+        raise OperationsError(f"{incident.reference} is already closed.")
+
+    if incident.needs_post_mortem:
+        missing = [
+            label
+            for label, value in (
+                ("what happened", incident.what_happened),
+                ("why", incident.why),
+                ("what prevents recurrence", incident.prevention),
+            )
+            if not value.strip()
+        ]
+        raise OperationsError(
+            f"{incident.reference} is a SEV-1 and its post-mortem is missing "
+            + ", ".join(missing)
+            + ". genmars.co.ke/approach promises every SEV-1 gets one, so this "
+            "cannot close without it.",
+        )
+
+    incident.status = Incident.Status.CLOSED
+    incident.resolved_at = resolved_at or timezone.now()
+    incident.closed_by = actor
+    incident.save(update_fields=["status", "resolved_at", "closed_by"])
+
+    log.info("incident %s closed by %s", incident.reference, actor.email)
+    return incident
+
+
+@transaction.atomic
+def mitigate_incident(*, incident: Incident, actor: User, mitigated_at=None) -> Incident:
+    """
+    The bleeding has stopped; the cause has not been fixed.
+
+    A real state and a common one. Collapsing it into "closed" is how a
+    workaround quietly becomes the permanent solution.
+    """
+    if incident.status != Incident.Status.OPEN:
+        raise OperationsError(
+            f"{incident.reference} is {incident.get_status_display().lower()}."
+        )
+
+    incident.status = Incident.Status.MITIGATED
+    incident.mitigated_at = mitigated_at or timezone.now()
+    incident.save(update_fields=["status", "mitigated_at"])
+    log.info("incident %s mitigated by %s", incident.reference, actor.email)
+    return incident
+
