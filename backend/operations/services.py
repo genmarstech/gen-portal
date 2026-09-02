@@ -24,6 +24,7 @@ from portal.models import (
     Blocker,
     Contract,
     DeliveryGate,
+    ActivityLog,
     Enquiry,
     Incident,
     Invoice,
@@ -34,6 +35,7 @@ from portal.models import (
     PaymentRecord,
     ProgressNote,
     Service,
+    ServiceTier,
 )
 
 log = logging.getLogger(__name__)
@@ -873,6 +875,45 @@ def set_staff_active(*, actor: User, user: User, active: bool) -> User:
 
 
 
+
+# ── the activity log ─────────────────────────────────────────────────────────
+
+
+def record(
+    *,
+    actor: User | None,
+    action: str,
+    summary: str,
+    subject: str = "",
+    organisation: Organisation | None = None,
+    **detail,
+) -> None:
+    """
+    Write one line to the log. Append-only; see ActivityLog.
+
+    NEVER RAISES INTO THE CALLER. An invoice that was issued correctly must not
+    be rolled back because the log could not be written — the invoice is the
+    fact, the log is the account of it. A failure here is logged to the journal
+    and swallowed.
+
+    NEVER PASS A SECRET IN `detail`. Verification codes, reset codes, keys,
+    passkeys. It is a free-form JSON field written to disk and read by everyone
+    with operations access, which is exactly the shape of the mistake.
+    """
+    try:
+        ActivityLog.objects.create(
+            actor=actor,
+            actor_label=(actor.full_name or actor.email) if actor else "System",
+            action=action,
+            subject=subject[:120],
+            summary=summary[:300],
+            detail=detail,
+            organisation=organisation,
+        )
+    except Exception:  # pragma: no cover - defensive, see the note above
+        log.exception("could not write an activity entry for %s", action)
+
+
 # ── notifications ────────────────────────────────────────────────────────────
 #
 # Deliberately small and deliberately dumb. A notification points at something
@@ -1118,6 +1159,15 @@ def issue_invoice(
         milestone.save(update_fields=["status"])
 
     notify_invoice_issued(invoice)
+    record(
+        actor=actor,
+        action=ActivityLog.Action.INVOICE_ISSUED,
+        subject=invoice.number,
+        organisation=order.organisation,
+        summary=f"{invoice.number} issued to {order.organisation.name} for KES {invoice.amount_kes:,.2f}",
+        order=order.reference,
+        amount_kes=str(invoice.amount_kes),
+    )
 
     log.info("invoice %s issued for %s by %s", invoice.number, order.reference, actor.email)
     return invoice
@@ -1224,6 +1274,15 @@ def issue_direct_invoice(
         raise OperationsError("Could not allocate an invoice number.")
 
     notify_invoice_issued(invoice)
+    record(
+        actor=actor,
+        action=ActivityLog.Action.INVOICE_ISSUED,
+        subject=invoice.number,
+        organisation=organisation,
+        summary=f"{invoice.number} issued to {organisation.name} for KES {invoice.amount_kes:,.2f} (no order)",
+        amount_kes=str(invoice.amount_kes),
+        direct=True,
+    )
 
     log.info(
         "direct invoice %s issued to %s by %s",
@@ -1363,6 +1422,25 @@ def record_payment(
             invoice.milestone.mark_paid()
 
     notify_payment_recorded(invoice, payment, settled=settled)
+    record(
+        actor=actor,
+        action=(
+            ActivityLog.Action.INVOICE_PAID
+            if settled
+            else ActivityLog.Action.PAYMENT_RECORDED
+        ),
+        subject=invoice.number,
+        organisation=invoice.organisation,
+        summary=(
+            f"KES {amount_kes:,.2f} recorded against {invoice.number}"
+            + (" — settled in full" if settled else f", KES {invoice.balance:,.2f} outstanding")
+        ),
+        method=method,
+        # The payment reference, not a secret: it is on the client's statement
+        # and on the invoice already.
+        reference=reference,
+        amount_kes=str(amount_kes),
+    )
 
     log.info(
         "payment of %s recorded on %s by %s (%s)",
@@ -1414,6 +1492,14 @@ def void_invoice(*, invoice: Invoice, actor: User, reason: str) -> Invoice:
         invoice.milestone.save(update_fields=["status"])
 
     notify_invoice_voided(invoice)
+    record(
+        actor=actor,
+        action=ActivityLog.Action.INVOICE_VOIDED,
+        subject=invoice.number,
+        organisation=invoice.organisation,
+        summary=f"{invoice.number} withdrawn: {reason}",
+        amount_kes=str(invoice.amount_kes),
+    )
 
     log.info("invoice %s voided by %s: %s", invoice.number, actor.email, reason)
     return invoice
@@ -1727,6 +1813,14 @@ def raise_incident(
         url="/incidents",
     )
 
+    record(
+        actor=actor,
+        action=ActivityLog.Action.INCIDENT_RAISED,
+        subject=incident.reference,
+        summary=f"{incident.get_severity_display().split(' — ')[0]} raised: {incident.title}",
+        severity=severity,
+    )
+
     log.info(
         "incident %s raised (%s) by %s", incident.reference, severity, actor.email
     )
@@ -1814,6 +1908,14 @@ def close_incident(*, incident: Incident, actor: User, resolved_at=None) -> Inci
     incident.closed_by = actor
     incident.save(update_fields=["status", "resolved_at", "closed_by"])
 
+    record(
+        actor=actor,
+        action=ActivityLog.Action.INCIDENT_CLOSED,
+        subject=incident.reference,
+        summary=f"{incident.reference} closed: {incident.title}",
+        severity=incident.severity,
+    )
+
     log.info("incident %s closed by %s", incident.reference, actor.email)
     return incident
 
@@ -1836,4 +1938,82 @@ def mitigate_incident(*, incident: Incident, actor: User, mitigated_at=None) -> 
     incident.save(update_fields=["status", "mitigated_at"])
     log.info("incident %s mitigated by %s", incident.reference, actor.email)
     return incident
+
+
+# ── catalogue pricing ────────────────────────────────────────────────────────
+
+
+@transaction.atomic
+def set_tier_price(
+    *,
+    tier: ServiceTier,
+    actor: User,
+    price_kes: Decimal | None,
+    is_from: bool | None = None,
+) -> ServiceTier:
+    """
+    Change what a tier costs.
+
+    ── WHY THIS IS A SERVICE AND NOT A SERIALIZER SAVE ─────────────────────────
+
+    A price is the most consequential editable field in the system. It is
+    quoted on a public page, it pre-fills the budget on an order, and it ends
+    up copied into an invoice that somebody pays. So the change is logged with
+    the old and new values, permanently, by whoever made it — which is the only
+    way to answer "when did this become 75,000" six months later.
+
+    The published price is deliberately NOT touched. genmars.co.ke is a static
+    export on its own deploy cycle; this changes the portal now and the website
+    when someone ships it. ServiceTier.differs_from_website is how that gap is
+    surfaced rather than hidden.
+    """
+    if price_kes is not None:
+        price_kes = Decimal(price_kes)
+        if price_kes <= 0:
+            raise OperationsError(
+                "A tier has to cost something. A free tier is a different "
+                "conversation from a zero-priced one.",
+                field="price_kes",
+            )
+
+    before = tier.price_kes
+    changed = []
+
+    if price_kes != before:
+        tier.price_kes = price_kes
+        changed.append("price_kes")
+
+    if is_from is not None and is_from != tier.is_from:
+        tier.is_from = is_from
+        changed.append("is_from")
+
+    if not changed:
+        return tier
+
+    tier.save(update_fields=changed)
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.PRICE_CHANGED,
+        subject=f"{tier.service.slug}/{tier.slug}",
+        summary=(
+            f"{tier.service.name} — {tier.name}: "
+            f"KES {before:,.2f} to KES {tier.price_kes:,.2f}"
+            if before is not None and tier.price_kes is not None
+            else f"{tier.service.name} — {tier.name} price updated"
+        ),
+        was=str(before) if before is not None else None,
+        now=str(tier.price_kes) if tier.price_kes is not None else None,
+        website_says=(
+            str(tier.published_price_kes)
+            if tier.published_price_kes is not None
+            else None
+        ),
+    )
+
+    log.info(
+        "tier %s/%s priced %s -> %s by %s",
+        tier.service.slug, tier.slug, before, tier.price_kes, actor.email,
+    )
+    return tier
 

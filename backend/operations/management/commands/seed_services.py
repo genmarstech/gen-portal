@@ -566,12 +566,19 @@ class Command(BaseCommand):
         are not globally unique, because "enterprise" is a tier of several
         services and "basic" of two.
 
-        Unlike the scope wording above, tiers ARE overwritten by default. That
-        wording is contract scaffolding staff are meant to edit; a tier is a
-        published price, and a price in here that disagrees with the website is
-        the bug this command exists to prevent. The only thing --force changes
-        is whether an unrecognised extra tier is removed, because deleting a
-        row somebody added deliberately should take a deliberate flag.
+        The tier WORDING is refreshed from the website every run. The PRICE is
+        not: operations can edit prices now, and overwriting a deliberate
+        change on every deploy would make that screen a lie.
+
+        What the website publishes is stored separately, in
+        published_price_kes, and the operations screen shows both when they
+        disagree. That disagreement is the ordinary state between changing a
+        price and shipping the static site — it has to be visible rather than
+        resolved by whichever process ran last.
+
+        --force only controls whether an unrecognised extra tier is removed,
+        because deleting a row somebody added deliberately should take a
+        deliberate flag.
         """
         self.stdout.write("\nTiers")
         written = 0
@@ -592,14 +599,26 @@ class Command(BaseCommand):
             for entry in tiers:
                 fields = dict(entry)
                 price = fields.pop("price_kes")
-                ServiceTier.objects.update_or_create(
+                slug = fields.pop("slug")
+                published = Decimal(price) if price else None
+
+                tier, created = ServiceTier.objects.get_or_create(
                     service=service,
-                    slug=fields.pop("slug"),
-                    defaults={
-                        **fields,
-                        "price_kes": Decimal(price) if price else None,
-                    },
+                    slug=slug,
+                    defaults={**fields, "price_kes": published,
+                              "published_price_kes": published},
                 )
+                if not created:
+                    # published_price_kes always tracks the website — that is
+                    # what this field is for. price_kes is NOT overwritten,
+                    # because operations can now edit it and clobbering a
+                    # deliberate change on every deploy would make the screen
+                    # a lie. The two disagreeing is shown, not silently
+                    # resolved: see ServiceTier.differs_from_website.
+                    for field, value in fields.items():
+                        setattr(tier, field, value)
+                    tier.published_price_kes = published
+                    tier.save()
                 written += 1
 
             known = {t["slug"] for t in tiers}

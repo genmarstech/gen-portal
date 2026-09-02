@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from accounts.mail_health import mail_health
 from accounts.models import Membership, Organisation, User
 from portal.models import (
+    ActivityLog,
     Blocker,
     Contract,
     DeliveryGate,
@@ -31,12 +32,16 @@ from portal.models import (
     Order,
     ProgressNote,
     Service,
+    ServiceTier,
 )
 
 from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
+    ActivitySerializer,
     DirectInvoiceSerializer,
+    TierPriceSerializer,
+    TierSerializer,
     IncidentSerializer,
     IncidentWriteSerializer,
     PostMortemSerializer,
@@ -954,4 +959,71 @@ class IncidentStatusView(StaffView):
             return _refuse(exc)
 
         return Response(IncidentSerializer(incident).data)
+
+
+class TierListView(StaffView):
+    """Every tier in the catalogue, with what the website publishes beside it."""
+
+    def get(self, request):
+        tiers = ServiceTier.objects.select_related("service").filter(
+            service__is_active=True
+        )
+        return Response({"tiers": TierSerializer(tiers, many=True).data})
+
+
+class TierPriceView(StaffView):
+    """
+    Change a tier price.
+
+    CanCommit. Charter 02 §I keeps pricing with the founder and the commercial
+    partners, and this is pricing in the most literal sense — the number a
+    client is quoted on a public page and later billed.
+    """
+
+    permission_classes = [CanCommit]
+
+    def patch(self, request, pk: int):
+        tier = get_object_or_404(ServiceTier, pk=pk)
+        form = TierPriceSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            tier = services.set_tier_price(
+                tier=tier,
+                actor=request.user,
+                price_kes=form.validated_data["price_kes"],
+                is_from=form.validated_data["is_from"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(TierSerializer(tier).data)
+
+
+class ActivityView(StaffView):
+    """
+    The log. Read-only, and there is no other verb — see ActivityLog.
+
+    Capped rather than paginated for now: this is a "what happened recently"
+    screen, and the day it needs paging is the day it needs filters more.
+    """
+
+    def get(self, request):
+        entries = ActivityLog.objects.select_related("organisation").all()
+
+        action = request.query_params.get("action")
+        if action:
+            entries = entries.filter(action=action)
+
+        subject = request.query_params.get("subject")
+        if subject:
+            entries = entries.filter(subject__icontains=subject)
+
+        return Response(
+            {
+                "activity": ActivitySerializer(entries[:200], many=True).data,
+                "actions": [
+                    {"value": value, "label": label}
+                    for value, label in ActivityLog.Action.choices
+                ],
+            }
+        )
 

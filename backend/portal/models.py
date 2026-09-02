@@ -1107,6 +1107,27 @@ class ServiceTier(models.Model):
         help_text='Shown as "from KES X" — a floor, not a quote.',
     )
 
+    # ── WHAT THE WEBSITE CURRENTLY SAYS ─────────────────────────────────────
+    #
+    # price_kes is the working price and operations can edit it. This one is
+    # what genmars.co.ke actually publishes, written only by seed_services from
+    # company.ts.
+    #
+    # They exist separately because the website is a static export on a
+    # different deploy cycle: a price changed here is live in the portal
+    # immediately and still wrong on the public page until someone ships the
+    # site. Storing both makes that gap VISIBLE — operations shows "the website
+    # still says X" — instead of leaving a client quoted one number on the page
+    # and another in the portal, which is the failure this pair exists to
+    # prevent.
+    published_price_kes = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="What genmars.co.ke publishes. Set by seed_services, never by hand.",
+    )
+
     lead = models.CharField(
         max_length=200, help_text="One line on who this size is for."
     )
@@ -1130,6 +1151,19 @@ class ServiceTier(models.Model):
     @property
     def included(self) -> list[str]:
         return [line.strip() for line in self.includes.splitlines() if line.strip()]
+
+    @property
+    def differs_from_website(self) -> bool:
+        """
+        The working price and the published price disagree.
+
+        Not an error — it is the ordinary state between changing a price and
+        shipping the site. It has to be visible, because the window is exactly
+        when a client can be quoted two different numbers.
+        """
+        if self.published_price_kes is None:
+            return False
+        return self.price_kes != self.published_price_kes
 
 
 class Incident(models.Model):
@@ -1284,4 +1318,120 @@ class Incident(models.Model):
         if not self.started_at or not self.detected_at:
             return None
         return self.detected_at - self.started_at
+
+
+class ActivityLog(models.Model):
+    """
+    Who did what, in order.
+
+    ══════════════════════════════════════════════════════════════════════════
+    APPEND-ONLY. THERE IS NO EDIT AND NO DELETE.
+
+    A log somebody can amend is not a log, it is a draft. Nothing in this
+    codebase updates a row here after writing it, and nothing should: if an
+    entry is wrong, the correction is another entry saying so.
+
+    That also means this is not the place for state. The invoice knows whether
+    it is paid; this knows that on Tuesday at 14:02 somebody recorded a payment
+    against it. Those are different facts and the second one survives the first
+    being changed.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHAT MUST NEVER BE WRITTEN HERE ─────────────────────────────────────────
+
+    Verification codes, reset codes, API keys, M-Pesa passkeys, passwords or
+    anything derived from them. A log is the place secrets go to live forever
+    on disk, be read by everyone with operations access, and end up in a
+    backup. `detail` is a free-form JSON field and is therefore the exact hole
+    this warning exists for.
+
+    Amounts, references, names and email addresses are fine — they are already
+    visible to anyone who can read this table.
+
+    ── WHY A STRING SUBJECT AND NOT A GENERIC FOREIGN KEY ──────────────────────
+
+    A GenericForeignKey would cascade or dangle when the thing it points at
+    changes, and the whole value of a log is that it still reads correctly
+    after the subject is gone. "GM-INV-2026-0004" stays meaningful when the
+    invoice does not. The FKs below are for FILTERING, are nullable, and are
+    never what the entry means.
+    """
+
+    class Action(models.TextChoices):
+        # Money
+        INVOICE_ISSUED = "invoice.issued", "Invoice issued"
+        INVOICE_PAID = "invoice.paid", "Invoice settled"
+        PAYMENT_RECORDED = "payment.recorded", "Payment recorded"
+        INVOICE_VOIDED = "invoice.voided", "Invoice voided"
+        # Agreements
+        CONTRACT_ISSUED = "contract.issued", "Statement of work issued"
+        CONTRACT_SIGNED = "contract.signed", "Statement of work signed"
+        CONTRACT_VOIDED = "contract.voided", "Statement of work voided"
+        # Pipeline
+        ENQUIRY_CONVERTED = "enquiry.converted", "Enquiry converted to an order"
+        ENQUIRY_DECLINED = "enquiry.declined", "Enquiry declined"
+        # Catalogue and commercial
+        PRICE_CHANGED = "price.changed", "Tier price changed"
+        OFFER_SENT = "offer.sent", "Offer sent to a client"
+        OFFER_ACCEPTED = "offer.accepted", "Offer accepted"
+        OFFER_WITHDRAWN = "offer.withdrawn", "Offer withdrawn"
+        # People
+        STAFF_INVITED = "staff.invited", "Staff member invited"
+        STAFF_ROLE_CHANGED = "staff.role_changed", "Staff role changed"
+        STAFF_DEACTIVATED = "staff.deactivated", "Staff access revoked"
+        ACCESS_GRANTED = "access.granted", "Client access granted"
+        ACCESS_REVOKED = "access.revoked", "Client access revoked"
+        # Work
+        TASK_ASSIGNED = "task.assigned", "Task assigned"
+        TASK_DONE = "task.done", "Task completed"
+        # Reliability
+        INCIDENT_RAISED = "incident.raised", "Incident raised"
+        INCIDENT_CLOSED = "incident.closed", "Incident closed"
+
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="activity",
+        help_text="Null where the system acted — an M-Pesa callback, a timer.",
+    )
+    # Kept alongside the FK because SET_NULL loses the name, and "somebody
+    # voided this invoice" is a materially worse record than "Asha did".
+    actor_label = models.CharField(max_length=200, blank=True)
+
+    action = models.CharField(max_length=40, choices=Action.choices, db_index=True)
+    subject = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="The reference this is about — GM-INV-2026-0004, GM-2026-0001.",
+    )
+    summary = models.CharField(
+        max_length=300, help_text="One line, readable without the detail."
+    )
+    detail = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Structured extras. NEVER a secret — see this model's docstring.",
+    )
+
+    # For filtering only. Never what the entry means — see the docstring.
+    organisation = models.ForeignKey(
+        Organisation,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="activity",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["-created_at", "action"], name="activity_feed_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.created_at:%Y-%m-%d %H:%M} {self.action} {self.subject}"
 

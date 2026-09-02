@@ -73,22 +73,40 @@ def test_running_it_twice_changes_nothing(seeded):
     assert before == after
 
 
-def test_a_price_corrected_on_the_website_is_pushed_through(seeded):
+def test_an_operations_price_edit_survives_a_reseed(seeded):
     """
-    Tiers are overwritten on every run, unlike the scope wording.
-
-    That wording is contract scaffolding staff are meant to edit. A tier is a
-    published price, and one in here that disagrees with genmars.co.ke is the
-    exact bug — a client quoted one number and billed another — that this
-    command exists to prevent.
+    Prices are editable in operations now, so the seed must not clobber them.
+    Overwriting a deliberate change on every deploy would make that screen a
+    lie about what a client will be quoted.
     """
     from decimal import Decimal
 
     tier = ServiceTier.objects.get(service__slug="implementation", slug="essential-setup")
-    original = tier.price_kes
-    ServiceTier.objects.filter(pk=tier.pk).update(price_kes=Decimal("1.00"))
+    ServiceTier.objects.filter(pk=tier.pk).update(price_kes=Decimal("30000.00"))
 
     call_command("seed_services", verbosity=0)
 
     tier.refresh_from_db()
-    assert tier.price_kes == original
+    assert tier.price_kes == Decimal("30000.00")
+
+
+def test_the_website_price_is_still_tracked_separately(seeded):
+    """
+    The seed owns published_price_kes — what genmars.co.ke actually says. That
+    is the half that must keep following the website, so the gap between the
+    two can be shown rather than guessed at.
+    """
+    from decimal import Decimal
+
+    tier = ServiceTier.objects.get(service__slug="implementation", slug="essential-setup")
+    assert tier.published_price_kes == Decimal("25000.00")
+    assert tier.differs_from_website is False
+
+    ServiceTier.objects.filter(pk=tier.pk).update(price_kes=Decimal("30000.00"))
+    tier.refresh_from_db()
+
+    # The ordinary state between changing a price and shipping the static site.
+    # It is not an error; it is the window in which a client could be quoted
+    # two different numbers, which is why it is surfaced.
+    assert tier.differs_from_website is True
+    assert tier.published_price_kes == Decimal("25000.00")

@@ -12,6 +12,7 @@ from rest_framework import serializers
 
 from accounts.models import Membership, Organisation, User
 from portal.models import (
+    ActivityLog,
     Blocker,
     Contract,
     DeliveryGate,
@@ -24,6 +25,7 @@ from portal.models import (
     PaymentRecord,
     ProgressNote,
     Service,
+    ServiceTier,
 )
 
 
@@ -635,4 +637,49 @@ class PostMortemSerializer(serializers.Serializer):
     prevention = serializers.CharField(
         required=False, allow_blank=True, default=None
     )
+
+
+class TierSerializer(serializers.ModelSerializer):
+    """A tier as operations sees it, including where it disagrees with the site."""
+
+    price_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    published_price_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    differs_from_website = serializers.BooleanField(read_only=True)
+    includes = serializers.ListField(source="included", read_only=True)
+    service_slug = serializers.CharField(source="service.slug", read_only=True)
+    service_name = serializers.CharField(source="service.name", read_only=True)
+    price_unit = serializers.CharField(source="service.price_unit", read_only=True)
+
+    class Meta:
+        model = ServiceTier
+        fields = [
+            "id", "slug", "name", "price_kes", "published_price_kes",
+            "differs_from_website", "is_from", "lead", "includes",
+            "service_slug", "service_name", "price_unit", "position",
+        ]
+        read_only_fields = fields
+
+
+class TierPriceSerializer(serializers.Serializer):
+    price_kes = serializers.DecimalField(max_digits=12, decimal_places=2)
+    is_from = serializers.BooleanField(required=False, allow_null=True, default=None)
+
+
+class ActivitySerializer(serializers.ModelSerializer):
+    action_label = serializers.CharField(source="get_action_display", read_only=True)
+    organisation_name = serializers.CharField(
+        source="organisation.name", read_only=True, default=None
+    )
+
+    class Meta:
+        model = ActivityLog
+        fields = [
+            "id", "action", "action_label", "actor_label", "subject",
+            "summary", "detail", "organisation_name", "created_at",
+        ]
+        read_only_fields = fields
 
