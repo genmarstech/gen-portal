@@ -42,6 +42,10 @@ BACKUP_RECIPIENT="${BACKUP_RECIPIENT:-}"
 GNUPGHOME="${GNUPGHOME:-/opt/gen-portal/.gnupg}"
 export GNUPGHOME
 
+# Encrypted copies wait here to be collected. Separate from ./backups so a
+# pull can take the whole directory without also taking the plaintext archive.
+OFFSITE_DIR="${OFFSITE_DIR:-./backups/offsite}"
+
 mkdir -p "$BACKUP_DIR"
 
 # ── PERMISSIONS ─────────────────────────────────────────────────────────────
@@ -77,45 +81,93 @@ if [ ! -s "$target" ]; then
     exit 1
 fi
 
-# Inside the container: the process that created it is the one that owns it.
-# `|| true` so a permission problem is loud in the listing rather than fatal —
-# an unreadable backup is worse than a readable one.
+# ── OWNERSHIP, THEN PERMISSIONS, AND IN THAT ORDER ──────────────────────────
+#
+# pg_dump runs inside the container, so the file lands owned by root as the
+# container sees it. Mode 600 then makes it unreadable to whoever is running
+# this script — which is fine under the systemd timer, because that is root,
+# and broken every other time. "Works only when run by root" is the kind of
+# thing that is discovered during an incident.
+#
+# So the file is handed to whoever owns the backups directory on the host, and
+# only then locked down. Both are done from inside the container, which is the
+# only side that can: it is root there.
+owner="$(stat -c '%u:%g' "$BACKUP_DIR")"
+docker compose exec -T "$DB_SERVICE" chown "$owner" "/backups/${name}" >/dev/null 2>&1 || true
 docker compose exec -T "$DB_SERVICE" chmod 600 "/backups/${name}" >/dev/null 2>&1 || true
 
 # Every dump, not just tonight's. These were mode 644 for the first weeks of
 # the company; fixing only new ones would leave the old ones exposed forever.
 docker compose exec -T "$DB_SERVICE" \
-    sh -c 'chmod 600 /backups/portal-*.dump /backups/portal-*.dump.gpg 2>/dev/null' \
+    sh -c "chown ${owner} /backups/portal-*.dump 2>/dev/null; \
+           chmod 600 /backups/portal-*.dump 2>/dev/null" \
     >/dev/null 2>&1 || true
 
-# ── encrypt, if we have somewhere to encrypt to ─────────────────────────────
+# ── an encrypted COPY, for leaving the building ─────────────────────────────
 #
-# The plaintext is removed only after gpg reports success AND the ciphertext
-# exists and is non-empty. Deleting first would turn one bad gpg invocation
-# into a night with no backup at all.
+# ══════════════════════════════════════════════════════════════════════════
+# WHY THE LOCAL DUMP STAYS IN CLEAR AND ONLY THE COPY IS ENCRYPTED.
+#
+# The first version of this encrypted in place and deleted the plaintext. That
+# is wrong here, and the reason is the restore test.
+#
+# This host holds the PUBLIC half of the key only — deliberately, so that
+# taking the server does not hand over the archive of every earlier state of
+# the database. But it means the host cannot decrypt, and therefore cannot run
+# an automated weekly restore against an encrypted archive. Encrypting
+# everything would have quietly traded a working restore test for a stronger
+# threat model, and an unverified backup is not a backup.
+#
+# So: the local archive stays plaintext at mode 600, where restore-test.sh
+# verifies the real bytes every week; and a separate encrypted copy is made for
+# anything that leaves this machine.
+#
+# The trade is honest. Local plaintext only matters to somebody who already has
+# this host — and they already have the live database sitting next to it. The
+# risk encryption actually addresses is a backup copy in somebody else's
+# storage, on a stolen laptop, or in a bucket that turned out to be public.
+# That is precisely the copy that is encrypted.
+# ══════════════════════════════════════════════════════════════════════════
+
 if [ -n "$BACKUP_RECIPIENT" ]; then
-    echo "==> Encrypting to ${BACKUP_RECIPIENT}"
-    if gpg --batch --yes --trust-model always \
-           --recipient "$BACKUP_RECIPIENT" \
-           --output "${target}.gpg" --encrypt "$target"; then
-        if [ -s "${target}.gpg" ]; then
-            docker compose exec -T "$DB_SERVICE" \
-                chmod 600 "/backups/${name}.gpg" >/dev/null 2>&1 || true
-            rm -f "$target" 2>/dev/null || \
-                docker compose exec -T "$DB_SERVICE" rm -f "/backups/${name}" \
-                >/dev/null 2>&1
-            target="${target}.gpg"
-            name="${name}.gpg"
-        else
-            echo "FATAL: gpg produced an empty file. Keeping the plaintext dump." >&2
-            rm -f "${target}.gpg"
-            exit 1
-        fi
-    else
-        echo "FATAL: encryption failed. Keeping the plaintext dump so tonight" >&2
-        echo "       still has a backup, but fix this — it is sitting in clear." >&2
+    mkdir -p "$OFFSITE_DIR"
+    chmod 700 "$OFFSITE_DIR" 2>/dev/null || true
+
+    echo "==> Encrypting a copy for off-box, to ${BACKUP_RECIPIENT}"
+    if ! gpg --batch --yes --trust-model always \
+             --recipient "$BACKUP_RECIPIENT" \
+             --output "${OFFSITE_DIR}/${name}.gpg" --encrypt "$target"; then
+        echo "FATAL: could not encrypt the off-box copy. The local dump is" >&2
+        echo "       fine; nothing should leave this host until this works." >&2
         exit 1
     fi
+
+    if [ ! -s "${OFFSITE_DIR}/${name}.gpg" ]; then
+        echo "FATAL: gpg produced an empty file." >&2
+        rm -f "${OFFSITE_DIR}/${name}.gpg"
+        exit 1
+    fi
+    chmod 600 "${OFFSITE_DIR}/${name}.gpg"
+
+    # ── prove it is addressed to the key we think it is ─────────────────────
+    #
+    # gpg encrypting "successfully" to the wrong key looks identical to
+    # encrypting to the right one until somebody tries to open it. This reads
+    # the packet header back and checks the recipient, which is the one part of
+    # "can it be decrypted" that a machine without the private key CAN check.
+    # The output is captured first and the EXIT STATUS ignored on purpose.
+    # `gpg --list-packets` also attempts a decrypt, so on this host it always
+    # ends with "No secret key" and exits non-zero — which is the correct state
+    # here, not a fault. Piping it straight into grep under `set -o pipefail`
+    # turned that expected failure into a fatal one on every single run.
+    packets="$(gpg --batch --list-packets "${OFFSITE_DIR}/${name}.gpg" 2>/dev/null || true)"
+    if ! printf '%s' "$packets" | grep -qi "keyid ${BACKUP_RECIPIENT}"; then
+        echo "FATAL: the encrypted copy is not addressed to ${BACKUP_RECIPIENT}." >&2
+        rm -f "${OFFSITE_DIR}/${name}.gpg"
+        exit 1
+    fi
+
+    echo "==> Off-box copy ready: ${OFFSITE_DIR}/${name}.gpg"
 fi
 
 size="$(du -h "$target" | cut -f1)"
@@ -125,10 +177,19 @@ echo "==> Wrote ${name} (${size})"
 # Deletes only files matching our own naming pattern, so an unrelated file
 # someone parked in this directory is never removed by a routine job.
 echo "==> Pruning dumps older than ${RETENTION_DAYS} days"
-find "$BACKUP_DIR" -maxdepth 1 \( -name 'portal-*.dump' -o -name 'portal-*.dump.gpg' \) \
-     -type f -mtime "+${RETENTION_DAYS}" -print -delete
+find "$BACKUP_DIR" -maxdepth 1 -name 'portal-*.dump' -type f \
+     -mtime "+${RETENTION_DAYS}" -print -delete
 
-count="$(find "$BACKUP_DIR" -maxdepth 1 \( -name 'portal-*.dump' -o -name 'portal-*.dump.gpg' \) -type f | wc -l | tr -d ' ')"
+# The encrypted copies are pruned on the SAME window. They are the ones that
+# leave, so letting them accumulate here would slowly build a second, larger
+# archive of everything — on the same disk, which is the problem they exist to
+# solve.
+if [ -d "$OFFSITE_DIR" ]; then
+    find "$OFFSITE_DIR" -maxdepth 1 -name 'portal-*.dump.gpg' -type f \
+         -mtime "+${RETENTION_DAYS}" -print -delete
+fi
+
+count="$(find "$BACKUP_DIR" -maxdepth 1 -name 'portal-*.dump' -type f | wc -l | tr -d ' ')"
 echo "==> ${count} dump(s) retained in ${BACKUP_DIR}"
 
 # ── OFF-BOX COPY ────────────────────────────────────────────────────────────
@@ -142,9 +203,14 @@ echo "==> ${count} dump(s) retained in ${BACKUP_DIR}"
 # exists.
 echo
 if [ -z "$BACKUP_RECIPIENT" ]; then
-    echo "WARNING: BACKUP_RECIPIENT is not set, so these dumps are in CLEAR TEXT."
-    echo "         They contain every client's contracts, invoices, payment"
-    echo "         records and support threads. See docs/DEPLOYMENT.md."
+    echo "WARNING: BACKUP_RECIPIENT is not set, so no encrypted copy was made"
+    echo "         and there is nothing for an off-box pull to collect. Every"
+    echo "         dump is on the same disk as the database it came from."
+else
+    offsite_count="$(find "$OFFSITE_DIR" -maxdepth 1 -name 'portal-*.dump.gpg' -type f 2>/dev/null | wc -l | tr -d ' ')"
+    echo "==> ${offsite_count} encrypted copy/copies waiting in ${OFFSITE_DIR}"
+    echo
+    echo "NOTE: making the copy is not moving it. Until something collects from"
+    echo "      ${OFFSITE_DIR}, everything is still on one disk —"
+    echo "      see scripts/pull-backups.sh."
 fi
-echo "NOTE: dumps are on the same host as the database. Off-box copy is not yet"
-echo "      configured — see docs/PRE-LAUNCH.md."

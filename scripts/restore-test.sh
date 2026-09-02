@@ -53,16 +53,21 @@ fi
 dump_name="$(basename "$dump_path")"
 echo "==> Testing restore of ${dump_name}"
 
-# ── DECRYPTION IS PART OF THE TEST, NOT A STEP BEFORE IT ────────────────────
+# ── DECRYPTING, WHEN THERE IS SOMETHING TO DECRYPT ──────────────────────────
 #
-# An encrypted backup nobody can open is not a backup, and that failure is
-# perfectly silent: gpg encrypts happily to a key whose private half was lost
-# months ago, and every dump since has been unreadable. The only way to know is
-# to decrypt one.
+# The nightly archive on the server is plaintext, so the scheduled run never
+# reaches this branch — the server holds only the public half of the key and
+# could not decrypt anyway. See the long note in backup.sh for why it is
+# arranged that way.
 #
-# So a .gpg dump is decrypted here, into a file this script deletes on the way
-# out. If the private key is missing or wrong, this is where it is found —
-# which is the whole reason the restore test runs weekly rather than once.
+# This exists for the drill that matters: running this script on the machine
+# that HOLDS the private key, against a collected .gpg file. That is the only
+# thing that proves an off-box backup can actually be opened, and it is a
+# failure with no symptoms — gpg encrypts happily to a key whose private half
+# was lost months ago, and every copy since is unreadable with nothing saying
+# so.
+#
+#   ./scripts/restore-test.sh /path/to/portal-<stamp>.dump.gpg
 decrypted=""
 cleanup_plaintext() {
     if [ -n "$decrypted" ]; then
