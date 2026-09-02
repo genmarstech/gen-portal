@@ -195,6 +195,13 @@ export const auth = {
   reset: (email: string, code: string, password: string) =>
     post<{ next: string }>("/auth/reset", { email, code, password }),
 
+  /**
+   * Set the password on an account Genmars created. The account exists but is
+   * unusable until this succeeds — staff never hold a client credential.
+   */
+  acceptInvite: (email: string, code: string, password: string) =>
+    post<{ next: string }>("/auth/accept-invite", { email, code, password }),
+
   changePassword: (current_password: string, new_password: string) =>
     post<{ ok: true }>("/auth/change-password", { current_password, new_password }),
 };
