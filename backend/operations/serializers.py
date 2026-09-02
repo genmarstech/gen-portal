@@ -40,6 +40,11 @@ class EnquiryListSerializer(serializers.ModelSerializer):
         source="converted_to.reference", default=None, read_only=True
     )
     waiting_days = serializers.SerializerMethodField()
+    # What they clicked on genmars.co.ke. Blank when they came through the open
+    # route, which is an ordinary state and not a gap.
+    service_name = serializers.CharField(
+        source="service.name", read_only=True, default=""
+    )
 
     class Meta:
         model = Enquiry
@@ -50,6 +55,9 @@ class EnquiryListSerializer(serializers.ModelSerializer):
             "problem",
             "timeline",
             "budget_range",
+            "service",
+            "service_name",
+            "tier",
             "status",
             "status_label",
             "converted_reference",

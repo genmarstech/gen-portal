@@ -221,6 +221,33 @@ class Enquiry(models.Model):
     timeline = models.CharField(max_length=100, blank=True)
     budget_range = models.CharField(max_length=100, blank=True)
 
+    # ---- what they asked for ----
+    #
+    # Set when the enquiry came from a specific offering on genmars.co.ke
+    # rather than the open "describe your problem" route. Both are OPTIONAL and
+    # always will be: a prospect who does not know which service they need has
+    # a real problem, and a form that forced them to pick one would be asking
+    # them to guess at our catalogue before we have spoken.
+    #
+    # SET_NULL, not CASCADE. Retiring a service must not delete the record of
+    # people who asked for it — that history is precisely what tells you
+    # whether retiring it was right.
+    service = models.ForeignKey(
+        "portal.Service",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="enquiries",
+    )
+    # The tier LABEL as it was shown on the website, e.g. "Business Setup".
+    #
+    # Deliberately text and not a foreign key. Tiers and their prices live in
+    # the website's catalogue, and modelling them here would put the same
+    # pricing in two systems that must never disagree. What matters at this
+    # point is the historical fact of which tier the client clicked, and text
+    # records that even after the tier is renamed or repriced.
+    tier = models.CharField(max_length=120, blank=True)
+
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.NEW)
     created_at = models.DateTimeField(auto_now_add=True)
 

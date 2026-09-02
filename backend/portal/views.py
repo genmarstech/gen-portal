@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 
 from accounts import identity
 
-from .models import Enquiry
+from .models import Enquiry, Service
 from .selectors import (
     export_payload,
     invoice_for,
@@ -133,6 +133,16 @@ class OnboardingView(APIView):
                 user.full_name = fields["full_name"].strip()
                 user.save(update_fields=["full_name"])
 
+                # Attribution, best effort. An unrecognised slug is dropped
+                # rather than refused — the visitor did nothing wrong, and an
+                # enquiry that arrives without a service label is far better
+                # than one that does not arrive.
+                service = None
+                if fields["service"]:
+                    service = Service.objects.filter(
+                        slug=fields["service"], is_active=True
+                    ).first()
+
                 Enquiry.objects.create(
                     organisation=organisation,
                     submitted_by=user,
@@ -140,6 +150,11 @@ class OnboardingView(APIView):
                     monthly_cost=fields["monthly_cost"],
                     timeline=fields["timeline"],
                     budget_range=fields["budget_range"],
+                    service=service,
+                    # Kept even when the service did not resolve. "They asked
+                    # for Business Setup" is useful on its own, and losing it
+                    # because a slug was renamed would be the wrong trade.
+                    tier=fields["tier"][:120],
                 )
         except identity.AuthError as e:
             # Already onboarded is not an error worth alarming anyone about —

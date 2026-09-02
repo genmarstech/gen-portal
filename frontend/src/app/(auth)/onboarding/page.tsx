@@ -13,6 +13,12 @@ import {
 } from "@/components/auth/Form";
 import { LoadingMark } from "@/components/LoadingMark";
 import { ApiError, portal, session } from "@/lib/api";
+import {
+  captureOrdering,
+  clearOrdering,
+  serviceLabel,
+  type Ordering,
+} from "@/lib/ordering";
 import { advance, readReturnTo, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "./page.module.css";
 
@@ -66,6 +72,10 @@ export default function OnboardingPage() {
   const [ready, setReady] = useState(false);
   const [step, setStep] = useState<Step>(0);
 
+  /* What they clicked on genmars.co.ke, captured on arrival and read back
+     here. See lib/ordering.ts — the query string is long gone by now. */
+  const [ordering, setOrdering] = useState<Ordering>({ service: "", tier: "" });
+
   const [fullName, setFullName] = useState("");
   const [organisation, setOrganisation] = useState("");
   const [problem, setProblem] = useState("");
@@ -92,6 +102,10 @@ export default function OnboardingPage() {
    * marketing site already signed in. Inside an effect `window` is present, so
    * reading it directly is both safe and correct.
    */
+  useEffect(() => {
+    setOrdering(captureOrdering());
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const returning = readReturnTo();
@@ -161,7 +175,12 @@ export default function OnboardingPage() {
         monthly_cost: monthlyCost.trim(),
         timeline,
         budget_range: budget,
+        service: ordering.service,
+        tier: ordering.tier,
       });
+      // Only after it is filed. Leaving it would attach the same selection to
+      // a second enquiry from the same tab.
+      clearOrdering();
       advance(router, next, returnTo);
     } catch (err) {
       setError(
@@ -240,6 +259,23 @@ export default function OnboardingPage() {
       ) : (
         <form onSubmit={submit} noValidate>
           <FormError>{error}</FormError>
+
+          {/* Shown back so they can see we picked it up — and so that if it is
+              wrong, they say so in the box below rather than discovering it on
+              a call. It is attribution, not an order: nothing here commits
+              either side, which the closing paragraph says plainly. */}
+          {ordering.service || ordering.tier ? (
+            <p className={styles.ordering}>
+              You came from{" "}
+              <strong>
+                {[serviceLabel(ordering.service), ordering.tier]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </strong>
+              . Tell us below if that is not quite what you need.
+            </p>
+          ) : null}
+
           <Fields>
             <TextareaField
               label="What is happening today that prompted this?"

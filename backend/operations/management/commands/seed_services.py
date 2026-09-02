@@ -25,8 +25,6 @@ come out thin, and thin exclusions are what month three argues about.
 from __future__ import annotations
 
 from django.core.management.base import BaseCommand
-from django.utils.text import slugify
-
 from portal.models import Service
 
 # Ordered as §15 of the pricing model orders them: the services layer first,
@@ -34,6 +32,7 @@ from portal.models import Service
 CATALOGUE = [
     {
         "name": "Implementation & configuration",
+        "slug": "implementation",
         "summary": "One-time setup, configuration, migration and go-live.",
         "default_scope": (
             "Discovery workshop and documented configuration plan.\n"
@@ -65,6 +64,7 @@ CATALOGUE = [
     },
     {
         "name": "Integrations & custom development",
+        "slug": "custom-development",
         "summary": "Paid engineering outside the standard product.",
         "default_scope": (
             "Technical specification produced and agreed before implementation.\n"
@@ -95,6 +95,7 @@ CATALOGUE = [
     },
     {
         "name": "Application managed services",
+        "slug": "managed-services",
         "summary": "Recurring monitoring, backups, patching and support.",
         "default_scope": (
             "Monitoring with alerting appropriate to the agreed tier.\n"
@@ -125,6 +126,7 @@ CATALOGUE = [
     },
     {
         "name": "Genmars SecureCare",
+        "slug": "securecare",
         "summary": "Security and data-protection readiness, and technical support.",
         "default_scope": (
             "Security assessment at the agreed interval.\n"
@@ -155,6 +157,7 @@ CATALOGUE = [
     },
     {
         "name": "Digital transformation advisory",
+        "slug": "advisory",
         "summary": "Assessment, process mapping and a costed roadmap.",
         "default_scope": (
             "Business, process and technology assessment.\n"
@@ -183,6 +186,7 @@ CATALOGUE = [
     },
     {
         "name": "ComplianceReady",
+        "slug": "complianceready",
         "summary": "Data mapping, gap analysis, policy templates and controls review.",
         "default_scope": (
             "Initial assessment against the agreed framework.\n"
@@ -213,6 +217,7 @@ CATALOGUE = [
     },
     {
         "name": "Product training",
+        "slug": "training",
         "summary": "Enablement for users, administrators and partners.",
         "default_scope": (
             "Sessions at the agreed count and duration.\n"
@@ -263,12 +268,27 @@ class Command(BaseCommand):
         created = updated = skipped = 0
 
         for entry in CATALOGUE:
-            slug = slugify(entry["name"])
-            existing = Service.objects.filter(slug=slug).first()
+            # Matched on NAME, not slug. The slug is now authored to match
+            # genmars.co.ke rather than derived from the name, so an existing
+            # row seeded under the old slugify() value must be FOUND and
+            # corrected rather than duplicated alongside a new one.
+            existing = Service.objects.filter(name__iexact=entry["name"]).first()
 
             if existing and not options["force"]:
+                # One exception to leaving edited rows alone: the SLUG. Wording
+                # is content somebody may have improved; the slug is the join
+                # between the website and this database, and a stale one
+                # silently drops the service off every order placed from the
+                # site. Correct it and say so.
+                if existing.slug != entry["slug"]:
+                    was = existing.slug
+                    existing.slug = entry["slug"]
+                    existing.save(update_fields=["slug"])
+                    self.stdout.write(
+                        self.style.WARNING(f"  > {entry['name']}: slug {was} -> {entry['slug']}")
+                    )
                 skipped += 1
-                self.stdout.write(f"  = {entry['name']} (exists, left alone)")
+                self.stdout.write(f"  = {entry['name']} (wording left alone)")
                 continue
 
             if existing:
@@ -279,7 +299,7 @@ class Command(BaseCommand):
                 updated += 1
                 self.stdout.write(self.style.WARNING(f"  ~ {entry['name']} (overwritten)"))
             else:
-                Service.objects.create(slug=slug, is_active=True, **entry)
+                Service.objects.create(is_active=True, **entry)
                 created += 1
                 self.stdout.write(self.style.SUCCESS(f"  + {entry['name']}"))
 

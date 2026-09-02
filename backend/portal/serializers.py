@@ -235,6 +235,17 @@ class OnboardingSerializer(serializers.Serializer):
     timeline = serializers.CharField(max_length=100, allow_blank=True, default="")
     budget_range = serializers.CharField(max_length=100, allow_blank=True, default="")
 
+    # What they clicked on genmars.co.ke, when they came from a specific
+    # offering rather than the open route. Both optional — see Enquiry.service.
+    #
+    # A SLUG, not a primary key. The website is a static export that knows
+    # nothing about this database; a pk would couple the two and break the
+    # moment a service is reseeded. An unrecognised slug is dropped rather than
+    # rejected: the visitor did nothing wrong, and losing the attribution is
+    # much better than refusing the enquiry.
+    service = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    tier = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+
     def validate_organisation_name(self, value: str) -> str:
         name = value.strip()
         if not name:

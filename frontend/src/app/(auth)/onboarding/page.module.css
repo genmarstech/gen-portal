@@ -59,3 +59,21 @@
     transition: none;
   }
 }
+
+/* What they clicked on the website, shown back so they can correct it here
+   rather than on a call. Quiet — it is context, not a field they must act on. */
+.ordering {
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+  background: var(--bg-raised, transparent);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.ordering strong {
+  color: var(--ink);
+  font-weight: 500;
+}

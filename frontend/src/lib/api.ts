@@ -242,6 +242,10 @@ export type OnboardingPayload = {
   monthly_cost: string;
   timeline: string;
   budget_range: string;
+  /** What they clicked on genmars.co.ke. Slug, and the tier LABEL. Both
+      optional — the open "describe your problem" route sends neither. */
+  service?: string;
+  tier?: string;
 };
 
 export const portal = {
