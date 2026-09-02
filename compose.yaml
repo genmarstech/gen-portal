@@ -27,6 +27,9 @@ services:
   db:
     image: postgres:16-alpine
     container_name: genmars-portal-db
+
+    networks:
+      - data
     restart: unless-stopped
 
     # No `ports:`. Deliberate — see the binding rule above. The only way in is
@@ -86,15 +89,52 @@ services:
   redis:
     image: redis:7-alpine
     container_name: genmars-portal-redis
+
+    networks:
+      - data
     restart: unless-stopped
 
     # Rate-limit counters live here. `--save ""` disables RDB snapshots: losing
     # them on restart resets throttle windows, which is acceptable, and it keeps
     # the container from needing a writable data volume.
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    # ── WHY THERE IS A PASSWORD ON A "PRIVATE" SERVICE ──────────────────────
+    #
+    # It was reachable, unauthenticated, from every container on this network —
+    # which included both Next.js frontends, the largest attack surface in the
+    # stack. `redis-cli PING` from the operations container answered PONG.
+    #
+    # What that exposed is not obvious until you look: the throttle keys are
+    # named after the thing being throttled, so they read
+    # `throttle:email:auth_sign_in:someone@example.com` — client email
+    # addresses, listable by anything that could open a socket. And deleting
+    # them resets the rate limiting that protects sign-in and verification
+    # codes from being brute-forced or used to send mail.
+    #
+    # The network is segmented below so nothing but the API can reach this at
+    # all. The password is the second lock, for the day something ends up on
+    # the wrong network by accident — which is exactly how this happened.
+    environment:
+      # Only so the healthcheck can authenticate. The server reads it from the
+      # command line below, not from here.
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+
+    command:
+      - "redis-server"
+      - "--requirepass"
+      - "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"
+      - "--save"
+      - ""
+      - "--appendonly"
+      - "no"
+      - "--maxmemory"
+      - "128mb"
+      - "--maxmemory-policy"
+      - "allkeys-lru"
 
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # Authenticated, or the healthcheck reports a healthy container that the
+      # application cannot actually use.
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -147,6 +187,10 @@ services:
       dockerfile: Dockerfile
     image: ghcr.io/genmarstech/gen-portal-api:latest
     container_name: genmars-portal-api
+
+    networks:
+      - data
+      - edge
     restart: unless-stopped
 
     depends_on:
@@ -160,7 +204,7 @@ services:
 
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-genmars}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-genmars_portal}
-      REDIS_URL: redis://redis:6379/0
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
 
     # Loopback only. Do not change to "8010:8010".
     ports:
@@ -218,6 +262,9 @@ services:
         API_ORIGIN: http://api:8010
     image: ghcr.io/genmarstech/gen-portal-web:latest
     container_name: genmars-portal-web
+
+    networks:
+      - edge
     restart: unless-stopped
 
     depends_on:
@@ -262,3 +309,32 @@ services:
 
 volumes:
   portal-db:
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Networks
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ── WHY THERE ARE TWO ───────────────────────────────────────────────────────
+#
+# There was one, and everything sat on it: Postgres, Redis, Django, the portal
+# frontend, and — joining from its own compose project — the operations
+# frontend. Two Next.js servers, the largest attack surface in the stack, with
+# a route to the database port and to an unauthenticated Redis.
+#
+# Nothing was exploited. It was simply a path that had no reason to exist:
+# neither frontend speaks to Postgres or Redis. They speak to Django, and
+# Django speaks to the data.
+#
+#   data   db, redis, api          the stores and the only thing that reads them
+#   edge   api, web, and ops       HTTP between the frontends and Django
+#
+# `api` is deliberately the only service on both. That is the whole shape of
+# it: one door between the part that faces the internet and the part that
+# holds the data.
+networks:
+  data:
+    name: genmars-portal_data
+  edge:
+    # Named explicitly because internals-tm joins it from another compose
+    # project by name — see that repository's compose.yaml.
+    name: genmars-portal_edge
