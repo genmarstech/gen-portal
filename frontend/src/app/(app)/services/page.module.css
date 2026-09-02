@@ -8,8 +8,8 @@
 .empty {
   padding: 40px 0;
   max-width: 54ch;
-  color: var(--ink-2);
-  font-size: 14px;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
   line-height: 1.6;
 }
 
@@ -27,8 +27,8 @@
 .lede {
   margin: 0;
   max-width: 58ch;
-  color: var(--ink-2);
-  font-size: 14px;
+  color: var(--ink-muted);
+  font-size: 0.875rem;
   line-height: 1.55;
 }
 
@@ -51,8 +51,8 @@
   flex-direction: column;
   gap: 8px;
   padding: 18px;
-  background: var(--surface);
-  border: 1px solid var(--line);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
   border-radius: 14px;
   transition:
     border-color 0.15s ease,
@@ -60,7 +60,7 @@
 }
 
 .card:hover {
-  border-color: var(--ink-3);
+  border-color: var(--ink-faint);
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -71,7 +71,7 @@
 
 .name {
   margin: 0;
-  font-size: 16px;
+  font-size: 1rem;
   letter-spacing: -0.01em;
   color: var(--ink);
 }
@@ -79,15 +79,15 @@
 .summary {
   margin: 0;
   flex: 1 1 auto;
-  color: var(--ink-2);
-  font-size: 13.5px;
+  color: var(--ink-muted);
+  font-size: 0.84375rem;
   line-height: 1.55;
 }
 
 .order {
   align-self: flex-start;
   margin-top: 4px;
-  font-size: 13.5px;
+  font-size: 0.84375rem;
   font-weight: 600;
   color: var(--accent);
   text-decoration: none;
@@ -100,7 +100,7 @@
 .footnote {
   padding: 26px 0 60px;
   max-width: 56ch;
-  color: var(--ink-3);
-  font-size: 13px;
+  color: var(--ink-faint);
+  font-size: 0.8125rem;
   line-height: 1.6;
 }
