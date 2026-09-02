@@ -29,6 +29,8 @@ from portal.models import (
     ServiceTier,
     System,
     SystemEvent,
+    SupportMessage,
+    SupportTicket,
     SystemKey,
     Task,
 )
@@ -858,4 +860,71 @@ class SystemKeySerializer(serializers.ModelSerializer):
         model = SystemKey
         fields = ["id", "label", "prefix", "created_at", "last_used_at", "revoked_at"]
         read_only_fields = fields
+
+
+class TicketMessageSerializer(serializers.ModelSerializer):
+    """One message as OPERATIONS sees it — internal notes included."""
+
+    class Meta:
+        model = SupportMessage
+        fields = [
+            "id", "author_label", "from_staff", "internal", "body", "created_at"
+        ]
+        read_only_fields = fields
+
+
+class TicketSerializer(serializers.ModelSerializer):
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    priority_label = serializers.CharField(source="get_priority_display", read_only=True)
+    organisation_name = serializers.CharField(source="organisation.name", read_only=True)
+    raised_by_name = serializers.SerializerMethodField()
+    assigned_to_name = serializers.SerializerMethodField()
+    order_reference = serializers.CharField(
+        source="order.reference", read_only=True, default=None
+    )
+    messages = TicketMessageSerializer(many=True, read_only=True)
+    # Seconds they waited the first time. Measured, never promised — see the
+    # SupportTicket docstring.
+    first_answer_seconds = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            "id", "reference", "subject", "status", "status_label",
+            "priority", "priority_label",
+            "organisation", "organisation_name", "raised_by_name",
+            "assigned_to", "assigned_to_name", "order_reference",
+            "created_at", "first_answered_at", "first_answer_seconds",
+            "resolved_at", "messages",
+        ]
+        read_only_fields = fields
+
+    def get_raised_by_name(self, ticket: SupportTicket) -> str:
+        who = ticket.raised_by
+        return (who.full_name or who.email) if who else ""
+
+    def get_assigned_to_name(self, ticket: SupportTicket) -> str:
+        who = ticket.assigned_to
+        return (who.full_name or who.email) if who else ""
+
+    def get_first_answer_seconds(self, ticket: SupportTicket) -> int | None:
+        waited = ticket.waited_for_first_answer()
+        return int(waited.total_seconds()) if waited is not None else None
+
+
+class TicketReplySerializer(serializers.Serializer):
+    body = serializers.CharField()
+    internal = serializers.BooleanField(required=False, default=False)
+
+
+class TicketStateSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(
+        choices=SupportTicket.Status.choices, required=False, allow_null=True,
+        default=None,
+    )
+    priority = serializers.ChoiceField(
+        choices=SupportTicket.Priority.choices, required=False, allow_null=True,
+        default=None,
+    )
+    assigned_to = serializers.IntegerField(required=False, allow_null=True, default=None)
 

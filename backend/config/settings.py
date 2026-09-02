@@ -382,6 +382,20 @@ EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)
 # also have to monitor.
 
 ADMINS = [("Genmars Tech", env("ERROR_EMAIL", default="edwin@genmars.co.ke"))]
+
+# Where a new support request is announced.
+#
+# ── WHY THIS DOES NOT DEFAULT TO support@genmars.co.ke ──────────────────────
+# Because that is exactly how GM-INC-2026-0001 happened. An alert was pointed
+# at an address before the mailbox behind it existed, Zoho answered 550, the
+# provider suppressed it, and thirty-one hours of alerts were dropped in
+# silence while the API kept returning 200.
+#
+# So it defaults to a mailbox we KNOW receives, and moves to support@ by
+# changing this variable once that address has been created and proven. The
+# suppression check in accounts/mail_health.py catches it either way, but not
+# repeating the mistake is better than detecting it.
+SUPPORT_EMAIL = env("SUPPORT_EMAIL", default=env("ERROR_EMAIL", default="edwin@genmars.co.ke"))
 SERVER_EMAIL = env("SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
 
 LOGGING = {

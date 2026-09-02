@@ -1,0 +1,16 @@
+{% extends "email/base.html" %}
+{% block content %}
+<p style="margin:0 0 6px 0; font-size:13px; color:#7a7480;">{{ reference }}</p>
+
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap;">{{ body }}</div>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6; margin-top:24px;">
+  <tr>
+    <td style="padding-top:18px; font-size:14px; line-height:1.65; color:#5f5867;">
+      The whole conversation, and anything else you have asked us:<br>
+      <a href="https://app.genmars.co.ke/support" style="color:#834f49;">app.genmars.co.ke/support</a>
+    </td>
+  </tr>
+</table>
+{% endblock %}

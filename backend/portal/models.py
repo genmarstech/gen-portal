@@ -1023,6 +1023,8 @@ class Notification(models.Model):
         INCIDENT_RAISED = "incident_raised", "Incident raised"
         OFFER_SENT = "offer_sent", "Offer received"
         TASK_ASSIGNED = "task_assigned", "Task assigned to you"
+        SUPPORT_REPLY = "support_reply", "Reply on your support request"
+        SUPPORT_RAISED = "support_raised", "New support request"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1934,4 +1936,149 @@ class SystemEvent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.system.slug}: {self.message[:60]}"
+
+
+class SupportTicket(models.Model):
+    """
+    A client asking for help.
+
+    ══════════════════════════════════════════════════════════════════════════
+    NOTHING HERE PROMISES A RESPONSE TIME.
+
+    Charter 03 §IV is a standing rule: never put a commitment in front of a
+    client that has not been tested under real conditions. Support is where
+    that rule is hardest to keep, because "we usually reply within a few hours"
+    is easy to type and becomes a promise the moment a client reads it.
+
+    So there is no SLA field, no target, and no countdown. What there is
+    instead is `first_answered_at`, recorded automatically — a measurement of
+    what actually happens rather than a claim about what will. When there is
+    enough of it to state something true, it can be stated. Not before.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── PRIORITY IS SET BY US, NOT BY THE CLIENT ────────────────────────────────
+
+    Every client-set priority field ends up with everything marked urgent,
+    which is the same as nothing being urgent. The client says what is
+    happening and how it affects them; someone here reads that and decides.
+    """
+
+    class Status(models.TextChoices):
+        OPEN = "open", "Open"
+        # We have replied and are waiting on them. Distinct from open, because
+        # a queue that cannot tell those apart looks permanently on fire.
+        WAITING = "waiting", "Waiting on the client"
+        ANSWERED = "answered", "Answered"
+        RESOLVED = "resolved", "Resolved"
+
+    class Priority(models.TextChoices):
+        LOW = "low", "Low"
+        NORMAL = "normal", "Normal"
+        URGENT = "urgent", "Urgent"
+
+    reference = models.CharField(max_length=32, unique=True, db_index=True)
+    organisation = models.ForeignKey(
+        Organisation, on_delete=models.CASCADE, related_name="tickets"
+    )
+    raised_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="tickets_raised"
+    )
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tickets",
+        help_text="Optional. Not every question is about a project.",
+    )
+
+    subject = models.CharField(max_length=200)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.OPEN
+    )
+    priority = models.CharField(
+        max_length=8, choices=Priority.choices, default=Priority.NORMAL
+    )
+
+    assigned_to = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tickets_assigned",
+        limit_choices_to={"is_staff": True},
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    # Measured, never promised. See the docstring.
+    first_answered_at = models.DateTimeField(null=True, blank=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["organisation", "status"], name="ticket_client_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.reference} — {self.subject}"
+
+    @property
+    def is_open(self) -> bool:
+        return self.status != self.Status.RESOLVED
+
+    def waited_for_first_answer(self) -> timedelta | None:
+        """How long they waited the first time. The only honest number we have."""
+        if self.first_answered_at is None:
+            return None
+        return self.first_answered_at - self.created_at
+
+
+class SupportMessage(models.Model):
+    """
+    One message on a ticket, from either side.
+
+    ══════════════════════════════════════════════════════════════════════════
+    `internal` IS THE MOST DANGEROUS FIELD IN THIS FILE.
+
+    An internal note is written by staff about a client, in the knowledge that
+    the client cannot see it. If that filter is ever wrong, a client reads what
+    we said about them — which is worse than a data leak, because it is a leak
+    of opinion.
+
+    So the client serializer excludes them, the client selector excludes them,
+    and there is a test that writes one and asserts it is absent from the
+    client's view of the thread. That test exists to fail loudly the day
+    somebody adds a convenient shortcut.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    ticket = models.ForeignKey(
+        SupportTicket, on_delete=models.CASCADE, related_name="messages"
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="support_messages",
+    )
+    # Kept because SET_NULL loses the name, and an unattributed reply on a
+    # support thread is worse than no thread.
+    author_label = models.CharField(max_length=200, blank=True)
+    from_staff = models.BooleanField(default=False)
+
+    body = models.TextField()
+    internal = models.BooleanField(
+        default=False,
+        help_text="A note between us. NEVER shown to the client — see the docstring.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.ticket.reference}: {self.body[:50]}"
 

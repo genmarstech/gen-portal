@@ -22,6 +22,8 @@ from .models import (
     Order,
     PaymentRecord,
     ProgressNote,
+    SupportMessage,
+    SupportTicket,
     Service,
     ServiceTier,
 )
@@ -542,4 +544,61 @@ class ClientOfferSerializer(serializers.ModelSerializer):
 
     def get_expired(self, offer: Offer) -> bool:
         return offer.is_expired()
+
+
+class ClientSupportMessageSerializer(serializers.ModelSerializer):
+    """
+    One message, as the CLIENT sees it.
+
+    Internal notes never reach this serializer — the queryset excludes them
+    before it gets here (see selectors.ticket_messages_for). Both layers do it
+    on purpose: an internal note is staff writing about a client in the
+    knowledge that the client cannot read it, and one filter is one mistake
+    away from them reading it.
+    """
+
+    mine = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SupportMessage
+        fields = ["id", "author_label", "from_staff", "mine", "body", "created_at"]
+        read_only_fields = fields
+
+    def get_mine(self, message: SupportMessage) -> bool:
+        user = self.context.get("user")
+        return bool(user and message.author_id == user.pk)
+
+
+class ClientTicketSerializer(serializers.ModelSerializer):
+    """
+    A support request, as the client sees it.
+
+    ── WHAT IS DELIBERATELY ABSENT ─────────────────────────────────────────────
+
+    No priority, no assignee, and no response-time anything. Priority is our
+    triage judgement and showing it invites an argument about it rather than
+    about the problem. Charter 03 §IV forbids putting a commitment in front of
+    a client that has not been tested, and a visible target is a commitment
+    however it is worded.
+    """
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    messages = serializers.SerializerMethodField()
+    order_reference = serializers.CharField(
+        source="order.reference", read_only=True, default=None
+    )
+
+    class Meta:
+        model = SupportTicket
+        fields = [
+            "reference", "subject", "status", "status_label",
+            "order_reference", "created_at", "resolved_at", "messages",
+        ]
+        read_only_fields = fields
+
+    def get_messages(self, ticket: SupportTicket) -> list:
+        visible = ticket.messages.filter(internal=False)
+        return ClientSupportMessageSerializer(
+            visible, many=True, context=self.context
+        ).data
 

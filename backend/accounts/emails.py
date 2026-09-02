@@ -241,3 +241,66 @@ def send_staff_invite(email: str, code: str, role: str, invited_by: str) -> None
             "invited_by": invited_by,
         },
     )
+
+
+def send_support_raised(email: str, reference: str, subject: str, organisation: str, body: str) -> None:
+    """
+    Tell us a client has asked for something.
+
+    Carries the question itself, not a link to it. An alert that says "you have
+    a ticket" makes somebody sign in to find out whether it can wait — which is
+    the decision the alert was supposed to help with.
+    """
+    _send(
+        to=email,
+        subject=f"{reference} — {organisation}: {subject}",
+        text=(
+            f"{organisation} has asked for help.\n\n"
+            f"{subject}\n\n"
+            f"{body}\n\n"
+            f"Reply in operations: https://ops.genmars.co.ke/support\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/support_raised.html",
+        context={
+            "heading": subject,
+            "preheader": f"{organisation}: {subject}",
+            "reference": reference,
+            "organisation": organisation,
+            "body": body,
+        },
+    )
+
+
+def send_support_reply(email: str, reference: str, subject: str, body: str) -> None:
+    """
+    Tell a client we have replied.
+
+    The reply is in the email, for the same reason the progress note is: making
+    somebody authenticate to read three sentences is friction we added, not a
+    service we provided.
+
+    ── NO RESPONSE-TIME PROMISE, EVER ──────────────────────────────────────────
+    Charter 03 §IV. Not "we will follow up shortly", not "expect an update
+    soon". This says what was said and stops.
+    """
+    _send(
+        to=email,
+        subject=f"Re: {subject} ({reference})",
+        text=(
+            f"{body}\n\n"
+            f"The whole conversation is at\n"
+            f"https://app.genmars.co.ke/support\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/support_reply.html",
+        context={
+            "heading": subject,
+            "preheader": body.strip().splitlines()[0][:120] if body.strip() else "",
+            "reference": reference,
+            "body": body,
+        },
+    )
+

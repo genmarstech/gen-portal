@@ -37,6 +37,8 @@ from portal.models import (
     ProgressNote,
     Service,
     ServiceTier,
+    SupportMessage,
+    SupportTicket,
     Task,
 )
 
@@ -2373,4 +2375,227 @@ def set_task_status(
         )
 
     return task
+
+
+# ── support ──────────────────────────────────────────────────────────────────
+
+
+def next_ticket_reference(today: date | None = None) -> str:
+    year = (today or timezone.localdate()).year
+    prefix = f"{REFERENCE_PREFIX}-SUP-{year}-"
+    used = SupportTicket.objects.filter(reference__startswith=prefix).count()
+    return f"{prefix}{used + 1:04d}"
+
+
+@transaction.atomic
+def raise_ticket(
+    *,
+    organisation: Organisation,
+    actor: User,
+    subject: str,
+    body: str,
+    order: Order | None = None,
+) -> SupportTicket:
+    """
+    A client asks for help.
+
+    ── PRIORITY IS NOT A PARAMETER ─────────────────────────────────────────────
+
+    Deliberately absent. Every client-settable priority field ends up with
+    everything marked urgent, which is the same as nothing being urgent. The
+    client says what is happening; someone here reads it and decides.
+    """
+    subject = subject.strip()
+    if not subject:
+        raise OperationsError("What is this about?", field="subject")
+
+    body = body.strip()
+    if not body:
+        raise OperationsError(
+            "Tell us what is happening. A subject line on its own is not "
+            "something anybody can act on.",
+            field="body",
+        )
+
+    for attempt in range(5):
+        try:
+            with transaction.atomic():
+                ticket = SupportTicket.objects.create(
+                    reference=next_ticket_reference(),
+                    organisation=organisation,
+                    raised_by=actor,
+                    order=order,
+                    subject=subject,
+                )
+            break
+        except IntegrityError:
+            if attempt == 4:
+                raise
+    else:  # pragma: no cover
+        raise OperationsError("Could not allocate a ticket reference.")
+
+    SupportMessage.objects.create(
+        ticket=ticket,
+        author=actor,
+        author_label=actor.full_name or actor.email,
+        from_staff=False,
+        body=body,
+    )
+
+    _notify(
+        users=_staff_recipients(),
+        audience=Notification.Audience.STAFF,
+        kind=Notification.Kind.SUPPORT_RAISED,
+        title=f"{organisation.name}: {subject}",
+        body=body[:200],
+        url="/support",
+    )
+
+    # Mail is a convenience on top of the record, never the record itself, so a
+    # provider having a bad afternoon must not lose the ticket.
+    try:
+        emails.send_support_raised(
+            email=settings.SUPPORT_EMAIL,
+            reference=ticket.reference,
+            subject=subject,
+            organisation=organisation.name,
+            body=body,
+        )
+    except Exception:
+        log.exception("could not email the support alert for %s", ticket.reference)
+
+    log.info("ticket %s raised by %s", ticket.reference, actor.email)
+    return ticket
+
+
+@transaction.atomic
+def reply_to_ticket(
+    *,
+    ticket: SupportTicket,
+    actor: User,
+    body: str,
+    internal: bool = False,
+) -> SupportMessage:
+    """
+    Add a message to a ticket, from either side.
+
+    ── THE internal FLAG ───────────────────────────────────────────────────────
+
+    An internal note is written by staff about a client, knowing the client
+    cannot see it. Only staff may set it — a client passing internal=True must
+    not be able to write a note they then cannot see, and more importantly the
+    flag must never be settable by the side it is hidden from.
+
+    ── first_answered_at IS MEASURED, NOT PROMISED ─────────────────────────────
+
+    Set the first time a staff member replies publicly, and never afterwards.
+    Charter 03 §IV forbids stating a response time we have not tested; this is
+    how we would eventually earn the right to state one.
+    """
+    body = body.strip()
+    if not body:
+        raise OperationsError("An empty reply is not a reply.", field="body")
+
+    from_staff = bool(actor.is_staff)
+    internal = bool(internal) and from_staff
+
+    if ticket.status == SupportTicket.Status.RESOLVED and not from_staff:
+        # A client replying to something we closed has reopened it, whatever we
+        # thought. Silently discarding that is how a client concludes nobody is
+        # listening.
+        ticket.status = SupportTicket.Status.OPEN
+        ticket.resolved_at = None
+
+    message = SupportMessage.objects.create(
+        ticket=ticket,
+        author=actor,
+        author_label=actor.full_name or actor.email,
+        from_staff=from_staff,
+        body=body,
+        internal=internal,
+    )
+
+    fields = ["status", "resolved_at"]
+    if from_staff and not internal:
+        if ticket.first_answered_at is None:
+            ticket.first_answered_at = timezone.now()
+            fields.append("first_answered_at")
+        ticket.status = SupportTicket.Status.ANSWERED
+    elif not from_staff:
+        ticket.status = SupportTicket.Status.OPEN
+
+    ticket.save(update_fields=fields)
+
+    if from_staff and not internal:
+        _notify(
+            users=_client_recipients(ticket.organisation),
+            audience=Notification.Audience.CLIENT,
+            kind=Notification.Kind.SUPPORT_REPLY,
+            title=f"Reply on {ticket.subject}",
+            body=body[:200],
+            url="/support",
+        )
+        try:
+            emails.send_support_reply(
+                email=ticket.raised_by.email,
+                reference=ticket.reference,
+                subject=ticket.subject,
+                body=body,
+            )
+        except Exception:
+            log.exception("could not email the reply on %s", ticket.reference)
+
+    elif not from_staff:
+        _notify(
+            users=_staff_recipients(),
+            audience=Notification.Audience.STAFF,
+            kind=Notification.Kind.SUPPORT_RAISED,
+            title=f"{ticket.organisation.name} replied: {ticket.subject}",
+            body=body[:200],
+            url="/support",
+        )
+
+    return message
+
+
+@transaction.atomic
+def set_ticket_state(
+    *,
+    ticket: SupportTicket,
+    actor: User,
+    status: str | None = None,
+    priority: str | None = None,
+    assigned_to: User | None = None,
+) -> SupportTicket:
+    """Triage. Staff only — the permission is enforced by the view."""
+    fields = []
+
+    if status is not None:
+        if status not in SupportTicket.Status.values:
+            raise OperationsError("That is not a status we use.", field="status")
+        ticket.status = status
+        fields.append("status")
+        ticket.resolved_at = (
+            timezone.now() if status == SupportTicket.Status.RESOLVED else None
+        )
+        fields.append("resolved_at")
+
+    if priority is not None:
+        if priority not in SupportTicket.Priority.values:
+            raise OperationsError("That is not a priority we use.", field="priority")
+        ticket.priority = priority
+        fields.append("priority")
+
+    if assigned_to is not None:
+        if not assigned_to.is_staff or not assigned_to.is_active:
+            raise OperationsError(
+                "Support is answered by Genmars staff with access.",
+                field="assigned_to",
+            )
+        ticket.assigned_to = assigned_to
+        fields.append("assigned_to")
+
+    if fields:
+        ticket.save(update_fields=fields)
+    return ticket
 

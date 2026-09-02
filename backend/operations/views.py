@@ -36,6 +36,7 @@ from portal.models import (
     ServiceTier,
     System,
     SystemEvent,
+    SupportTicket,
     SystemKey,
     Task,
 )
@@ -46,6 +47,9 @@ from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
     ActivitySerializer,
+    TicketReplySerializer,
+    TicketSerializer,
+    TicketStateSerializer,
     SystemEventSerializer,
     SystemKeySerializer,
     SystemSerializer,
@@ -1313,4 +1317,72 @@ class SystemEventFeedView(StaffView):
         return Response(
             {"events": SystemEventSerializer(events[:200], many=True).data}
         )
+
+
+class TicketListView(StaffView):
+    """
+    Every support request. IsStaff — answering is not a privileged act.
+    """
+
+    def get(self, request):
+        tickets = (
+            SupportTicket.objects.select_related(
+                "organisation", "raised_by", "assigned_to", "order"
+            )
+            .prefetch_related("messages")
+            .all()
+        )
+
+        state = request.query_params.get("status")
+        if state in SupportTicket.Status.values:
+            tickets = tickets.filter(status=state)
+        elif request.query_params.get("open") == "1":
+            tickets = tickets.exclude(status=SupportTicket.Status.RESOLVED)
+
+        return Response({"tickets": TicketSerializer(tickets, many=True).data})
+
+
+class TicketReplyView(StaffView):
+    """Reply, or leave a note the client never sees."""
+
+    def post(self, request, reference: str):
+        ticket = get_object_or_404(SupportTicket, reference=reference)
+        form = TicketReplySerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            services.reply_to_ticket(
+                ticket=ticket,
+                actor=request.user,
+                body=form.validated_data["body"],
+                internal=form.validated_data["internal"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        ticket.refresh_from_db()
+        return Response(TicketSerializer(ticket).data)
+
+
+class TicketStateView(StaffView):
+    """Triage: status, priority, who is answering it."""
+
+    def patch(self, request, reference: str):
+        ticket = get_object_or_404(SupportTicket, reference=reference)
+        form = TicketStateSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        assignee = None
+        if form.validated_data["assigned_to"]:
+            assignee = get_object_or_404(User, pk=form.validated_data["assigned_to"])
+
+        try:
+            ticket = services.set_ticket_state(
+                ticket=ticket,
+                actor=request.user,
+                status=form.validated_data["status"],
+                priority=form.validated_data["priority"],
+                assigned_to=assignee,
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(TicketSerializer(ticket).data)
 

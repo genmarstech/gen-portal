@@ -1,0 +1,12 @@
+{% extends "email/base.html" %}
+{% block content %}
+<p style="margin:0 0 6px 0; font-size:13px; color:#7a7480;">
+  {{ reference }} &middot; {{ organisation }}
+</p>
+
+{# The question itself, not a link to it: an alert that only says a ticket
+   exists forces somebody to sign in to learn whether it can wait. #}
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap;">{{ body }}</div>
+
+{% include "email/_button.html" with url="https://ops.genmars.co.ke/support" label="Reply in operations" %}
+{% endblock %}

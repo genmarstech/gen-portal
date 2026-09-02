@@ -23,7 +23,7 @@ from __future__ import annotations
 from django.db.models import QuerySet
 
 from accounts.models import User
-from portal.models import Contract, Invoice, Order
+from portal.models import Contract, Invoice, Order, SupportTicket
 
 
 def organisation_ids_for(user: User) -> QuerySet:
@@ -232,3 +232,24 @@ def live_contract_for(order: Order) -> Contract | None:
         .order_by("-version")
         .first()
     )
+
+
+def tickets_for(user: User) -> QuerySet[SupportTicket]:
+    """
+    Support requests belonging to the user's organisations.
+
+    Scoped on organisation in the query itself, like every other client read in
+    this module. A ticket reference is guessable (GM-SUP-2026-0004), so a
+    lookup that started from SupportTicket would hand one client another's
+    conversation the first time somebody forgot a filter.
+    """
+    return (
+        SupportTicket.objects.filter(organisation_id__in=organisation_ids_for(user))
+        .select_related("order", "organisation")
+        .prefetch_related("messages")
+    )
+
+
+def ticket_for(user: User, reference: str) -> SupportTicket | None:
+    return tickets_for(user).filter(reference=reference).first()
+

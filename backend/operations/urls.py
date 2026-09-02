@@ -71,6 +71,11 @@ urlpatterns = [
     path("ops/systems/<slug:slug>", views.SystemDetailView.as_view(), name="ops-system"),
     path("ops/systems/<slug:slug>/keys", views.SystemKeyView.as_view(), name="ops-system-keys"),
 
+    # ---- support ----
+    path("ops/support", views.TicketListView.as_view(), name="ops-tickets"),
+    path("ops/support/<str:reference>/reply", views.TicketReplyView.as_view(), name="ops-ticket-reply"),
+    path("ops/support/<str:reference>", views.TicketStateView.as_view(), name="ops-ticket"),
+
     # ---- incidents ----
     path("ops/incidents", views.IncidentListView.as_view(), name="ops-incidents"),
     path("ops/incidents/<int:pk>", views.IncidentDetailView.as_view(), name="ops-incident"),

@@ -41,6 +41,7 @@ from .selectors import (
 from .serializers import (
     ClientInvoiceSerializer,
     ClientOfferSerializer,
+    ClientTicketSerializer,
     ClientServiceSerializer,
     EnquirySerializer,
     InvoiceDocumentSerializer,
@@ -590,4 +591,103 @@ class OfferDecisionView(APIView):
             )
 
         return Response(ClientOfferSerializer(offer).data)
+
+
+class SupportView(APIView):
+    """
+    The client's own support requests, and raising one.
+
+    Throttled on the same scope as enquiries: a request is cheap to file and
+    costs a person to read, and a form that can be submitted in a loop turns
+    into a queue nobody can work.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "enquiry"
+    throttle_classes = [EnquiryThrottle]
+
+    def get(self, request):
+        tickets = selectors.tickets_for(request.user)
+        return Response(
+            {
+                "tickets": ClientTicketSerializer(
+                    tickets, many=True, context={"user": request.user}
+                ).data
+            }
+        )
+
+    def post(self, request):
+        membership = request.user.memberships.select_related("organisation").first()
+        if membership is None:
+            return Response(
+                {"detail": "Finish setting up your account first.",
+                 "next": "/onboarding"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        order = None
+        reference = str(request.data.get("order", "")).strip()
+        if reference:
+            order = selectors.order_for(request.user, reference)
+
+        try:
+            ticket = services.raise_ticket(
+                organisation=membership.organisation,
+                actor=request.user,
+                subject=str(request.data.get("subject", "")),
+                body=str(request.data.get("body", "")),
+                order=order,
+            )
+        except services.OperationsError as exc:
+            return Response(
+                {"detail": str(exc), "field": exc.field},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            ClientTicketSerializer(ticket, context={"user": request.user}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SupportReplyView(APIView):
+    """
+    Add a message to one of the client's own tickets.
+
+    The ticket is looked up THROUGH the user's organisations, so a reference
+    belonging to someone else matches nothing rather than being found and then
+    refused.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "enquiry"
+    throttle_classes = [EnquiryThrottle]
+
+    def post(self, request, reference: str):
+        ticket = selectors.ticket_for(request.user, reference)
+        if ticket is None:
+            return Response(
+                {"detail": "No such request."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        try:
+            services.reply_to_ticket(
+                ticket=ticket,
+                actor=request.user,
+                body=str(request.data.get("body", "")),
+                # Never taken from the request on this endpoint. A client must
+                # not be able to write a note hidden from themselves, and the
+                # flag must never be settable by the side it hides from.
+                internal=False,
+            )
+        except services.OperationsError as exc:
+            return Response(
+                {"detail": str(exc), "field": exc.field},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        ticket.refresh_from_db()
+        return Response(
+            ClientTicketSerializer(ticket, context={"user": request.user}).data
+        )
 
