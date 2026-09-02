@@ -35,7 +35,10 @@ def staff() -> User:
         email="ops@genmars.co.ke",
         password=PASSWORD,
         full_name="Ops Person",
+        # Founder — the widest surface, so "a client cannot reach this"
+        # is tested against every route rather than only the shared ones.
         is_staff=True,
+        staff_role=User.StaffRole.FOUNDER,
         # A field, not the `is_email_verified` property that reads it.
         email_verified_at=timezone.now(),
     )
@@ -93,6 +96,8 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-contracts", args=[reference]),
         reverse("ops-contract-sign", args=[reference, 1]),
         reverse("ops-contract-void", args=[reference, 1]),
+        # the team itself
+        reverse("ops-staff-member", args=[1]),
     ]
 
 
@@ -136,6 +141,7 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
         "ops-organisations", "ops-org-members", "ops-membership",
         "ops-services", "ops-service", "ops-contracts", "ops-contract-sign",
         "ops-contract-void",
+        "ops-staff-member",
     }
     missing = named - covered
     assert not missing, (

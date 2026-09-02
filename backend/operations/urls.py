@@ -14,6 +14,7 @@ from . import views
 urlpatterns = [
     path("ops/overview", views.OverviewView.as_view(), name="ops-overview"),
     path("ops/staff", views.StaffDirectoryView.as_view(), name="ops-staff"),
+    path("ops/staff/<int:pk>", views.StaffDetailView.as_view(), name="ops-staff-member"),
 
     path("ops/enquiries", views.EnquiryListView.as_view(), name="ops-enquiries"),
     path("ops/enquiries/<int:pk>", views.EnquiryDetailView.as_view(), name="ops-enquiry"),

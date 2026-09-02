@@ -135,3 +135,32 @@ def send_progress_note(
         recipient_list=[email],
         fail_silently=False,
     )
+
+
+def send_staff_invite(email: str, code: str, role: str, invited_by: str) -> None:
+    """
+    Somebody has been added to Genmars itself.
+
+    Says what the account can see, because it is a lot: this one reads every
+    client's scope, prices and progress. Somebody accepting it should know that
+    before they choose a password, not discover it afterwards.
+    """
+    send_mail(
+        subject=f"{invited_by} has added you to Genmars Operations",
+        message=(
+            f"{invited_by} has set up a Genmars account for you, as {role}.\n\n"
+            f"Your code is {code}\n\n"
+            f"Go to https://ops.genmars.co.ke and sign in, or set your password "
+            "at https://app.genmars.co.ke/invite first. The code expires in "
+            f"{_minutes()} minutes and can be used once.\n\n"
+            "The account cannot be signed into by anyone — including whoever "
+            "invited you — until you set that password.\n\n"
+            "It gives you access to client work across the whole company: "
+            "scope, prices, progress and contracts. Treat it accordingly.\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        recipient_list=[email],
+        fail_silently=False,
+    )

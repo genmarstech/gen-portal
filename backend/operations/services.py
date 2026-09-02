@@ -704,3 +704,158 @@ def void_contract(*, contract: Contract, reason: str) -> Contract:
     contract.signature_note = reason.strip()
     contract.save(update_fields=["status", "signature_note"])
     return contract
+
+
+# ── the team ─────────────────────────────────────────────────────────────────
+
+
+def _founders(exclude: User | None = None) -> "models.QuerySet[User]":
+    qs = User.objects.filter(
+        is_staff=True, is_active=True, staff_role=User.StaffRole.FOUNDER
+    )
+    return qs.exclude(pk=exclude.pk) if exclude else qs
+
+
+@transaction.atomic
+def invite_staff(
+    *, actor: User, email: str, full_name: str = "", role: str
+) -> tuple[User, bool]:
+    """
+    Add somebody to Genmars. Returns (user, invited).
+
+    Same guarantee as a client invite: the account is created with an UNUSABLE
+    password and nobody can sign in as them until they set one. That matters
+    more here, not less — this account can read every client's commercial
+    detail.
+
+    ── A CLIENT ADDRESS CANNOT BECOME STAFF ────────────────────────────────────
+    Refused outright. Promoting an existing client account would give it
+    is_staff while it still holds Memberships, so it would read every
+    organisation through operations AND appear as a client of one. Genmars
+    staff and Genmars clients are different people; if somebody genuinely is
+    both, they get two accounts and the boundary stays legible.
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        raise OperationsError("An email address is needed.", field="email")
+    if role not in User.StaffRole.values:
+        raise OperationsError("Founder, commercial, or delivery.", field="role")
+
+    user = User.objects.filter(email=email).first()
+
+    if user and not user.is_staff:
+        raise OperationsError(
+            "That address is a client account. Staff and clients are different "
+            "people — use a Genmars address.",
+            field="email",
+        )
+    if user and user.is_staff:
+        raise OperationsError(f"{email} is already on the team.", field="email")
+
+    user = User.objects.create_user(
+        email=email, password=None, full_name=(full_name or "").strip()
+    )
+    user.is_staff = True
+    user.staff_role = role
+    user.set_unusable_password()
+    user.save(update_fields=["is_staff", "staff_role", "password"])
+
+    issued = identity.issue_code(user, EmailCode.Purpose.INVITE)
+    emails.send_staff_invite(
+        email=user.email,
+        code=issued.code,
+        role=user.get_staff_role_display(),
+        invited_by=actor.full_name or actor.email,
+    )
+    return user, True
+
+
+@transaction.atomic
+def set_staff_role(*, actor: User, user: User, role: str) -> User:
+    """
+    Change what somebody may do.
+
+    ── THE LAST FOUNDER CANNOT BE DEMOTED ──────────────────────────────────────
+    `can_manage_access` is founder-only, so removing the last one leaves a
+    system nobody can grant anything in — recoverable only by a shell on the
+    production box. A permission model that can strand itself is worse than no
+    permission model, because it fails at the moment somebody is already having
+    a bad day.
+    """
+    if not user.is_staff:
+        raise OperationsError("That is not a Genmars account.")
+    if role not in User.StaffRole.values:
+        raise OperationsError("Founder, commercial, or delivery.", field="role")
+
+    losing_founder = (
+        user.staff_role == User.StaffRole.FOUNDER and role != User.StaffRole.FOUNDER
+    )
+    if losing_founder and not _founders(exclude=user).exists():
+        raise OperationsError(
+            "This is the only founder. Make somebody else a founder first, or "
+            "nobody will be able to change roles at all."
+        )
+
+    user.staff_role = role
+    user.save(update_fields=["staff_role"])
+    log.info(
+        "staff role changed: %s -> %s by %s", user.email, role, actor.email
+    )
+    return user
+
+
+@transaction.atomic
+def set_staff_active(*, actor: User, user: User, active: bool) -> User:
+    """
+    Revoke or restore access without deleting the account.
+
+    Django refuses to authenticate an inactive user, so this is a real
+    revocation. The account stays because the person's authorship does — the
+    progress notes they wrote, the gates they met, the contracts they issued.
+    Deleting them would either destroy that record or fail on a PROTECT, and
+    both are worse than a dormant row.
+
+    You cannot deactivate yourself: it is never what was meant, and it ends
+    with somebody locked out of the system they were tidying.
+    """
+    if not user.is_staff:
+        raise OperationsError("That is not a Genmars account.")
+    if user.pk == actor.pk and not active:
+        raise OperationsError("You cannot deactivate your own account.")
+    if (
+        not active
+        and user.staff_role == User.StaffRole.FOUNDER
+        and not _founders(exclude=user).exists()
+    ):
+        raise OperationsError(
+            "This is the only active founder. Make somebody else a founder first."
+        )
+
+    # Charter 05 §I — every live order names a contact the client can reach.
+    # Revoking someone would silently leave those clients pointed at an account
+    # that can no longer sign in. Refusing here forces the reassignment to
+    # happen deliberately, and names the orders so it is one job rather than a
+    # hunt.
+    if not active:
+        stranded = list(
+            user.orders_as_contact.exclude(
+                status__in=[Order.Status.DELIVERED, Order.Status.CLOSED]
+            ).values_list("reference", flat=True)
+        )
+        if stranded:
+            raise OperationsError(
+                "They are still the named contact on "
+                + ", ".join(stranded)
+                + ". Name someone else on those orders first — the client is "
+                "promised a contact they can reach."
+            )
+
+    user.is_active = active
+    user.save(update_fields=["is_active"])
+    log.info(
+        "staff %s: %s by %s",
+        "reactivated" if active else "deactivated",
+        user.email,
+        actor.email,
+    )
+    return user

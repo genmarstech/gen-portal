@@ -28,7 +28,10 @@ PASSWORD = "correct-horse-battery"
 def staff() -> User:
     return User.objects.create_user(
         email="ops@genmars.co.ke", password=PASSWORD, full_name="Ops",
-        is_staff=True, email_verified_at=timezone.now(),
+        # Commercial: qualifying an enquiry commits the company's capacity,
+        # and Charter 02 §I gives that to the commercial partners.
+        is_staff=True, staff_role=User.StaffRole.COMMERCIAL,
+        email_verified_at=timezone.now(),
     )
 
 

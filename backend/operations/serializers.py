@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from accounts.models import Membership, Organisation
+from accounts.models import Membership, Organisation, User
 from portal.models import (
     Blocker,
     Contract,
@@ -289,6 +289,15 @@ class OrderWriteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 "The named contact must be a Genmars account."
             )
+        # Charter 05 §I promises "a named point of contact". A revoked account
+        # cannot sign in, so naming one keeps the field filled while breaking
+        # the promise it exists to keep — which is worse than leaving it empty,
+        # because it looks answered.
+        if value and not value.is_active:
+            raise serializers.ValidationError(
+                "That colleague's access has been revoked. Name someone who can "
+                "still be reached."
+            )
         return value
 
 
@@ -358,3 +367,38 @@ class InviteSerializer(serializers.Serializer):
 class MembershipWriteSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=Membership.Role.choices, required=False)
     receives_updates = serializers.BooleanField(required=False)
+
+
+# ── the team ─────────────────────────────────────────────────────────────────
+
+
+class TeamMemberSerializer(serializers.ModelSerializer):
+    role_label = serializers.CharField(source="get_staff_role_display", read_only=True)
+    # Whether they have ever set a password. An invited colleague who never
+    # accepted cannot sign in, and in a list of three people that difference
+    # is the whole state of the invitation.
+    accepted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id", "email", "full_name", "staff_role", "role_label",
+            "is_active", "date_joined", "accepted",
+        ]
+
+    def get_accepted(self, obj: User) -> bool:
+        return obj.is_email_verified and obj.has_usable_password()
+
+
+class StaffInviteSerializer(serializers.Serializer):
+    email = serializers.EmailField(max_length=254)
+    full_name = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    role = serializers.ChoiceField(choices=User.StaffRole.choices)
+
+    def validate_email(self, value: str) -> str:
+        return value.strip().lower()
+
+
+class StaffWriteSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=User.StaffRole.choices, required=False)
+    is_active = serializers.BooleanField(required=False)

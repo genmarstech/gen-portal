@@ -29,9 +29,12 @@ from portal.models import (
 )
 
 from . import selectors, services
-from .permissions import IsStaff
+from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
     BlockerSerializer,
+    StaffInviteSerializer,
+    StaffWriteSerializer,
+    TeamMemberSerializer,
     ContractSerializer,
     IssueContractSerializer,
     ServiceSerializer,
@@ -94,6 +97,8 @@ class EnquiryListView(StaffView):
 
 
 class EnquiryDetailView(StaffView):
+
+    permission_classes = [CanQualify]
     def get(self, request, pk: int):
         enquiry = selectors.enquiry(pk)
         if enquiry is None:
@@ -122,6 +127,8 @@ class EnquiryDetailView(StaffView):
 
 
 class EnquiryConvertView(StaffView):
+
+    permission_classes = [CanQualify]
     def post(self, request, pk: int):
         enquiry = selectors.enquiry(pk)
         if enquiry is None:
@@ -277,18 +284,83 @@ class MilestoneDetailView(StaffView):
 
 
 class StaffDirectoryView(StaffView):
-    """Genmars accounts, for the 'named contact' picker. No client accounts."""
+    """
+    The team. Readable by every staff account, changeable by a founder.
+
+    Also feeds the "named contact" picker, which is why it stays readable to
+    everyone: choosing who a client escalates to is ordinary work, not an
+    access decision.
+
+    Inactive accounts are included and flagged rather than filtered out. A
+    deactivated colleague still authored notes and issued contracts, and a
+    directory that hides them makes those look authorless.
+    """
 
     def get(self, request):
-        people = User.objects.filter(is_staff=True).order_by("full_name", "email")
+        people = User.objects.filter(is_staff=True).order_by(
+            "-is_active", "full_name", "email"
+        )
         return Response(
             {
-                "staff": [
-                    {"id": u.pk, "full_name": u.full_name, "email": u.email}
-                    for u in people
-                ]
+                "staff": TeamMemberSerializer(people, many=True).data,
+                # What the CURRENT user may do, so the UI can hide controls it
+                # would only get a 403 from. The server is still the authority;
+                # this exists so the screen does not offer what it cannot do.
+                "me": {
+                    "id": request.user.pk,
+                    "email": request.user.email,
+                    "staff_role": request.user.staff_role,
+                    "can_qualify": request.user.can_qualify,
+                    "can_commit": request.user.can_commit,
+                    "can_manage_access": request.user.can_manage_access,
+                },
             }
         )
+
+    def post(self, request):
+        """Invite a colleague. Founder only."""
+        if not request.user.can_manage_access:
+            return Response(
+                {"detail": "Only a founder can add someone to the team."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
+        form = StaffInviteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            user, _ = services.invite_staff(
+                actor=request.user,
+                email=form.validated_data["email"],
+                full_name=form.validated_data["full_name"],
+                role=form.validated_data["role"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(TeamMemberSerializer(user).data, status=http.HTTP_201_CREATED)
+
+
+class StaffDetailView(StaffView):
+    """Change a colleague's role, or revoke their access. Founder only."""
+
+    permission_classes = [CanManageAccess]
+
+    def patch(self, request, pk: int):
+        user = get_object_or_404(User, pk=pk, is_staff=True)
+        form = StaffWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            if "role" in form.validated_data:
+                user = services.set_staff_role(
+                    actor=request.user, user=user, role=form.validated_data["role"]
+                )
+            if "is_active" in form.validated_data:
+                user = services.set_staff_active(
+                    actor=request.user,
+                    user=user,
+                    active=form.validated_data["is_active"],
+                )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(TeamMemberSerializer(user).data)
 
 
 # ── engineering delivery ─────────────────────────────────────────────────────
@@ -379,6 +451,8 @@ class BackfillGatesView(StaffView):
 
 
 class OrganisationListView(StaffView):
+
+    permission_classes = [CanManageAccess]
     def get(self, request):
         return Response(
             {"organisations": OrganisationSerializer(selectors.organisations(), many=True).data}
@@ -398,6 +472,8 @@ class OrganisationListView(StaffView):
 
 
 class OrganisationMembersView(StaffView):
+
+    permission_classes = [CanManageAccess]
     def post(self, request, pk: int):
         org = selectors.organisation(pk)
         if org is None:
@@ -430,6 +506,8 @@ class OrganisationMembersView(StaffView):
 
 
 class MembershipDetailView(StaffView):
+
+    permission_classes = [CanManageAccess]
     def patch(self, request, pk: int):
         membership = get_object_or_404(Membership, pk=pk)
         form = MembershipWriteSerializer(data=request.data)
@@ -454,6 +532,8 @@ class MembershipDetailView(StaffView):
 
 
 class ServiceListView(StaffView):
+
+    permission_classes = [CanCommit]
     def get(self, request):
         return Response({"services": ServiceSerializer(selectors.services(), many=True).data})
 
@@ -468,6 +548,8 @@ class ServiceListView(StaffView):
 
 
 class ServiceDetailView(StaffView):
+
+    permission_classes = [CanCommit]
     def patch(self, request, pk: int):
         service = get_object_or_404(Service, pk=pk)
         form = ServiceWriteSerializer(data=request.data)
@@ -480,6 +562,8 @@ class ServiceDetailView(StaffView):
 
 
 class ContractListView(StaffView):
+
+    permission_classes = [CanCommit]
     """Issue a new version. There is no PUT — an issued contract is frozen."""
 
     def post(self, request, reference: str):
@@ -498,6 +582,8 @@ class ContractListView(StaffView):
 
 
 class ContractSignView(StaffView):
+
+    permission_classes = [CanCommit]
     def post(self, request, reference: str, pk: int):
         contract = get_object_or_404(Contract, pk=pk, order__reference=reference)
         form = SignatureSerializer(data=request.data)
@@ -516,6 +602,8 @@ class ContractSignView(StaffView):
 
 
 class ContractVoidView(StaffView):
+
+    permission_classes = [CanCommit]
     def post(self, request, reference: str, pk: int):
         contract = get_object_or_404(Contract, pk=pk, order__reference=reference)
         form = VoidSerializer(data=request.data)

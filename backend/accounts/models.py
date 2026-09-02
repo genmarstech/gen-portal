@@ -44,6 +44,10 @@ class UserManager(BaseUserManager):
 
     def create_superuser(self, email: str, password: str, **extra):
         extra.setdefault("is_staff", True)
+        # A superuser is a founder. `createsuperuser` is how the first account
+        # on a fresh deployment is made, and one that could not grant roles
+        # would leave the system with no way to bootstrap authority.
+        extra.setdefault("staff_role", "founder")
         extra.setdefault("is_superuser", True)
         extra.setdefault("is_active", True)
         extra.setdefault("email_verified_at", timezone.now())
@@ -59,7 +63,46 @@ class User(AbstractBaseUser, PermissionsMixin):
     # Charter 03 §IV Tier 1 — least privilege. `is_staff` means Genmars, not
     # "admin": every client-facing queryset filters on membership, never on this.
     is_staff = models.BooleanField(default=False)
-    is_active = models.BooleanField(default=True)
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "False revokes access without deleting the account. Django refuses "
+            "to authenticate an inactive user, so this is a real revocation — "
+            "and the person's authorship of notes, gates and decisions survives, "
+            "which deleting them would destroy."
+        ),
+    )
+
+    class StaffRole(models.TextChoices):
+        """
+        Who decides what. Taken from Charter 02 §I rather than invented.
+
+        FOUNDER holds the capacity veto and the sole call on pricing and public
+        statements. COMMERCIAL holds qualification — whether an enquiry becomes
+        work. DELIVERY builds it.
+
+        THREE ROLES, NOT A PERMISSION MATRIX. This company is three people
+        (Charter 01 §VII, Stage 0). A matrix of checkboxes is machinery nobody
+        here needs, and Charter 03 §I says a thing enters the stack only when
+        what is already there cannot do the job. Named roles that mirror the
+        actual division of authority can do the job.
+        """
+
+        FOUNDER = "founder", "Founder"
+        COMMERCIAL = "commercial", "Commercial"
+        DELIVERY = "delivery", "Delivery"
+
+    staff_role = models.CharField(
+        max_length=16,
+        choices=StaffRole.choices,
+        blank=True,
+        default="",
+        help_text=(
+            "Empty for client accounts. A staff account with no role can READ "
+            "operations and change nothing — the safe state for someone whose "
+            "role has not been decided yet."
+        ),
+    )
 
     email_verified_at = models.DateTimeField(null=True, blank=True)
     date_joined = models.DateTimeField(default=timezone.now)
@@ -83,6 +126,40 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_email_verified(self) -> bool:
         return self.email_verified_at is not None
+
+    # ── what this account may do ────────────────────────────────────────────
+    #
+    # READ IS SHARED, WRITE IS SCOPED. In a three-person company, hiding the
+    # work from each other would be theatre; deciding who may commit the
+    # company is not. So every staff account reads everything, and these gate
+    # the three things Charter 02 §I actually reserves.
+
+    @property
+    def can_qualify(self) -> bool:
+        """Turn an enquiry into work. Charter 02 §I — qualification is the
+        commercial partners', and capacity is the founder's veto."""
+        return self.is_staff and self.staff_role in {
+            self.StaffRole.FOUNDER,
+            self.StaffRole.COMMERCIAL,
+        }
+
+    @property
+    def can_commit(self) -> bool:
+        """Issue or sign a statement of work, and set what services cost us to
+        promise. Money and commitment, which is the same authority."""
+        return self.is_staff and self.staff_role in {
+            self.StaffRole.FOUNDER,
+            self.StaffRole.COMMERCIAL,
+        }
+
+    @property
+    def can_manage_access(self) -> bool:
+        """Change roles, invite staff, deactivate accounts.
+
+        FOUNDER ONLY, and deliberately the narrowest of the three: this is the
+        permission that can grant every other permission, including to itself.
+        """
+        return self.is_staff and self.staff_role == self.StaffRole.FOUNDER
 
     @property
     def is_locked(self) -> bool:

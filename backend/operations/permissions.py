@@ -43,3 +43,61 @@ class IsStaff(BasePermission):
     def has_permission(self, request, view) -> bool:
         user = request.user
         return bool(user and user.is_authenticated and user.is_staff)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# What a staff account may CHANGE
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# READ IS SHARED, WRITE IS SCOPED, and the split is deliberate. Three people
+# hiding work from each other would be theatre. Deciding who may commit the
+# company is not, and Charter 02 §I already decided it: qualification belongs
+# to the commercial partners, the capacity veto and pricing to the founder.
+#
+# These read the properties on User rather than restating the rule, so the
+# answer to "who may do this" lives in one place and the views only say which
+# question they are asking.
+
+
+class CanQualify(IsStaff):
+    """
+    Decide whether an enquiry becomes work.
+
+    Charter 02 §I. A delivery engineer converting an enquiry would commit the
+    company's capacity, which is the founder's veto and the partners' call.
+    """
+
+    message = "Qualifying an enquiry is a commercial decision."
+
+    def has_permission(self, request, view) -> bool:
+        return super().has_permission(request, view) and request.user.can_qualify
+
+
+class CanCommit(IsStaff):
+    """
+    Issue or sign a statement of work, and set what a service promises.
+
+    Money and commitment are the same authority. A contract is the company
+    binding itself to a fixed scope at a fixed price.
+    """
+
+    message = "Issuing or signing a statement of work is a commercial decision."
+
+    def has_permission(self, request, view) -> bool:
+        return super().has_permission(request, view) and request.user.can_commit
+
+
+class CanManageAccess(IsStaff):
+    """
+    Roles, staff invitations, deactivation, and who at a client can see what.
+
+    FOUNDER ONLY, and the narrowest of the three on purpose: this is the
+    permission that grants every other permission, including to itself. Anyone
+    holding it can make themselves anything, so it is held by the person the
+    charter already makes accountable.
+    """
+
+    message = "Only a founder can change who has access."
+
+    def has_permission(self, request, view) -> bool:
+        return super().has_permission(request, view) and request.user.can_manage_access

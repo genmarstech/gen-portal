@@ -33,7 +33,10 @@ def _clear_throttles():
 def staff() -> User:
     return User.objects.create_user(
         email="ops@genmars.co.ke", password=PASSWORD, full_name="Ops Person",
-        is_staff=True, email_verified_at=timezone.now(),
+        # Founder: this module is about who may reach a client's account,
+        # which is an access decision (Charter 02 §I).
+        is_staff=True, staff_role=User.StaffRole.FOUNDER,
+        email_verified_at=timezone.now(),
     )
 
 
