@@ -18,6 +18,7 @@ from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from accounts.mail_health import mail_health
 from accounts.models import Membership, Organisation, User
 from portal.models import (
     Blocker,
@@ -94,6 +95,11 @@ class OverviewView(StaffView):
             {
                 "counts": selectors.queue_counts(),
                 "me": {"full_name": request.user.full_name, "email": request.user.email},
+                # Whether our outbound mail is actually being delivered. It
+                # rides on the overview because this is the one screen everyone
+                # here loads, and the failure it reports is one that cannot be
+                # reported by email — see accounts/mail_health.py.
+                "mail": mail_health(),
             }
         )
 
