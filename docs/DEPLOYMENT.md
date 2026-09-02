@@ -430,6 +430,7 @@ Record each successful run:
 | 2026-09-01 | `portal-20260901-125232.dump` | Passed — 9 tables, data present | First deploy |
 | 2026-09-02 | `portal-20260902-021758.dump` | **Failed** — 6 tables missing. Not data loss: the dump predates the same day's invoice, contract, service and M-Pesa migrations. Fixed by taking a dump after the deploy | Restore-test extension |
 | 2026-09-02 | `portal-20260902-155126.dump` | Passed — 15 tables; 8 services, 2 contracts, 2 invoices, 1 M-Pesa payment, 4 enquiries all recovered | Restore-test extension |
+| 2026-09-02 | `portal-20260902-164927.dump` | Passed — 17 tables, now including the payment ledger. Taken after the invoicing deploy, per the rule below | Payments deploy |
 
 **Take a dump immediately after any deploy that adds tables.** The 2026-09-02
 failure above is the reason: for roughly nine hours the portal held contracts,

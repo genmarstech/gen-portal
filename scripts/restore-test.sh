@@ -115,6 +115,8 @@ require_table portal_service
 require_table portal_contract
 require_table portal_invoice
 require_table portal_mpesapayment
+require_table portal_paymentrecord
+require_table portal_notification
 require_table portal_deliverygate
 require_table portal_blocker
 require_table django_migrations
@@ -198,6 +200,9 @@ else
     compare_counts portal_contract
     compare_counts portal_invoice
     compare_counts portal_mpesapayment
+    # The payment ledger. Every shilling the company has been paid is a row
+    # here now, so a dump that loses these loses the record of the money.
+    compare_counts portal_paymentrecord
     compare_counts portal_enquiry
 fi
 
