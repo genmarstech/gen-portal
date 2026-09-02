@@ -17,6 +17,7 @@ import secrets
 from datetime import timedelta
 
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
@@ -119,6 +120,32 @@ class Membership(models.Model):
         Organisation, on_delete=models.CASCADE, related_name="memberships"
     )
     role = models.CharField(max_length=16, choices=Role.choices, default=Role.MEMBER)
+
+    receives_updates = models.BooleanField(
+        default=True,
+        help_text=(
+            "Whether this person is emailed when a progress note is published. "
+            "Service mail about their own engagement, not marketing — but a "
+            "second or third person at a client often does not want every note, "
+            "and having no way to stop it is how service mail becomes marketing "
+            "in the recipient's mind."
+        ),
+    )
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="memberships_created",
+        limit_choices_to={"is_staff": True},
+        help_text=(
+            "Null for the person who created the organisation through "
+            "onboarding. Set when Genmars added them — Charter 01 §V, nothing "
+            "ships without a named owner, and access is a thing that ships."
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -139,6 +166,12 @@ class EmailCode(models.Model):
     class Purpose(models.TextChoices):
         VERIFY = "verify", "Verify email"
         RESET = "reset", "Password reset"
+        # An invitation is a password-set for an account the person did not
+        # create. Kept distinct from RESET so the email can say what actually
+        # happened — "Genmars has added you to Kilimani Dental" rather than
+        # "reset your password", which to someone who never had one reads as a
+        # phishing attempt.
+        INVITE = "invite", "Invitation"
 
     LIFETIME = timedelta(minutes=15)
     LENGTH = 6

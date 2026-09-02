@@ -98,6 +98,21 @@ class SignUpSerializer(EmailSerializer):
         return value
 
 
+class InviteAcceptSerializer(EmailSerializer):
+    code = serializers.RegexField(r"^\d{6}$", trim_whitespace=True)
+    password = serializers.CharField(trim_whitespace=False, min_length=10)
+
+    def validate_password(self, value: str) -> str:
+        from django.contrib.auth.password_validation import validate_password
+        from django.core.exceptions import ValidationError as DjangoValidationError
+
+        try:
+            validate_password(value)
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(list(e.messages)) from e
+        return value
+
+
 class CodeSerializer(EmailSerializer):
     code = serializers.RegexField(r"^\d{6}$", trim_whitespace=True)
 
@@ -377,6 +392,40 @@ class ResetView(APIView):
         if not user.is_email_verified:
             _issue_and_send(user, EmailCode.Purpose.VERIFY)
 
+        return Response({"next": _destination(user)})
+
+
+class AcceptInviteView(APIView):
+    """
+    Set the password on an account Genmars created for a client.
+
+    Throttled exactly like the other code endpoints: an invite code is a
+    six-digit credential, and an unthrottled endpoint that sets a password from
+    one is a brute-force target with a very small keyspace.
+
+    Signs them in on success. They have just proved inbox control and chosen a
+    password; asking them to immediately type it again is friction with nothing
+    behind it.
+    """
+
+    permission_classes = [AllowAny]
+    throttle_classes = [CodeThrottle, EmailScopedThrottle]
+    throttle_scope = "auth_code"
+
+    def post(self, request):
+        data = InviteAcceptSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+
+        try:
+            user = identity.accept_invite(
+                data.validated_data["email"],
+                data.validated_data["code"],
+                data.validated_data["password"],
+            )
+        except identity.AuthError as e:
+            return _fail(e, status.HTTP_400_BAD_REQUEST)
+
+        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
         return Response({"next": _destination(user)})
 
 

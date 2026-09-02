@@ -17,13 +17,18 @@ from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts.models import User
+from accounts.models import Membership, Organisation, User
 from portal.models import Blocker, DeliveryGate, Milestone, Order, ProgressNote
 
 from . import selectors, services
 from .permissions import IsStaff
 from .serializers import (
     BlockerSerializer,
+    InviteSerializer,
+    MembershipSerializer,
+    MembershipWriteSerializer,
+    OrganisationSerializer,
+    OrganisationWriteSerializer,
     BlockerWriteSerializer,
     ConvertSerializer,
     DeliveryGateSerializer,
@@ -343,3 +348,78 @@ class BackfillGatesView(StaffView):
             services.create_delivery_gates(order=order)
             created += order.gates.count() - before
         return Response({"gates_created": created})
+
+
+# ── client accounts ──────────────────────────────────────────────────────────
+
+
+class OrganisationListView(StaffView):
+    def get(self, request):
+        return Response(
+            {"organisations": OrganisationSerializer(selectors.organisations(), many=True).data}
+        )
+
+    def post(self, request):
+        form = OrganisationWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            org = services.create_organisation(name=form.validated_data["name"])
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(
+            OrganisationSerializer(selectors.organisation(org.pk)).data,
+            status=http.HTTP_201_CREATED,
+        )
+
+
+class OrganisationMembersView(StaffView):
+    def post(self, request, pk: int):
+        org = selectors.organisation(pk)
+        if org is None:
+            return Response({"detail": "No such organisation."}, status=http.HTTP_404_NOT_FOUND)
+
+        form = InviteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            membership, invited = services.invite_to_organisation(
+                organisation=org,
+                actor=request.user,
+                email=form.validated_data["email"],
+                full_name=form.validated_data["full_name"],
+                role=form.validated_data["role"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(
+            {
+                "membership": MembershipSerializer(membership).data,
+                # False when the account already existed, so the UI can say
+                # "added" rather than "invited" — no code was sent, and telling
+                # someone to check their inbox for nothing is worse than saying
+                # nothing.
+                "invited": invited,
+            },
+            status=http.HTTP_201_CREATED,
+        )
+
+
+class MembershipDetailView(StaffView):
+    def patch(self, request, pk: int):
+        membership = get_object_or_404(Membership, pk=pk)
+        form = MembershipWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            membership = services.update_membership(
+                membership=membership,
+                role=form.validated_data.get("role"),
+                receives_updates=form.validated_data.get("receives_updates"),
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(MembershipSerializer(membership).data)
+
+    def delete(self, request, pk: int):
+        membership = get_object_or_404(Membership, pk=pk)
+        services.remove_membership(membership=membership)
+        return Response(status=http.HTTP_204_NO_CONTENT)

@@ -9,13 +9,17 @@ place, rather than spread across view bodies where the next view forgets one.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
-from accounts.models import User
+from accounts import emails, identity
+from accounts.models import EmailCode, Membership, Organisation, User
 from portal.models import Blocker, DeliveryGate, Enquiry, Order, ProgressNote
+
+log = logging.getLogger(__name__)
 
 REFERENCE_PREFIX = "GM"
 _MAX_REFERENCE_ATTEMPTS = 10
@@ -188,18 +192,68 @@ def decide_enquiry(
 
 def publish_note(*, note: ProgressNote) -> ProgressNote:
     """
-    Publish a drafted weekly note.
+    Publish a drafted weekly note, and tell the client it exists.
 
     Separate from writing it, because publishing is the irreversible half: the
     model refuses to let a published note's body change (Charter 05 §III — the
     client is entitled to rely on what they were told), so a draft is the only
     chance to fix a typo.
+
+    ── PUBLISHING COMMITS EVEN IF THE EMAIL FAILS ─────────────────────────────
+    The note is published the moment it is saved; the client can read it in the
+    portal whether or not Resend is reachable. Rolling the publish back because
+    mail failed would mean an outage at our mail provider silently un-publishes
+    a promise we already made. So the send is attempted after, and a failure is
+    logged loudly rather than raised — the note is out, and the worst case is
+    that someone has to sign in to find it.
     """
     if note.is_published:
         return note
     note.published_at = timezone.now()
     note.save(update_fields=["published_at"])
+
+    _notify_progress_note(note)
     return note
+
+
+def _notify_progress_note(note: ProgressNote) -> None:
+    """
+    Email everyone at the client who wants updates.
+
+    Deliberately NOT every member: `receives_updates` exists because a second
+    or third person at a client often does not want every note, and service
+    mail with no way to stop it becomes marketing in the recipient's mind.
+
+    Unverified addresses are skipped. An invited account that never accepted is
+    an address nobody has proved they read, and sending a client's commercial
+    detail to it would be sending it to whoever happens to own that mailbox.
+    """
+    order = note.order
+    recipients = (
+        Membership.objects.filter(
+            organisation=order.organisation, receives_updates=True
+        )
+        .select_related("user")
+        .exclude(user__email_verified_at__isnull=True)
+    )
+
+    for membership in recipients:
+        try:
+            emails.send_progress_note(
+                email=membership.user.email,
+                reference=order.reference,
+                title=order.title,
+                week_of=note.week_of.isoformat(),
+                body=note.body,
+            )
+        except Exception:
+            # Never let one bad address stop the rest, and never let mail
+            # failure surface as "publishing failed" — it did not.
+            log.exception(
+                "progress note %s published but not emailed to membership %s",
+                note.pk,
+                membership.pk,
+            )
 
 
 # ── engineering delivery ─────────────────────────────────────────────────────
@@ -303,3 +357,131 @@ def clear_blocker(*, blocker: Blocker, resolution: str = "") -> Blocker:
         blocker.resolution = resolution.strip()
     blocker.save(update_fields=["cleared_at", "resolution"])
     return blocker
+
+
+# ── client accounts ──────────────────────────────────────────────────────────
+
+
+@transaction.atomic
+def create_organisation(*, name: str) -> Organisation:
+    """
+    A client organisation, created by staff rather than by a signup.
+
+    Onboarding already creates one for whoever signs up. This is for the other
+    case: a client we talked to first, whose people we want to invite before
+    any of them has been to the site.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise OperationsError("Give the organisation a name.", field="name")
+
+    existing = Organisation.objects.filter(name__iexact=name).first()
+    if existing:
+        raise OperationsError(
+            f"{existing.name} already exists.", field="name"
+        )
+    return Organisation.objects.create(name=name)
+
+
+@transaction.atomic
+def invite_to_organisation(
+    *,
+    organisation: Organisation,
+    actor: User,
+    email: str,
+    full_name: str = "",
+    role: str = Membership.Role.MEMBER,
+) -> tuple[Membership, bool]:
+    """
+    Give somebody access to a client organisation. Returns (membership, invited).
+
+    ── THE ACCOUNT IS CREATED WITHOUT A USABLE PASSWORD ────────────────────────
+    See identity.accept_invite. Staff never know a client credential, it never
+    travels by email, and until the person sets one nobody can sign in as them
+    — including us. `invited` is False when the account already existed, which
+    is the case where no code is sent because they already have a password.
+
+    ── A CLIENT ACCOUNT IS NEVER STAFF ─────────────────────────────────────────
+    Refuses outright if the address belongs to a Genmars account. `is_staff`
+    grants nothing in the client portal by design (portal/selectors.py), but
+    giving a staff account a client membership would hand it real client data
+    through the client API — quietly, and through a path nobody would think to
+    check.
+    """
+    email = (email or "").strip().lower()
+    if not email:
+        raise OperationsError("An email address is needed.", field="email")
+    if role not in Membership.Role.values:
+        raise OperationsError("Owner or member.", field="role")
+
+    user = User.objects.filter(email=email).first()
+
+    if user and user.is_staff:
+        raise OperationsError(
+            "That is a Genmars account. Staff do not hold client memberships.",
+            field="email",
+        )
+
+    if Membership.objects.filter(user=user, organisation=organisation).exists():
+        raise OperationsError(
+            f"{email} is already on {organisation.name}.", field="email"
+        )
+
+    invited = False
+    if user is None:
+        user = User.objects.create_user(
+            email=email, password=None, full_name=(full_name or "").strip()
+        )
+        # create_user with password=None already produces an unusable password;
+        # this is belt and braces against that changing under us, because the
+        # whole guarantee rests on it.
+        user.set_unusable_password()
+        user.save(update_fields=["password"])
+        invited = True
+
+    membership = Membership.objects.create(
+        user=user, organisation=organisation, role=role, invited_by=actor
+    )
+
+    if invited:
+        issued = identity.issue_code(user, EmailCode.Purpose.INVITE)
+        emails.send_invite(
+            email=user.email,
+            code=issued.code,
+            organisation=organisation.name,
+            invited_by=actor.full_name or actor.email,
+        )
+
+    return membership, invited
+
+
+@transaction.atomic
+def update_membership(
+    *, membership: Membership, role: str | None = None, receives_updates: bool | None = None
+) -> Membership:
+    fields = []
+    if role is not None:
+        if role not in Membership.Role.values:
+            raise OperationsError("Owner or member.", field="role")
+        membership.role = role
+        fields.append("role")
+    if receives_updates is not None:
+        membership.receives_updates = receives_updates
+        fields.append("receives_updates")
+    if fields:
+        membership.save(update_fields=fields)
+    return membership
+
+
+@transaction.atomic
+def remove_membership(*, membership: Membership) -> None:
+    """
+    Revoke access.
+
+    The MEMBERSHIP goes, not the account. Deleting the user would cascade to
+    anything they submitted — the enquiry that started the engagement, for one —
+    and losing the record of why we took work on is a worse outcome than a
+    dormant account. Without a membership they can sign in and see nothing,
+    which is what revoked access should look like.
+    """
+    membership.delete()

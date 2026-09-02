@@ -32,4 +32,9 @@ urlpatterns = [
     path("ops/orders/<str:reference>/gates/<int:pk>", views.GateView.as_view(), name="ops-gate"),
     path("ops/orders/<str:reference>/blockers", views.BlockerListView.as_view(), name="ops-blockers"),
     path("ops/orders/<str:reference>/blockers/<int:pk>", views.BlockerDetailView.as_view(), name="ops-blocker"),
+
+    # ---- client accounts ----
+    path("ops/organisations", views.OrganisationListView.as_view(), name="ops-organisations"),
+    path("ops/organisations/<int:pk>/members", views.OrganisationMembersView.as_view(), name="ops-org-members"),
+    path("ops/memberships/<int:pk>", views.MembershipDetailView.as_view(), name="ops-membership"),
 ]

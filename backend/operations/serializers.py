@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from accounts.models import Membership, Organisation
 from portal.models import Blocker, DeliveryGate, Enquiry, Milestone, Order, ProgressNote
 
 
@@ -229,3 +230,55 @@ class ConvertSerializer(serializers.Serializer):
 class DecideSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=Enquiry.Status.choices)
     note = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+# ── client accounts ──────────────────────────────────────────────────────────
+
+
+class MembershipSerializer(serializers.ModelSerializer):
+    user = PersonSerializer(read_only=True)
+    role_label = serializers.CharField(source="get_role_display", read_only=True)
+    invited_by = PersonSerializer(read_only=True)
+    # Whether they have ever set a password. An invited account that was never
+    # accepted looks identical to an active one in a members list, and the
+    # difference is the whole point of an invite.
+    accepted = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Membership
+        fields = [
+            "id", "user", "role", "role_label", "receives_updates",
+            "invited_by", "created_at", "accepted",
+        ]
+
+    def get_accepted(self, obj: Membership) -> bool:
+        return obj.user.is_email_verified and obj.user.has_usable_password()
+
+
+class OrganisationSerializer(serializers.ModelSerializer):
+    memberships = MembershipSerializer(many=True, read_only=True)
+    order_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Organisation
+        fields = ["id", "name", "created_at", "memberships", "order_count"]
+
+
+class OrganisationWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=200)
+
+
+class InviteSerializer(serializers.Serializer):
+    email = serializers.EmailField(max_length=254)
+    full_name = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    role = serializers.ChoiceField(choices=Membership.Role.choices, default=Membership.Role.MEMBER)
+
+    def validate_email(self, value: str) -> str:
+        # Same normalisation as accounts/views.py — addresses are stored
+        # lower-cased and a mixed-case invite would create a second account.
+        return value.strip().lower()
+
+
+class MembershipWriteSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=Membership.Role.choices, required=False)
+    receives_updates = serializers.BooleanField(required=False)

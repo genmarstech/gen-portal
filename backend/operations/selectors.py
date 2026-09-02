@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from django.db.models import Count, Prefetch, QuerySet
 
+from accounts.models import Membership, Organisation
 from portal.models import Blocker, DeliveryGate, Enquiry, Milestone, Order, ProgressNote
 
 
@@ -211,3 +212,29 @@ def delivery_counts() -> dict[str, int]:
             if o.total > 0 and o.total == o.met
         ),
     }
+
+
+def organisations() -> QuerySet[Organisation]:
+    """
+    Every client organisation with its people, for the accounts screen.
+
+    Prefetched: a members list that lazily walks memberships is one query per
+    organisation plus one per member, on the page whose entire job is showing
+    members.
+    """
+    return (
+        Organisation.objects.annotate(order_count=Count("orders", distinct=True))
+        .prefetch_related(
+            Prefetch(
+                "memberships",
+                queryset=Membership.objects.select_related(
+                    "user", "invited_by"
+                ).order_by("created_at"),
+            )
+        )
+        .order_by("name")
+    )
+
+
+def organisation(pk: int) -> Organisation | None:
+    return organisations().filter(pk=pk).first()

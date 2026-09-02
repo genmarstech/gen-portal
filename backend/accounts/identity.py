@@ -273,6 +273,56 @@ def complete_password_reset(email: str, code: str, new_password: str) -> User:
     return user
 
 
+def accept_invite(email: str, code: str, new_password: str) -> User:
+    """
+    Set the password on an account Genmars created, and verify the address.
+
+    ── WHY STAFF NEVER SET A CLIENT'S PASSWORD ─────────────────────────────────
+    The obvious implementation of "add a client" is to create the account with a
+    password and tell them what it is. That is wrong in three ways at once: a
+    Genmars employee would know a client's credential, the credential would
+    travel by email in plain text, and the client could not prove afterwards
+    that only they could have signed in.
+
+    So an invited account is created with an UNUSABLE password. The only way it
+    becomes usable is the person proving inbox control and choosing their own,
+    which is this function. Until then the account exists and cannot be signed
+    into by anybody, including us.
+
+    Redeeming the code also VERIFIES the address, because succeeding here proves
+    exactly what the verification step proves — that the person reading the
+    inbox is the person acting. Sending a second code to confirm what the first
+    one just established is friction with no security in it.
+
+    Not decorated @transaction.atomic, for the reason complete_password_reset
+    documents: redeem_code commits its own attempt bookkeeping before raising,
+    and an outer rollback would discard it.
+    """
+    user = User.objects.filter(email=(email or "").strip().lower()).first()
+    if user is None:
+        raise AuthError(
+            "unknown_email", "That code is not right, or it has expired."
+        )
+
+    redeem_code(user, EmailCode.Purpose.INVITE, code)
+
+    with transaction.atomic():
+        user.set_password(new_password)
+        if user.email_verified_at is None:
+            user.email_verified_at = timezone.now()
+        user.failed_sign_ins = 0
+        user.locked_until = None
+        user.save(
+            update_fields=[
+                "password",
+                "email_verified_at",
+                "failed_sign_ins",
+                "locked_until",
+            ]
+        )
+    return user
+
+
 def change_password(user: User, current_password: str, new_password: str) -> None:
     if not user.check_password(current_password or ""):
         raise AuthError("bad_password", "Your current password is not right.")
