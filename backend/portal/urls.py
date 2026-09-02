@@ -6,6 +6,10 @@ from . import views
 
 urlpatterns = [
     path("onboarding", views.OnboardingView.as_view(), name="onboarding"),
+    # Ordering, for an account that already exists. See EnquiryCreateView —
+    # onboarding runs once, so without this a returning client's order was
+    # silently discarded.
+    path("enquiries", views.EnquiryCreateView.as_view(), name="enquiry-create"),
     path("orders", views.OrderListView.as_view(), name="order-list"),
     path("orders/<str:reference>", views.OrderDetailView.as_view(), name="order-detail"),
     path(

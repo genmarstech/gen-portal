@@ -55,10 +55,33 @@ export const RETURN_PARAM = "return";
 export function safeReturnTo(raw: string | null | undefined): string | null {
   if (!raw) return null;
 
+  /*
+   * An INTERNAL path, e.g. "/order?service=implementation".
+   *
+   * Added for the ordering flow: someone who clicks "Order Business Setup"
+   * while signed out has to be sent to /sign-in and then back to /order, and
+   * that destination is this origin rather than the marketing site.
+   *
+   * The checks are the standard open-redirect defence and each one matters:
+   *
+   *   · must start with a single "/" — "//evil.com" is protocol-relative and
+   *     a browser treats it as an absolute URL to another host, which is the
+   *     classic way this exact check gets bypassed
+   *   · no backslash — some browsers normalise "/\evil.com" the same way
+   *   · no scheme — "/javascript:..." cannot reach here, but a value that
+   *     parses as a URL later might, so anything with a colon before the
+   *     first slash is refused outright
+   */
+  if (raw.startsWith("/")) {
+    if (raw.startsWith("//") || raw.startsWith("/\\")) return null;
+    if (/^\/[^/?#]*:/.test(raw)) return null;
+    return raw;
+  }
+
   let url: URL;
   try {
-    // No base argument: a relative value has no origin to check, and this flow
-    // is only ever used to leave for another host.
+    // No base argument: a relative value has already been handled above, so
+    // anything reaching here is meant to be absolute.
     url = new URL(raw);
   } catch {
     return null;
@@ -68,6 +91,11 @@ export function safeReturnTo(raw: string | null | undefined): string | null {
   if (!allowed.includes(url.origin)) return null;
 
   return url.toString();
+}
+
+/** Is this return target on this origin rather than the marketing site? */
+export function isInternalReturn(returnTo: string): boolean {
+  return returnTo.startsWith("/");
 }
 
 /**
@@ -121,7 +149,15 @@ export function advance(
   returnTo: string | null,
 ): void {
   if (returnTo && isComplete(next)) {
-    window.location.assign(returnTo);
+    // Internal targets go through the router, which keeps the React tree and
+    // the session cookie; a full navigation to our own origin would work but
+    // costs a reload for no reason. External ones cannot use the router at
+    // all — it has no idea what genmars.co.ke is.
+    if (isInternalReturn(returnTo)) {
+      router.push(returnTo);
+    } else {
+      window.location.assign(returnTo);
+    }
     return;
   }
   router.push(withReturnTo(next, returnTo));

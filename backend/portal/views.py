@@ -22,7 +22,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts import identity
-from accounts.throttling import MpesaThrottle
+from accounts.throttling import EnquiryThrottle, MpesaThrottle
 from operations import services
 
 from . import mpesa
@@ -36,6 +36,7 @@ from .selectors import (
     orders_for,
 )
 from .serializers import (
+    EnquirySerializer,
     InvoiceDocumentSerializer,
     OnboardingSerializer,
     OrderDetailSerializer,
@@ -349,3 +350,75 @@ class MpesaCallbackView(APIView):
     @staticmethod
     def _ok():
         return Response({"ResultCode": 0, "ResultDesc": "Accepted"})
+
+
+class EnquiryCreateView(APIView):
+    """
+    File a new enquiry against an account that already exists.
+
+    The ordering path for returning clients, and the reason it exists is in
+    EnquirySerializer: without it, an existing client ordering a second service
+    was redirected to their dashboard and the request was thrown away.
+
+    Throttled. An enquiry is cheap to file and costs a human to read, and a
+    form that can be submitted in a loop turns into a queue nobody can work.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "enquiry"
+    throttle_classes = [EnquiryThrottle]
+
+    def post(self, request):
+        form = EnquirySerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        fields = form.validated_data
+
+        if not request.user.is_email_verified:
+            return Response(
+                {"detail": "Verify your email address first."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        membership = request.user.memberships.select_related("organisation").first()
+        if membership is None:
+            # Signed in but never onboarded — no organisation to file against.
+            # An ordinary state for an invited staff-adjacent account or a
+            # half-finished sign-up, so it routes rather than erroring.
+            return Response(
+                {
+                    "detail": "Finish setting up your account first.",
+                    "next": "/onboarding",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        service = None
+        if fields["service"]:
+            service = Service.objects.filter(
+                slug=fields["service"], is_active=True
+            ).first()
+
+        enquiry = Enquiry.objects.create(
+            organisation=membership.organisation,
+            submitted_by=request.user,
+            problem=fields["problem"],
+            monthly_cost=fields["monthly_cost"],
+            timeline=fields["timeline"],
+            budget_range=fields["budget_range"],
+            service=service,
+            tier=fields["tier"][:120],
+        )
+        log.info(
+            "enquiry %s filed by %s (service=%s tier=%s)",
+            enquiry.pk,
+            request.user.email,
+            service.slug if service else "-",
+            fields["tier"] or "-",
+        )
+        return Response(
+            {
+                "id": enquiry.pk,
+                "organisation": membership.organisation.name,
+            },
+            status=status.HTTP_201_CREATED,
+        )

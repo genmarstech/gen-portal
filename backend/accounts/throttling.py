@@ -99,3 +99,16 @@ class MpesaThrottle(ClientIPThrottle):
 
     scope = "mpesa"
     rate = "6/hour"
+
+
+class EnquiryThrottle(ClientIPThrottle):
+    """
+    New enquiries from a signed-in client.
+
+    Generous, because a client legitimately ordering three services in one
+    sitting is a good day, not an attack. Low enough that a stuck retry loop
+    cannot fill the queue a human has to read.
+    """
+
+    scope = "enquiry"
+    rate = "12/hour"

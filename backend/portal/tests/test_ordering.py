@@ -146,3 +146,153 @@ def test_an_overlong_tier_label_cannot_overflow_the_column(client, visitor, serv
     assert response.status_code in {201, 400}
     if response.status_code == 201:
         assert len(Enquiry.objects.get().tier) <= 120
+
+
+# ── a client who already has an account ──────────────────────────────────────
+
+
+@pytest.fixture
+def returning(visitor) -> User:
+    """A client who signed up some time ago and has an organisation."""
+    from accounts.models import Membership, Organisation
+
+    org = Organisation.objects.create(name="Kilimani Dental")
+    Membership.objects.create(user=visitor, organisation=org)
+    return visitor
+
+
+def test_an_existing_client_can_order_a_second_service(client, returning, service):
+    """
+    ═══════════════════════════════════════════════════════════════════════════
+    THE BUG THIS ENDPOINT EXISTS FOR.
+
+    Every tier on genmars.co.ke used to link to /sign-up. Onboarding runs once
+    and refuses a second time with `already_onboarded`, which the API answers
+    by redirecting to /dashboard — so a returning client who clicked "Order
+    Business Setup" landed on their dashboard with the order silently thrown
+    away. No error, no enquiry, and nobody here ever learned they had asked.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+    client.force_login(returning)
+    response = client.post(
+        reverse("enquiry-create"),
+        {
+            "problem": "We need the second location set up the same way.",
+            "service": "implementation",
+            "tier": "Business Setup",
+            "timeline": "Within three months",
+        },
+        content_type="application/json",
+    )
+    assert response.status_code == 201, response.json()
+
+    enquiry = Enquiry.objects.get()
+    assert enquiry.service == service
+    assert enquiry.tier == "Business Setup"
+    assert enquiry.organisation.name == "Kilimani Dental"
+    assert enquiry.submitted_by == returning
+
+
+def test_the_old_route_still_refuses_a_second_onboarding(client, returning):
+    """
+    The behaviour that caused the bug is unchanged and correct — onboarding
+    creates an organisation, and doing that twice would give one client two.
+    What changed is that ordering no longer goes through it.
+    """
+    response = client.post(
+        reverse("onboarding"),
+        {
+            "full_name": "A Person",
+            "organisation_name": "A Different Name Entirely",
+            "problem": "We reconcile by hand and it takes two days a week.",
+        },
+        content_type="application/json",
+    )
+    client.force_login(returning)
+    response = client.post(
+        reverse("onboarding"),
+        {
+            "full_name": "A Person",
+            "organisation_name": "A Different Name Entirely",
+            "problem": "We reconcile by hand and it takes two days a week.",
+        },
+        content_type="application/json",
+    )
+    assert response.json()["next"] == "/dashboard"
+    # And it did NOT rename their organisation.
+    returning.refresh_from_db()
+    assert returning.memberships.first().organisation.name == "Kilimani Dental"
+
+
+def test_ordering_cannot_rename_the_organisation(client, returning, service):
+    """The enquiry endpoint takes no organisation name, so a second submission
+    has nothing to rename with."""
+    client.force_login(returning)
+    client.post(
+        reverse("enquiry-create"),
+        {
+            "problem": "Something else we need doing here, please.",
+            "organisation_name": "Hijacked Ltd",
+            "service": "implementation",
+        },
+        content_type="application/json",
+    )
+    assert returning.memberships.first().organisation.name == "Kilimani Dental"
+
+
+def test_a_signed_in_client_with_no_organisation_is_routed_not_errored(client, visitor):
+    """Signed in, verified, never finished signing up. An ordinary state, so it
+    routes to onboarding rather than showing an error nobody can act on."""
+    client.force_login(visitor)
+    response = client.post(
+        reverse("enquiry-create"),
+        {"problem": "We would like to talk about the payments work."},
+        content_type="application/json",
+    )
+    assert response.status_code == 409
+    assert response.json()["next"] == "/onboarding"
+
+
+def test_an_unverified_client_cannot_file_an_enquiry(client, returning):
+    returning.email_verified_at = None
+    returning.save(update_fields=["email_verified_at"])
+    client.force_login(returning)
+    response = client.post(
+        reverse("enquiry-create"),
+        {"problem": "We would like the reconciliation work doing."},
+        content_type="application/json",
+    )
+    assert response.status_code == 403
+
+
+def test_an_anonymous_visitor_cannot_file_an_enquiry(client):
+    response = client.post(
+        reverse("enquiry-create"),
+        {"problem": "We would like the reconciliation work doing."},
+        content_type="application/json",
+    )
+    assert response.status_code in {401, 403}
+    assert Enquiry.objects.count() == 0
+
+
+def test_a_one_word_problem_is_refused(client, returning):
+    """This text is what the commercial partners qualify against."""
+    client.force_login(returning)
+    response = client.post(
+        reverse("enquiry-create"), {"problem": "hi"}, content_type="application/json"
+    )
+    assert response.status_code == 400
+    assert Enquiry.objects.count() == 0
+
+
+def test_filing_enquiries_is_throttled(client, returning):
+    client.force_login(returning)
+    codes = [
+        client.post(
+            reverse("enquiry-create"),
+            {"problem": f"We need help with the thing number {i} please."},
+            content_type="application/json",
+        ).status_code
+        for i in range(16)
+    ]
+    assert 429 in codes

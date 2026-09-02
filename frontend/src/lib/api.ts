@@ -254,6 +254,22 @@ export const portal = {
    * commercial partners to qualify. It does NOT create an order — see the
    * note on OnboardingView in portal/views.py.
    */
+  /**
+   * A NEW enquiry from an account that already exists.
+   *
+   * Separate from onboarding, which runs once and refuses a second time. See
+   * the portal's EnquiryCreateView — without this, a returning client's order
+   * was silently discarded.
+   */
+  enquiry: (payload: {
+    problem: string;
+    monthly_cost: string;
+    timeline: string;
+    budget_range: string;
+    service?: string;
+    tier?: string;
+  }) => post<{ id: number; organisation: string }>("/enquiries", payload),
+
   onboarding: (payload: OnboardingPayload) =>
     post<{ next: string }>("/onboarding", payload),
 

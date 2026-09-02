@@ -213,6 +213,45 @@ class OrderDetailSerializer(serializers.ModelSerializer):
         return ProgressNoteSerializer(published_notes_for(order), many=True).data
 
 
+class EnquirySerializer(serializers.Serializer):
+    """
+    A NEW enquiry from a client who already has an account.
+
+    ── WHY THIS EXISTS SEPARATELY FROM OnboardingSerializer ───────────────────
+
+    Onboarding runs once: it creates the organisation and the membership, and
+    refuses a second time with `already_onboarded`. That was fine when the only
+    way to ask for something was to sign up.
+
+    It is not fine now that every tier on genmars.co.ke is orderable. An
+    existing client clicking "Order Business Setup" went through sign-up, hit
+    already_onboarded, and was redirected to their dashboard with the order
+    silently discarded — the client saw no error and no enquiry, and nobody at
+    Genmars ever learned they had asked.
+
+    So this takes the enquiry alone. No organisation, no name: the account
+    already has both, and accepting them here would let a second submission
+    rename the organisation.
+    """
+
+    problem = serializers.CharField()
+    monthly_cost = serializers.CharField(max_length=200, allow_blank=True, default="")
+    timeline = serializers.CharField(max_length=100, allow_blank=True, default="")
+    budget_range = serializers.CharField(max_length=100, allow_blank=True, default="")
+    service = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    tier = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+
+    def validate_problem(self, value: str) -> str:
+        problem = value.strip()
+        # Same gate as onboarding, for the same reason: this text is what the
+        # commercial partners qualify against, and "hi" gives them nothing.
+        if len(problem) < 20:
+            raise serializers.ValidationError(
+                "Tell us a little more — a sentence or two about what you need."
+            )
+        return problem
+
+
 class OnboardingSerializer(serializers.Serializer):
     """
     What onboarding accepts. Note what it does NOT accept.
