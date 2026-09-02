@@ -27,6 +27,11 @@ backups/*
 !backups/.gitkeep
 !backups/README.md
 
+# The GPG keyring the server encrypts backups with. It holds only the PUBLIC
+# half — see scripts/backup.sh — but a keyring is still not source code, and an
+# ignored path is one nobody can add a private key to by accident later.
+.gnupg/
+
 # ---- build output -----------------------------------------------------------
 # Collected static, copied out of the image on each deploy (docs/DEPLOYMENT.md).
 staticfiles/
