@@ -1032,3 +1032,40 @@ def test_the_client_can_read_the_catalogue_from_inside_the_portal(client, signed
     # Listing something we have stopped selling invites an order we would have
     # to refuse. Charter 04 §IV, in the smallest possible form.
     assert "retired-thing" not in slugs
+
+
+def test_an_invoice_paid_before_the_ledger_existed_still_sums(signed, staff):
+    """
+    Migration 0009 in test form.
+
+    An invoice marked paid the old way — a date and a single reference on the
+    invoice itself — has no payment rows, so amount_paid reports zero and the
+    money is quietly missing from any total drawn off the ledger. The migration
+    gives those invoices the row they should have had; this proves the property
+    it is protecting.
+    """
+    from portal.models import PaymentRecord
+
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    # Exactly what the old code path did, bypassing record_payment.
+    Invoice.objects.filter(pk=invoice.pk).update(
+        status=Invoice.Status.PAID,
+        paid_on=timezone.localdate(),
+        payment_reference="UQWER56RFGG",
+    )
+    invoice.refresh_from_db()
+    assert invoice.status == Invoice.Status.PAID
+    assert invoice.amount_paid == Decimal("0.00"), "the state the migration fixes"
+
+    PaymentRecord.objects.create(
+        invoice=invoice, method=PaymentRecord.Method.OTHER,
+        reference=invoice.payment_reference, amount_kes=invoice.amount_kes,
+        paid_on=invoice.paid_on,
+        note="Recorded before payments were itemised; method not captured.",
+    )
+
+    invoice.refresh_from_db()
+    assert invoice.amount_paid == invoice.amount_kes
+    assert invoice.balance == Decimal("0.00")
