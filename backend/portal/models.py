@@ -737,3 +737,64 @@ class Invoice(models.Model):
         if not self.is_outstanding or not self.due_on:
             return False
         return self.due_on < (today or timezone.localdate())
+
+
+class MpesaPayment(models.Model):
+    """
+    One STK push attempt, and what became of it.
+
+    ── WHY THIS IS A ROW AND NOT A FIELD ON Invoice ───────────────────────────
+
+    A customer pushes the button, the prompt times out, they push it again. A
+    single "mpesa_receipt" column would lose the first attempt, which is
+    exactly the attempt somebody rings up about ("it took the money and said it
+    failed"). Every push is recorded, successful or not, and the invoice is
+    marked paid by at most one of them.
+
+    ── THE RAW CALLBACK IS KEPT ───────────────────────────────────────────────
+
+    Reconciling a disputed payment months later means answering "what did
+    Safaricom actually tell us", and a parsed subset cannot answer that. It is
+    small, it is written once, and it is the difference between a five-minute
+    answer and an argument.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Prompt sent"
+        SUCCESS = "success", "Paid"
+        FAILED = "failed", "Failed or cancelled"
+
+    invoice = models.ForeignKey(
+        "portal.Invoice", on_delete=models.PROTECT, related_name="mpesa_payments"
+    )
+
+    # Daraja's handle for this push. UNIQUE, and it is what makes the callback
+    # idempotent: Safaricom retries, and a retry must not pay an invoice twice.
+    checkout_request_id = models.CharField(max_length=64, unique=True, db_index=True)
+    merchant_request_id = models.CharField(max_length=64, blank=True)
+
+    # The number prompted. Stored because "which phone did we ask" is the first
+    # question when a customer says they never got a prompt.
+    phone = models.CharField(max_length=16)
+    # What we ASKED for, in whole shillings. Compared against what the callback
+    # says arrived — see services.record_mpesa_result.
+    amount = models.PositiveIntegerField()
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING
+    )
+    result_code = models.CharField(max_length=8, blank=True)
+    result_desc = models.TextField(blank=True)
+    # The M-Pesa code the customer sees. This is what they will quote.
+    receipt = models.CharField(max_length=32, blank=True)
+
+    raw_callback = models.JSONField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.invoice.number} via M-Pesa ({self.get_status_display()})"

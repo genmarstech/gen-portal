@@ -8,14 +8,24 @@ out of Organisation B's data, and `portal/tests/test_isolation.py` proves it.
 
 from __future__ import annotations
 
+import logging
+import secrets
+
+from django.conf import settings
 from django.db import transaction
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts import identity
+from accounts.throttling import MpesaThrottle
+from operations import services
+
+from . import mpesa
 
 from .models import Enquiry, Service
 from .selectors import (
@@ -31,6 +41,9 @@ from .serializers import (
     OrderDetailSerializer,
     OrderListSerializer,
 )
+
+log = logging.getLogger(__name__)
+
 
 
 class OrderListView(APIView):
@@ -196,3 +209,143 @@ class InvoiceDocumentView(APIView):
                 }
             ).data
         )
+
+
+class InvoicePayView(APIView):
+    """
+    Start an M-Pesa prompt for one of this client's own invoices.
+
+    Authenticated and scoped through `invoice_for`, like the document view —
+    an STK push costs a real person a real interruption on their phone, so
+    "whose invoice is this" is answered before Safaricom is ever called.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "mpesa"
+    throttle_classes = [MpesaThrottle]
+
+    def post(self, request, reference: str, number: str):
+        invoice = invoice_for(request.user, reference, number)
+        if invoice is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        phone = str(request.data.get("phone") or "").strip()
+        if not phone:
+            return Response(
+                {"detail": "Enter the phone number to prompt.", "field": "phone"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payment = services.start_mpesa_payment(invoice=invoice, phone=phone)
+        except services.OperationsError as exc:
+            body = {"detail": exc.message}
+            if exc.field:
+                body["field"] = exc.field
+            return Response(body, status=status.HTTP_400_BAD_REQUEST)
+        except mpesa.MpesaError as exc:
+            # Safaricom's own message where it is intelligible. Not a 500: the
+            # server is fine, the payment did not start.
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response(
+            {
+                "status": payment.status,
+                "checkout_request_id": payment.checkout_request_id,
+                # So the page can say "check the phone ending 1234" rather than
+                # echoing a number the client did not necessarily type.
+                "phone_tail": payment.phone[-4:],
+                "detail": (
+                    "Check that phone for the M-Pesa prompt and enter your PIN. "
+                    "This page updates once it goes through."
+                ),
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+
+class InvoicePaymentStatusView(APIView):
+    """
+    Has the prompt gone through yet?
+
+    Polled by the invoice page while a prompt is open. Reads our OWN record
+    rather than querying Safaricom: the callback is the authority, and a page
+    that asked Daraja directly could show "paid" for a payment this system has
+    not applied to anything.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, reference: str, number: str):
+        invoice = invoice_for(request.user, reference, number)
+        if invoice is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        payment = invoice.mpesa_payments.first()
+        return Response(
+            {
+                "invoice_status": invoice.status,
+                "paid_on": invoice.paid_on,
+                "payment_reference": invoice.payment_reference,
+                "attempt": (
+                    {
+                        "status": payment.status,
+                        "result_desc": payment.result_desc,
+                        "receipt": payment.receipt,
+                    }
+                    if payment
+                    else None
+                ),
+            }
+        )
+
+
+@method_decorator(csrf_exempt, name="dispatch")
+class MpesaCallbackView(APIView):
+    """
+    Where Safaricom POSTs the result. UNAUTHENTICATED BY NECESSITY.
+
+    ── WHY THIS IS SAFE WITHOUT AUTH ──────────────────────────────────────────
+
+    Daraja sends no signature, no bearer token and no client certificate, and
+    it will not follow a redirect to something that does. So the endpoint is
+    open by construction, and the defence is that nothing it accepts is
+    trusted:
+
+      · the URL carries a shared token, which keeps out anything that has not
+        been told the path — not authentication, but it stops drive-by POSTs
+      · the body must name a CheckoutRequestID this system created, which an
+        attacker cannot invent
+      · the amount must match what we asked for, checked in services.py
+      · a resolved payment is never re-applied
+
+    It ALWAYS answers 200 with Safaricom's expected shape, including when the
+    body is rubbish. Daraja retries anything else for hours, and a retry storm
+    against an endpoint that was never going to accept the message helps
+    nobody. What we think of the message is recorded in the log, not the status.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def post(self, request, token: str = ""):
+        expected = settings.MPESA_CALLBACK_TOKEN
+        if expected and not secrets.compare_digest(token, expected):
+            log.warning("mpesa callback with a bad path token")
+            # Still 200. See the docstring: a 403 here just buys retries.
+            return self._ok()
+
+        try:
+            parsed = mpesa.parse_callback(request.data)
+            parsed["raw"] = request.data
+            services.record_mpesa_result(parsed)
+        except Exception:
+            # Never let an exception become a non-200. Logged with the traceback
+            # so the alert mail fires and somebody looks.
+            log.exception("mpesa callback could not be processed")
+
+        return self._ok()
+
+    @staticmethod
+    def _ok():
+        return Response({"ResultCode": 0, "ResultDesc": "Accepted"})

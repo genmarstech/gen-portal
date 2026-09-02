@@ -264,6 +264,20 @@ export const portal = {
   order: (reference: string) => get<OrderDetail>(`/orders/${reference}`),
   invoice: (reference: string, number: string) =>
     get<InvoiceDocument>(`/orders/${reference}/invoices/${number}`),
+  /** Starts an M-Pesa prompt. 202 means the prompt was SENT, never that it
+      was paid — only the callback decides that, so the page polls. */
+  payInvoice: (reference: string, number: string, phone: string) =>
+    post<{ status: string; phone_tail: string; detail: string }>(
+      `/orders/${reference}/invoices/${number}/pay`,
+      { phone },
+    ),
+  paymentStatus: (reference: string, number: string) =>
+    get<{
+      invoice_status: "issued" | "paid" | "void";
+      paid_on: string | null;
+      payment_reference: string;
+      attempt: { status: string; result_desc: string; receipt: string } | null;
+    }>(`/orders/${reference}/invoices/${number}/payment-status`),
   /** Charter 05 §VIII — a plain link, so the browser downloads it. */
   exportUrl: "/api/account/export",
 };

@@ -81,3 +81,21 @@ class EmailScopedThrottle(SimpleRateThrottle):
         if not email:
             return None  # nothing to key on; the IP throttle still applies
         return f"throttle:email:{getattr(view, 'throttle_scope', self.scope)}:{email}"
+
+
+class MpesaThrottle(ClientIPThrottle):
+    """
+    STK pushes, per IP.
+
+    Tighter than the sign-in throttle and for a different reason: every push
+    rings a real phone. Without a limit, this endpoint is a way to make
+    Safaricom repeatedly interrupt any number the caller can name — the client
+    has to own the invoice, but they can put any phone number on the form.
+
+    Six an hour is enough for a customer whose first prompt did not arrive and
+    who tries again a few times, and far too few to be worth using as a
+    nuisance tool.
+    """
+
+    scope = "mpesa"
+    rate = "6/hour"

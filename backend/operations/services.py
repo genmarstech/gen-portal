@@ -13,11 +13,13 @@ import logging
 from datetime import date
 from decimal import Decimal
 
+from django.conf import settings
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from accounts import emails, identity
 from accounts.models import EmailCode, Membership, Organisation, User
+from portal import mpesa
 from portal.models import (
     Blocker,
     Contract,
@@ -25,6 +27,7 @@ from portal.models import (
     Enquiry,
     Invoice,
     Milestone,
+    MpesaPayment,
     Order,
     ProgressNote,
     Service,
@@ -1088,3 +1091,195 @@ def void_invoice(*, invoice: Invoice, actor: User, reason: str) -> Invoice:
 
     log.info("invoice %s voided by %s: %s", invoice.number, actor.email, reason)
     return invoice
+
+
+# ── M-Pesa ───────────────────────────────────────────────────────────────────
+
+
+def start_mpesa_payment(*, invoice: Invoice, phone: str) -> MpesaPayment:
+    """
+    Prompt a phone to pay this invoice.
+
+    ── WHAT THIS DOES NOT DO ──────────────────────────────────────────────────
+
+    It does not mark anything paid. A successful STK response means Safaricom
+    accepted the prompt for delivery, nothing more — the customer has not seen
+    it yet, let alone entered a PIN. Only the callback decides that.
+
+    ── WHOLE SHILLINGS ONLY ───────────────────────────────────────────────────
+
+    Daraja's Amount is an integer; M-Pesa cannot move cents. An invoice for
+    133,333.33 therefore cannot be paid exactly, and the two available fudges
+    are both wrong: rounding down under-collects, rounding up takes money the
+    client never agreed to. So it is refused, with the reason and a working
+    alternative, rather than silently producing a payment that reconciles
+    against nothing.
+    """
+    if not settings.MPESA_ENABLED:
+        raise OperationsError("M-Pesa is not set up on this server yet.")
+    if invoice.status == Invoice.Status.PAID:
+        raise OperationsError(f"{invoice.number} is already paid.")
+    if invoice.status == Invoice.Status.VOID:
+        raise OperationsError(f"{invoice.number} was withdrawn, so nothing is owed.")
+
+    if invoice.amount_kes != invoice.amount_kes.to_integral_value():
+        raise OperationsError(
+            f"{invoice.number} is for KES {invoice.amount_kes}, and M-Pesa can "
+            "only take whole shillings. Use the paybill details on the invoice, "
+            "or ask us to reissue it rounded.",
+            field="amount",
+        )
+
+    try:
+        msisdn = mpesa.normalise_phone(phone)
+    except mpesa.MpesaError as exc:
+        raise OperationsError(str(exc), field="phone") from exc
+
+    amount = int(invoice.amount_kes)
+
+    # An unpaid push to the same number for the same invoice is almost always
+    # somebody pressing the button again because the first prompt has not
+    # arrived. Sending a second prompt is right; creating a row per impatient
+    # tap is not, so the previous pending attempt is closed out first.
+    invoice.mpesa_payments.filter(
+        status=MpesaPayment.Status.PENDING, phone=msisdn
+    ).update(
+        status=MpesaPayment.Status.FAILED,
+        result_desc="Superseded by a later prompt to the same number.",
+        completed_at=timezone.now(),
+    )
+
+    response = mpesa.stk_push(
+        phone=msisdn,
+        amount=amount,
+        reference=invoice.number,
+        description="Invoice",
+    )
+
+    payment = MpesaPayment.objects.create(
+        invoice=invoice,
+        checkout_request_id=response.get("CheckoutRequestID", ""),
+        merchant_request_id=response.get("MerchantRequestID", ""),
+        phone=msisdn,
+        amount=amount,
+    )
+    log.info(
+        "mpesa prompt sent for %s (%s) live=%s",
+        invoice.number,
+        payment.checkout_request_id,
+        settings.MPESA_IS_LIVE,
+    )
+    return payment
+
+
+@transaction.atomic
+def record_mpesa_result(parsed: dict) -> MpesaPayment | None:
+    """
+    Apply a Daraja callback. THE ONLY PLACE M-PESA MARKS AN INVOICE PAID.
+
+    ── EVERY GUARD HERE EXISTS BECAUSE THE CALLER IS UNTRUSTED ────────────────
+
+    Daraja sends no signature and no credential. The URL carries a shared
+    token, but that is one secret in a path — it is not authentication, and it
+    can end up in a proxy log. So this function assumes the body might be
+    forged and refuses to do anything that would matter if it were:
+
+      · The CheckoutRequestID must match a payment WE started. An attacker
+        cannot invent one, because we only ever created it from Safaricom's own
+        response to a push we made.
+
+      · A payment already resolved is left alone. Safaricom retries callbacks,
+        and a retry must not pay an invoice twice or overwrite a receipt.
+        select_for_update, because two retries can land in parallel.
+
+      · THE AMOUNT MUST MATCH WHAT WE ASKED FOR. This is the guard that matters
+        most. Without it, a forged callback claiming one shilling settles a
+        two-hundred-thousand-shilling invoice. A mismatch is recorded in full
+        and the invoice is NOT marked paid — a human looks at it, which is the
+        right outcome for money that does not add up.
+    """
+    checkout_id = parsed.get("checkout_request_id")
+    if not checkout_id:
+        log.warning("mpesa callback with no CheckoutRequestID")
+        return None
+
+    payment = (
+        MpesaPayment.objects.select_for_update()
+        .filter(checkout_request_id=checkout_id)
+        .select_related("invoice")
+        .first()
+    )
+    if payment is None:
+        # Not ours. Either a stray retry from a previous deployment, or
+        # somebody probing the endpoint.
+        log.warning("mpesa callback for unknown CheckoutRequestID %s", checkout_id)
+        return None
+
+    if payment.status != MpesaPayment.Status.PENDING:
+        log.info("mpesa callback for already-resolved %s, ignored", checkout_id)
+        return payment
+
+    payment.raw_callback = parsed.get("raw")
+    payment.result_code = parsed["result_code"][:8]
+    payment.result_desc = parsed["result_desc"]
+    payment.completed_at = timezone.now()
+
+    # Anything but "0" is a cancellation, a timeout, insufficient funds or a
+    # wrong PIN. All ordinary, none of them a payment.
+    if parsed["result_code"] != "0":
+        payment.status = MpesaPayment.Status.FAILED
+        payment.save()
+        log.info("mpesa %s failed: %s", checkout_id, payment.result_desc[:120])
+        return payment
+
+    paid = parsed.get("amount")
+    try:
+        paid_int = int(Decimal(str(paid)))
+    except (TypeError, ValueError, ArithmeticError):
+        paid_int = None
+
+    if paid_int != payment.amount:
+        # Recorded, flagged, and NOT applied. Either something is wrong at
+        # Safaricom or the callback is forged; both need a person.
+        payment.status = MpesaPayment.Status.FAILED
+        payment.receipt = str(parsed.get("receipt") or "")[:32]
+        payment.result_desc = (
+            f"Amount mismatch: asked for {payment.amount}, callback said {paid}. "
+            "Not applied to the invoice."
+        )
+        payment.save()
+        log.error(
+            "mpesa AMOUNT MISMATCH on %s: asked %s, got %s",
+            payment.invoice.number,
+            payment.amount,
+            paid,
+        )
+        return payment
+
+    payment.status = MpesaPayment.Status.SUCCESS
+    payment.receipt = str(parsed.get("receipt") or "")[:32]
+    payment.save()
+
+    invoice = payment.invoice
+    # Already settled some other way — someone recorded a bank transfer while
+    # the prompt was open. The payment stands as a record; the invoice is not
+    # double-marked, and the mismatch is loud because it means money may have
+    # arrived twice.
+    if invoice.status == Invoice.Status.PAID:
+        log.error(
+            "mpesa %s succeeded for %s which was ALREADY PAID — possible double payment",
+            payment.receipt,
+            invoice.number,
+        )
+        return payment
+
+    invoice.status = Invoice.Status.PAID
+    invoice.paid_on = timezone.localdate()
+    invoice.payment_reference = payment.receipt
+    invoice.save(update_fields=["status", "paid_on", "payment_reference"])
+
+    if invoice.milestone_id:
+        invoice.milestone.mark_paid()
+
+    log.info("mpesa %s paid %s", payment.receipt, invoice.number)
+    return payment

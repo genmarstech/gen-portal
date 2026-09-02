@@ -502,29 +502,67 @@ BILLING_TERMS = env(
     default="Payment is due on the date shown. Quote the invoice number as the account reference.",
 )
 
-# ── M-Pesa STK push (not yet enabled) ────────────────────────────────────────
+# ── M-Pesa (Daraja) ──────────────────────────────────────────────────────────
 #
-# When these are set, the client-facing invoice can offer "Pay by M-Pesa" and
-# the request genuinely initiates an STK push. Until then the capability does
-# not exist and NOTHING in the UI may suggest it does — a button that only
-# marks a row would be the worst possible version of the Charter 04 §IV
-# violation, because the client would believe they had paid.
+# Key names match the .env the credentials arrived in rather than a tidier set
+# of my own: one spelling of a secret is hard enough to keep straight across a
+# host, a container and a CI runner.
 #
-# `MPESA_ENABLED` below is what every code path checks. It is deliberately
-# derived rather than a flag somebody can turn on without supplying credentials.
-MPESA_SHORTCODE = env("MPESA_SHORTCODE", default="")
-MPESA_PASSKEY = env("MPESA_PASSKEY", default="")
+# ── THIS IS A BUY GOODS (TILL) SETUP, NOT PAYBILL ───────────────────────────
+#
+# The distinction decides two fields and is the classic way an STK integration
+# fails with a misleading error:
+#
+#   BusinessShortCode = MPESA_SHORT_CODE   the HEAD OFFICE / store number
+#   PartyB            = MPESA_TILL_NUMBER  the till customers actually pay
+#
+# For CustomerPayBillOnline both are the paybill and nobody notices the
+# difference. For CustomerBuyGoodsOnline they are different numbers, and
+# sending the till as BusinessShortCode produces an invalid-credential error
+# that reads as though the passkey is wrong.
+#
+# The password is base64(BusinessShortCode + Passkey + Timestamp) — the SHORT
+# CODE, not the till.
+MPESA_BASE_URL = env("MPESA_BASE_URL", default="https://sandbox.safaricom.co.ke")
 MPESA_CONSUMER_KEY = env("MPESA_CONSUMER_KEY", default="")
 MPESA_CONSUMER_SECRET = env("MPESA_CONSUMER_SECRET", default="")
-MPESA_CALLBACK_URL = env("MPESA_CALLBACK_URL", default="")
-MPESA_ENVIRONMENT = env("MPESA_ENVIRONMENT", default="sandbox")
+MPESA_CONSUMER_PASSKEY = env("MPESA_CONSUMER_PASSKEY", default="")
+MPESA_SHORT_CODE = env("MPESA_SHORT_CODE", default="")
+MPESA_TILL_NUMBER = env("MPESA_TILL_NUMBER", default="")
+MPESA_TRANSACTION_TYPE = env(
+    "MPESA_TRANSACTION_TYPE", default="CustomerBuyGoodsOnline"
+)
 
+# Where Safaricom POSTs the result. Must be public HTTPS — they will not call a
+# private address, and a wrong one fails silently: the customer pays, and the
+# invoice sits unpaid because nothing ever told us.
+MPESA_CALLBACK_URL = env(
+    "MPESA_CALLBACK_URL", default="https://api.genmars.co.ke/api/mpesa/callback"
+)
+
+# A shared secret in the callback path, so the endpoint is not simply open to
+# anyone who guesses the URL. Daraja sends no signature and no auth header, so
+# this plus the CheckoutRequestID lookup is what stands between the callback
+# and a forged "this invoice is paid".
+MPESA_CALLBACK_TOKEN = env("MPESA_CALLBACK_TOKEN", default="")
+
+# DERIVED, never a flag somebody can set by hand. Every code path checks this,
+# and it cannot be true without real credentials — so "M-Pesa is on" and "we
+# can actually take a payment" are the same statement.
 MPESA_ENABLED = all(
     [
-        MPESA_SHORTCODE,
-        MPESA_PASSKEY,
+        MPESA_BASE_URL,
         MPESA_CONSUMER_KEY,
         MPESA_CONSUMER_SECRET,
+        MPESA_CONSUMER_PASSKEY,
+        MPESA_SHORT_CODE,
+        MPESA_TILL_NUMBER,
         MPESA_CALLBACK_URL,
     ]
 )
+
+# Live money. api.safaricom.co.ke prompts a real phone for real shillings;
+# sandbox does not. Surfaced so logs and the ops UI can say which one is in
+# play — a test against production that nobody realised was production is an
+# expensive way to find out.
+MPESA_IS_LIVE = "sandbox" not in MPESA_BASE_URL

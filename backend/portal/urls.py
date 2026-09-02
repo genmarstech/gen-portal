@@ -13,5 +13,24 @@ urlpatterns = [
         views.InvoiceDocumentView.as_view(),
         name="invoice-document",
     ),
+    path(
+        "orders/<str:reference>/invoices/<str:number>/pay",
+        views.InvoicePayView.as_view(),
+        name="invoice-pay",
+    ),
+    path(
+        "orders/<str:reference>/invoices/<str:number>/payment-status",
+        views.InvoicePaymentStatusView.as_view(),
+        name="invoice-payment-status",
+    ),
+    # Safaricom posts here. The token is part of the PATH because Daraja sends
+    # no headers of ours — see MpesaCallbackView. Both spellings are routed so
+    # a deployment that has not set a token still works.
+    path("mpesa/callback", views.MpesaCallbackView.as_view(), name="mpesa-callback"),
+    path(
+        "mpesa/callback/<str:token>",
+        views.MpesaCallbackView.as_view(),
+        name="mpesa-callback-token",
+    ),
     path("account/export", views.ExportView.as_view(), name="export"),
 ]

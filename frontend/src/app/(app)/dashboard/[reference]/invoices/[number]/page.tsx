@@ -25,13 +25,17 @@ import styles from "./page.module.css";
  * exist, rather than a new dependency (Charter 03 §I — nothing new in the
  * stack without a reason).
  *
- * ── WHAT IS DELIBERATELY ABSENT ─────────────────────────────────────────────
+ * ── THE PAY BUTTON APPEARS ONLY WHEN IT WORKS ───────────────────────────────
  *
- * A "Pay now" button. Genmars takes no payments yet: `payment.stk_available`
- * is false until M-Pesa credentials are configured, and while it is false
- * nothing here may suggest the capability exists. A button that only marked a
- * row would leave the client believing they had paid, which is the worst
- * available outcome (Charter 04 §IV).
+ * `payment.stk_available` is derived on the server from whether real M-Pesa
+ * credentials are present — it cannot be switched on by hand. While it is
+ * false there is no button at all, because a control that only marked a row
+ * would leave the client believing they had paid, which is the worst outcome
+ * available here (Charter 04 §IV).
+ *
+ * When it is true the button is real, and it still does not mean "paid": a
+ * successful push means Safaricom sent a prompt. The page then polls until the
+ * callback resolves it, and says so rather than implying the money has moved.
  */
 export default function InvoicePage() {
   const params = useParams<{ reference: string; number: string }>();
@@ -224,6 +228,19 @@ export default function InvoicePage() {
               </p>
             ) : null}
 
+            {payment.stk_available ? (
+              <MpesaPay
+                reference={order.reference}
+                number={invoice.number}
+                onPaid={() => {
+                  // Re-fetch rather than patching state by hand: paid_on and
+                  // the receipt come from the server, and inventing them here
+                  // would show a client a payment record we had not stored.
+                  void portal.invoice(reference, number).then(setDoc);
+                }}
+              />
+            ) : null}
+
             <p className={styles.terms}>{payment.terms}</p>
           </section>
         )}
@@ -270,4 +287,128 @@ function money(amountKes: string): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+
+/**
+ * Pay this invoice by M-Pesa.
+ *
+ * ── SENDING A PROMPT IS NOT BEING PAID ──────────────────────────────────────
+ *
+ * The push returns 202 the moment Safaricom accepts the prompt for delivery.
+ * The customer has not seen it, let alone entered a PIN. So the copy says to
+ * check the phone, and the page polls until the server — which only learns the
+ * truth from Safaricom's callback — says the invoice is settled.
+ *
+ * Polling stops on its own. A prompt that nobody answers times out at
+ * Safaricom's end, and a page that polled forever would keep a tab busy all
+ * night for a payment that already failed.
+ */
+function MpesaPay({
+  reference,
+  number,
+  onPaid,
+}: {
+  reference: string;
+  number: string;
+  onPaid: () => void;
+}) {
+  const [phone, setPhone] = useState("");
+  const [sending, setSending] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!waiting) return;
+
+    // Safaricom's prompt expires in about a minute; a little over two minutes
+    // of polling covers it with room for a slow callback, and then stops.
+    let elapsed = 0;
+    const every = 4000;
+    const limit = 140_000;
+
+    const id = window.setInterval(async () => {
+      elapsed += every;
+      try {
+        const status = await portal.paymentStatus(reference, number);
+        if (status.invoice_status === "paid") {
+          window.clearInterval(id);
+          setWaiting(false);
+          onPaid();
+          return;
+        }
+        if (status.attempt && status.attempt.status === "failed") {
+          window.clearInterval(id);
+          setWaiting(false);
+          setNotice(null);
+          setError(
+            status.attempt.result_desc ||
+              "That prompt was not completed. You can try again.",
+          );
+          return;
+        }
+      } catch {
+        // A dropped poll is not a failed payment. Keep waiting; the timeout
+        // below is what ends it.
+      }
+      if (elapsed >= limit) {
+        window.clearInterval(id);
+        setWaiting(false);
+        setNotice(null);
+        setError(
+          "We have not heard back about that prompt. If you completed it, the " +
+            "invoice will update shortly — refresh in a minute before trying again.",
+        );
+      }
+    }, every);
+
+    return () => window.clearInterval(id);
+  }, [waiting, reference, number, onPaid]);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setSending(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await portal.payInvoice(reference, number, phone);
+      setNotice(
+        `Check the phone ending ${result.phone_tail} for the M-Pesa prompt and ` +
+          "enter your PIN. This page updates once it goes through.",
+      );
+      setWaiting(true);
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "Could not start that payment.",
+      );
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <div className={styles.mpesa}>
+      <h3 className={styles.mpesaTitle}>Pay by M-Pesa</h3>
+      <form className={styles.mpesaForm} onSubmit={submit}>
+        <input
+          className={styles.mpesaInput}
+          type="tel"
+          inputMode="tel"
+          autoComplete="tel"
+          placeholder="07XX XXX XXX"
+          aria-label="Phone number to prompt"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          disabled={waiting}
+          required
+        />
+        <button className={styles.mpesaButton} type="submit" disabled={sending || waiting}>
+          {waiting ? "Waiting for the prompt" : sending ? "Sending" : "Send prompt"}
+        </button>
+      </form>
+      {notice ? <p className={styles.mpesaNotice}>{notice}</p> : null}
+      {error ? <p className={styles.mpesaError}>{error}</p> : null}
+    </div>
+  );
 }

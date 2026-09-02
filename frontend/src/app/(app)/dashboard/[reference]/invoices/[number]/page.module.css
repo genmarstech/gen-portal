@@ -250,6 +250,76 @@
   outline-offset: 2px;
 }
 
+/* ---------- pay by M-Pesa ---------- */
+
+.mpesa {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--rule);
+}
+
+.mpesaTitle {
+  margin-bottom: var(--sp-3);
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.mpesaForm {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.mpesaInput {
+  flex: 1 1 11rem;
+  padding: 0.5rem 0.7rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--ink);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.mpesaButton {
+  padding: 0.5rem 0.9rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--bg);
+  background: var(--ink);
+  border: 1px solid var(--ink);
+  border-radius: var(--radius);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mpesaButton:disabled,
+.mpesaInput:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+:is(.mpesaInput, .mpesaButton):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mpesaNotice,
+.mpesaError {
+  margin-top: var(--sp-3);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.mpesaNotice {
+  color: var(--ink-muted);
+}
+
+.mpesaError {
+  color: var(--danger);
+}
+
 /* ── print ──────────────────────────────────────────────────────────────────
    No PDF generator, no new dependency (Charter 03 §I). Every browser prints to
    PDF; this is what makes the result something you would send to an accountant
@@ -261,7 +331,11 @@
      and a CSS module cannot express it anyway (":global(body)" alone is not a
      pure selector and fails the build). */
   .back,
-  .printHint {
+  .printHint,
+  /* An input and a button are meaningless on paper, and printing them
+     suggests the sheet can do something it cannot. The paybill details
+     above stay, because those are how you pay from a printout. */
+  .mpesa {
     display: none !important;
   }
 
