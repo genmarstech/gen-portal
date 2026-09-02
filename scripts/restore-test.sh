@@ -13,10 +13,16 @@
 # current code cannot read.
 #
 # So this does not merely run pg_restore and check the exit code. It restores
-# into a throwaway database and then ASSERTS THE DATA IS THERE: the tables the
-# application depends on, and a row count that is not zero. A restore that
-# "succeeds" into an empty database is the exact failure this is written to
-# catch.
+# into a throwaway database and then ASSERTS THE DATA IS THERE, in three steps
+# that each catch a different lie:
+#
+#   1. every table the application cannot run without is present — catches a
+#      dump taken against a stale or wrong schema;
+#   2. users and migration history are non-empty — catches the schema-only
+#      restore that reports success into an empty database;
+#   3. for contracts, invoices and payments, the restored row counts match what
+#      was live when the dump began — catches a PARTIAL restore, which the
+#      first two steps would happily wave through.
 #
 # It is safe to run against production. The scratch database is created and
 # dropped by this script and is never the one the application uses; the live
@@ -28,6 +34,7 @@ cd "$(dirname "$0")/.."
 
 DB_SERVICE="${DB_SERVICE:-db}"
 POSTGRES_USER="${POSTGRES_USER:-genmars}"
+POSTGRES_DB="${POSTGRES_DB:-genmars_portal}"
 SCRATCH_DB="${SCRATCH_DB:-genmars_restore_check}"
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 
@@ -47,6 +54,13 @@ echo "==> Testing restore of ${dump_name}"
 psql_scratch() {
     docker compose exec -T "$DB_SERVICE" \
         psql -U "$POSTGRES_USER" -d "$SCRATCH_DB" -tAc "$1"
+}
+
+# Read-only, and only ever used for counting. The live database is never
+# written to by this script.
+psql_live() {
+    docker compose exec -T "$DB_SERVICE" \
+        psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc "$1"
 }
 
 cleanup() {
@@ -97,6 +111,12 @@ require_table portal_order
 require_table portal_progressnote
 require_table portal_milestone
 require_table portal_enquiry
+require_table portal_service
+require_table portal_contract
+require_table portal_invoice
+require_table portal_mpesapayment
+require_table portal_deliverygate
+require_table portal_blocker
 require_table django_migrations
 
 echo "==> Checking the restored data"
@@ -117,6 +137,68 @@ fi
 if [ "${migrations:-0}" -lt 1 ]; then
     echo "    FAIL: no migration history. The schema will not match the code." >&2
     failures=$((failures + 1))
+fi
+
+# ── content completeness ────────────────────────────────────────────────────
+# The checks above prove the restore is not empty. They do not prove it is
+# COMPLETE, and for the tables that carry contracts and money "not empty" is a
+# long way from good enough: a dump that captured three of nine invoices would
+# sail through everything above.
+#
+# So compare counts. pg_dump takes its snapshot when it starts, and the dump
+# filename carries that moment in UTC, so every row created before it must be
+# present in the restore. Rows created afterwards are legitimately absent and
+# are excluded from the live count rather than treated as loss.
+#
+# Restored > expected is not a failure: it means rows were deleted from live
+# after the dump was taken, which is the backup doing its job. It is still
+# worth printing, because on a table nothing should ever delete from it is
+# worth a human's attention.
+
+# portal-20260902-021758.dump -> 2026-09-02 02:17:58+00
+stamp="$(echo "$dump_name" | sed -nE 's/^portal-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})\.dump$/\1-\2-\3 \4:\5:\6+00/p')"
+
+if [ -z "$stamp" ]; then
+    echo "    note: ${dump_name} is not a scheduled dump name; skipping the"
+    echo "          count comparison, which needs the dump's timestamp."
+else
+    echo "==> Comparing row counts against the live database (as at ${stamp})"
+
+    compare_counts() {
+        local table="$1"
+        local expected restored
+
+        # A table missing from the restore is already recorded as a failure by
+        # require_table. Counting it here would abort the run on a raw psql
+        # error and hide the remaining comparisons, so skip it and let the
+        # earlier, clearer failure stand.
+        if [ "$(psql_scratch "SELECT to_regclass('public.${table}') IS NOT NULL;")" != "t" ]; then
+            echo "    skipped  ${table}: not in this dump (see MISSING above)"
+            return
+        fi
+
+        expected="$(psql_live "SELECT count(*) FROM ${table} WHERE created_at < '${stamp}';")"
+        restored="$(psql_scratch "SELECT count(*) FROM ${table};")"
+
+        if [ "${restored:-0}" -lt "${expected:-0}" ]; then
+            echo "    LOST     ${table}: ${restored} restored, ${expected} expected" >&2
+            failures=$((failures + 1))
+        elif [ "${restored:-0}" -gt "${expected:-0}" ]; then
+            echo "    ok       ${table}: ${restored} restored (${expected} live now — rows deleted since)"
+        else
+            echo "    ok       ${table}: ${restored}"
+        fi
+    }
+
+    # Only tables with a created_at, and only the ones where losing a row is a
+    # business problem rather than an inconvenience. Sessions and admin logs are
+    # deliberately absent: they regenerate, and they churn enough to make this
+    # check noisy for no gain.
+    compare_counts portal_service
+    compare_counts portal_contract
+    compare_counts portal_invoice
+    compare_counts portal_mpesapayment
+    compare_counts portal_enquiry
 fi
 
 echo

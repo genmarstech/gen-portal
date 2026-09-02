@@ -266,9 +266,22 @@ Then **prove it before trusting it**:
 ```
 
 The restore test creates a scratch database, restores the newest dump into it,
-asserts every table the application needs exists and that there are actually
-rows, then drops it. It is safe against production and never writes to the live
-database.
+then drops it. It is safe against production and never writes to the live
+database. It asserts three things, because each catches a different way a
+backup lies:
+
+1. every table the application needs exists — a dump taken against a stale
+   schema restores cleanly and is still useless;
+2. users and migration history are non-empty — a schema-only restore reports
+   success into an empty database;
+3. contracts, invoices, payments, services and enquiries restore with the row
+   counts that were live when the dump began — a *partial* restore passes both
+   checks above.
+
+The count comparison reads the dump's timestamp out of its filename. Rows
+created after the dump started are excluded from the live side rather than
+counted as loss, so the check does not go off simply because the business
+carried on trading after 02:15.
 
 ### 9. Verify
 
@@ -309,11 +322,16 @@ docker compose ps
 curl -s https://app.genmars.co.ke/api/health
 ```
 
-Take a backup **before** any deploy carrying a migration:
+Take a backup **before and after** any deploy carrying a migration:
 
 ```bash
 ./scripts/backup.sh
 ```
+
+Before, so there is a pre-migration dump to roll back to. After, because until
+the next dump runs the newest backup has an older schema than the database —
+any table the migration created exists only in production. See the 2026-09-02
+entry in the restore-test log for what that looked like in practice.
 
 ---
 
@@ -410,3 +428,12 @@ Record each successful run:
 | Date | Dump | Result | By |
 |---|---|---|---|
 | 2026-09-01 | `portal-20260901-125232.dump` | Passed — 9 tables, data present | First deploy |
+| 2026-09-02 | `portal-20260902-021758.dump` | **Failed** — 6 tables missing. Not data loss: the dump predates the same day's invoice, contract, service and M-Pesa migrations. Fixed by taking a dump after the deploy | Restore-test extension |
+| 2026-09-02 | `portal-20260902-155126.dump` | Passed — 15 tables; 8 services, 2 contracts, 2 invoices, 1 M-Pesa payment, 4 enquiries all recovered | Restore-test extension |
+
+**Take a dump immediately after any deploy that adds tables.** The 2026-09-02
+failure above is the reason: for roughly nine hours the portal held contracts,
+invoices and a recorded M-Pesa payment that no backup contained, because the
+newest dump was older than the schema. The nightly timer closes that gap the
+same night; a deploy at 09:00 leaves it open all day. `scripts/backup.sh` takes
+about a second.
