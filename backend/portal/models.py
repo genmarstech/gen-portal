@@ -19,6 +19,7 @@ own release.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -620,16 +621,22 @@ class Invoice(models.Model):
     a new one, which is what a paper trail is.
     ══════════════════════════════════════════════════════════════════════════
 
-    ── PAYMENT IS RECORDED, NOT COLLECTED ──────────────────────────────────────
+    ── HOW PAYMENT REACHES THIS ROW ────────────────────────────────────────────
 
-    Genmars does not process payments and this model must not imply that it
-    does. There is no card form, no M-Pesa STK push, no payment gateway. Money
-    arrives in a bank account or a till number, and someone here writes down
-    that it arrived, with the reference from the statement.
+    Two ways in, and neither of them lets this model mark itself paid.
 
-    Charter 04 §IV forbids claiming a capability we do not have, and a "Pay now"
-    button that only marks a row would be exactly that claim — the worst kind,
-    because the client would believe they had paid.
+      · M-Pesa STK push. The client taps Pay, Safaricom prompts their phone,
+        and `record_mpesa_result` writes the outcome when the callback lands.
+        The push is real — Charter 04 §IV forbids a "Pay now" button that only
+        marks a row, because the client would believe they had paid.
+
+      · Recorded by hand, via PaymentRecord. Money that arrived by bank
+        transfer or at a till, written down by someone here with the reference
+        off the statement. Genmars does not move that money; it records that
+        it moved.
+
+    In both cases the amount is checked before anything is marked paid. See
+    PaymentRecord for why payment is a LIST rather than a single reference.
     """
 
     class Status(models.TextChoices):
@@ -644,7 +651,30 @@ class Invoice(models.Model):
         help_text="GM-INV-2026-0001. Sequential, never reused — including voids.",
     )
 
-    order = models.ForeignKey(Order, on_delete=models.PROTECT, related_name="invoices")
+    # ── WHO IS BEING BILLED ─────────────────────────────────────────────────
+    # The organisation, always. The order is optional, because not every
+    # invoice comes from a project: a past client asking for a day's work, a
+    # renewal, a licence. Billing those through a fake order would put rows in
+    # the delivery pipeline for work that has no pipeline.
+    #
+    # An invoice with no organisation is an invoice addressed to nobody, so
+    # that is the field that cannot be null. When an order IS attached, its
+    # organisation must be this one — enforced by a constraint below, because
+    # an invoice filed against the wrong client is visible to the wrong client.
+    organisation = models.ForeignKey(
+        Organisation,
+        on_delete=models.PROTECT,
+        related_name="invoices",
+        help_text="The client this is addressed to.",
+    )
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.PROTECT,
+        related_name="invoices",
+        null=True,
+        blank=True,
+        help_text="The project this bills, when it bills one.",
+    )
     # Usually a milestone, because that is how Charter 05 §VI structures money.
     # Nullable for the occasional thing that is genuinely not one — a change
     # request billed on its own, or a retainer month.
@@ -689,6 +719,13 @@ class Invoice(models.Model):
     )
 
     # ---- payment, recorded ----
+    #
+    # These two are a SUMMARY of the PaymentRecord rows, kept because an
+    # invoice that has been paid should be able to say when and against what
+    # without a join. They are written by services.record_payment and by the
+    # M-Pesa callback; nothing else should touch them. paid_on is the date of
+    # the payment that settled the balance, and payment_reference lists the
+    # references that made it up.
     paid_on = models.DateField(null=True, blank=True)
     payment_reference = models.CharField(
         max_length=120,
@@ -718,9 +755,41 @@ class Invoice(models.Model):
 
     class Meta:
         ordering = ["-issued_on", "-number"]
+        constraints = [
+            # A milestone belongs to an order; an invoice that bills a
+            # milestone but names no order has lost the thread between them.
+            models.CheckConstraint(
+                condition=models.Q(milestone__isnull=True)
+                | models.Q(order__isnull=False),
+                name="invoice_milestone_requires_order",
+            ),
+        ]
 
     def __str__(self) -> str:
-        return f"{self.number} — {self.order.reference} ({self.get_status_display()})"
+        subject = self.order.reference if self.order_id else self.organisation.name
+        return f"{self.number} — {subject} ({self.get_status_display()})"
+
+    @property
+    def is_direct(self) -> bool:
+        """Billed to a client rather than against a project."""
+        return self.order_id is None
+
+    @property
+    def amount_paid(self) -> Decimal:
+        """
+        What has actually been recorded against this, summed.
+
+        Voided invoices still report their payments rather than zero. Hiding
+        them would make a void look like a way to erase money that arrived,
+        which is exactly what void_invoice refuses to allow.
+        """
+        total = self.payments.aggregate(total=models.Sum("amount_kes"))["total"]
+        return total or Decimal("0.00")
+
+    @property
+    def balance(self) -> Decimal:
+        """What is still owed. Never negative — see settle()."""
+        return self.amount_kes - self.amount_paid
 
     @property
     def is_outstanding(self) -> bool:
@@ -798,3 +867,182 @@ class MpesaPayment(models.Model):
 
     def __str__(self) -> str:
         return f"{self.invoice.number} via M-Pesa ({self.get_status_display()})"
+
+
+class PaymentRecord(models.Model):
+    """
+    One payment that arrived, with the reference that proves it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    WHY PAYMENT IS A LIST AND NOT A FIELD.
+
+    Invoice used to carry one `payment_reference`, which quietly assumed every
+    invoice is settled by exactly one transaction. In Kenya that assumption is
+    wrong often enough to matter: M-Pesa has a per-transaction ceiling, so a
+    large invoice is routinely paid as three or four transfers, each with its
+    own code. Under the old shape the second code overwrote the first, and the
+    invoice claimed to have been settled by a payment that covered a fraction
+    of it.
+
+    So payments accumulate. The invoice is marked paid when they ADD UP to the
+    full amount, and not one shilling before.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THE REFERENCE IS THE POINT ──────────────────────────────────────────────
+
+    An M-Pesa confirmation code is unique across the whole network, so the same
+    code appearing twice means somebody recorded the same payment twice — most
+    likely against two different invoices, which shows the company as having
+    been paid money it was never paid. The unique constraint below makes that
+    impossible rather than merely discouraged.
+
+    Blank references are exempted from that constraint, because cash does not
+    always come with one. That is a deliberate hole and a small one: cash is
+    the case where a human already had to be in the room.
+    """
+
+    class Method(models.TextChoices):
+        MPESA = "mpesa", "M-Pesa"
+        BANK = "bank", "Bank transfer"
+        CASH = "cash", "Cash"
+        OTHER = "other", "Other"
+
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="payments"
+    )
+    method = models.CharField(max_length=16, choices=Method.choices)
+    reference = models.CharField(
+        max_length=64,
+        blank=True,
+        help_text="The M-Pesa code or bank reference, exactly as on the statement.",
+    )
+    amount_kes = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        help_text="How much this one payment was. Decimal, never a float.",
+    )
+    paid_on = models.DateField()
+    note = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="Anything needed to find this on a statement later.",
+    )
+
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="payments_recorded",
+        limit_choices_to={"is_staff": True},
+    )
+    # Set when the row came from a Daraja callback rather than a person, so
+    # "who recorded this" has an answer that is not a misleading blank.
+    mpesa_payment = models.OneToOneField(
+        "portal.MpesaPayment",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="record",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["paid_on", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                models.functions.Upper("reference"),
+                "method",
+                condition=~models.Q(reference=""),
+                name="unique_payment_reference_per_method",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(amount_kes__gt=0),
+                name="payment_amount_positive",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        label = self.reference or self.get_method_display()
+        return f"KES {self.amount_kes} — {label}"
+
+
+class Notification(models.Model):
+    """
+    Something happened that a specific person should know about.
+
+    ══════════════════════════════════════════════════════════════════════════
+    ONE ROW PER PERSON, NOT ONE PER EVENT.
+
+    An invoice issued to a client with four people on the account creates four
+    notifications. That is deliberate: "read" is a fact about a person, not
+    about an event, and a shared row means one colleague opening it marks it
+    read for everyone — which is how a bill goes unnoticed by the person who
+    was actually going to pay it.
+
+    The duplication is cheap. The alternative is a join table that stores the
+    same thing with more moving parts.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THIS IS NOT A MESSAGE TO THE CLIENT ─────────────────────────────────────
+
+    A notification is a pointer at something already true and already visible:
+    an invoice that exists, an order that moved. It is never the only place a
+    fact lives, and it is never how a client is told something that matters —
+    that is email, or a person. If the notification is lost, nothing is lost.
+
+    So nothing here should read as a promise, and nothing should carry a detail
+    that is not already on the page it links to. Charter 04 §IV applies to this
+    text exactly as it applies to the website.
+    """
+
+    class Audience(models.TextChoices):
+        # Which surface it belongs on. A staff notification must never be
+        # queryable from the client API, and the client API filters on this.
+        CLIENT = "client", "Client"
+        STAFF = "staff", "Staff"
+
+    class Kind(models.TextChoices):
+        INVOICE_ISSUED = "invoice_issued", "Invoice issued"
+        INVOICE_PAID = "invoice_paid", "Invoice paid"
+        PAYMENT_RECORDED = "payment_recorded", "Payment recorded"
+        INVOICE_VOIDED = "invoice_voided", "Invoice voided"
+        ORDER_UPDATE = "order_update", "Order update"
+        ENQUIRY_RECEIVED = "enquiry_received", "Enquiry received"
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    audience = models.CharField(max_length=16, choices=Audience.choices)
+    kind = models.CharField(max_length=32, choices=Kind.choices)
+
+    title = models.CharField(max_length=200)
+    body = models.CharField(max_length=400, blank=True)
+    # Relative, and always within the app that owns the audience. Absolute URLs
+    # are refused by the serializer: a notification is not a place to put a
+    # link somebody clicked without looking.
+    url = models.CharField(max_length=300, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            # The unread count runs on every page load of both apps.
+            models.Index(
+                fields=["user", "audience", "read_at"],
+                name="notification_inbox_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.title} -> {self.user.email}"
+
+    @property
+    def is_read(self) -> bool:
+        return self.read_at is not None
+

@@ -648,3 +648,220 @@ def test_the_document_is_addressed_to_the_organisation_not_our_own_contact(
     # Whoever it is addressed to, it is not a Genmars employee.
     assert staff.full_name not in str(body["billed_to"])
     assert staff.email not in str(body["billed_to"])
+
+
+# ── payments add up ──────────────────────────────────────────────────────────
+#
+# M-Pesa caps a single transaction, so a large invoice is routinely settled by
+# several transfers with several codes. The old shape stored one reference and
+# overwrote it, so the second payment made the invoice claim it had been
+# settled by a payment covering a fraction of it.
+
+
+def test_a_part_payment_leaves_the_invoice_outstanding(signed, staff):
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+
+    services.record_payment(
+        invoice=invoice, actor=staff, amount_kes=Decimal("50000.00"),
+        method="mpesa", reference="SLJ7XK2P1Q",
+    )
+
+    invoice.refresh_from_db()
+    assert invoice.status == Invoice.Status.ISSUED
+    assert invoice.amount_paid == Decimal("50000.00")
+    assert invoice.balance == Decimal("100000.00")
+    assert invoice.paid_on is None
+
+
+def test_payments_accumulate_until_the_invoice_is_settled(signed, staff):
+    """Three codes, one invoice. It is paid when they add up and not before."""
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+
+    for amount, code in [
+        (Decimal("70000.00"), "SLJ7XK2P1Q"),
+        (Decimal("70000.00"), "SLJ8YM4R3T"),
+    ]:
+        services.record_payment(
+            invoice=invoice, actor=staff, amount_kes=amount,
+            method="mpesa", reference=code,
+        )
+        invoice.refresh_from_db()
+        assert invoice.status == Invoice.Status.ISSUED, "settled too early"
+
+    services.record_payment(
+        invoice=invoice, actor=staff, amount_kes=Decimal("10000.00"),
+        method="bank", reference="FT26091200881",
+    )
+
+    invoice.refresh_from_db()
+    assert invoice.status == Invoice.Status.PAID
+    assert invoice.balance == Decimal("0.00")
+    assert invoice.payments.count() == 3
+    # Every reference is on the invoice, so it can be checked against a
+    # statement without opening the payment rows.
+    for code in ["SLJ7XK2P1Q", "SLJ8YM4R3T", "FT26091200881"]:
+        assert code in invoice.payment_reference
+
+
+def test_recording_more_than_is_owed_is_refused(signed, staff):
+    """
+    Almost always a typo in the amount. The version that is not a typo needs a
+    person, not a row that silently absorbs it.
+    """
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    services.record_payment(
+        invoice=invoice, actor=staff, amount_kes=Decimal("100000.00"),
+        method="mpesa", reference="SLJ7XK2P1Q",
+    )
+
+    with pytest.raises(services.OperationsError) as caught:
+        services.record_payment(
+            invoice=invoice, actor=staff, amount_kes=Decimal("60000.00"),
+            method="mpesa", reference="SLJ8YM4R3T",
+        )
+
+    assert "more than is outstanding" in str(caught.value)
+    invoice.refresh_from_db()
+    assert invoice.payments.count() == 1
+    assert invoice.status == Invoice.Status.ISSUED
+
+
+def test_the_same_mpesa_code_cannot_pay_two_invoices(signed, staff):
+    """
+    An M-Pesa code is unique across the network. The same one appearing twice
+    means a payment was recorded twice — which shows the company as having been
+    paid money it was never paid.
+    """
+    first = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    second = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.last()
+    )
+
+    services.record_payment(
+        invoice=first, actor=staff, amount_kes=Decimal("150000.00"),
+        method="mpesa", reference="SLJ7XK2P1Q",
+    )
+
+    with pytest.raises(services.OperationsError) as caught:
+        services.record_payment(
+            invoice=second, actor=staff, amount_kes=Decimal("100000.00"),
+            method="mpesa", reference="SLJ7XK2P1Q",
+        )
+
+    assert "already recorded" in str(caught.value)
+    assert second.payments.count() == 0
+
+
+def test_a_payment_with_no_reference_is_refused_unless_it_is_cash(signed, staff):
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+
+    with pytest.raises(services.OperationsError):
+        services.record_payment(
+            invoice=invoice, actor=staff, amount_kes=Decimal("1000.00"),
+            method="bank", reference="",
+        )
+
+    # Cash is the one case where a human was already in the room.
+    services.record_payment(
+        invoice=invoice, actor=staff, amount_kes=Decimal("1000.00"),
+        method="cash", reference="",
+    )
+    assert invoice.payments.count() == 1
+
+
+# ── invoices raised straight to a client ─────────────────────────────────────
+
+
+def test_a_direct_invoice_needs_no_order_but_does_need_a_client_we_know(staff):
+    """
+    Anyone can be added as an organisation. That is not the same as being
+    someone we may send a bill to.
+    """
+    stranger = Organisation.objects.create(name="Someone We Have Never Met")
+
+    with pytest.raises(services.OperationsError) as caught:
+        services.issue_direct_invoice(
+            organisation=stranger, actor=staff,
+            description="Consultancy", amount_kes=Decimal("40000.00"),
+        )
+
+    assert "no orders and no previous invoices" in str(caught.value)
+    assert Invoice.objects.count() == 0
+
+
+def test_a_past_client_can_be_invoiced_without_a_contract(signed, staff):
+    """
+    The signed-contract guard is right for project work and wrong for an
+    afternoon's work for someone we already deliver to. Separate door, separate
+    guard — see issue_direct_invoice.
+    """
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Domain renewal paid on their behalf",
+        amount_kes=Decimal("2400.00"),
+    )
+
+    assert invoice.order_id is None
+    assert invoice.is_direct
+    assert invoice.organisation == signed.organisation
+    assert invoice.amount_kes == Decimal("2400.00")
+
+
+def test_a_direct_invoice_cannot_smuggle_a_milestone_in(signed, staff):
+    """The database refuses it too — see the check constraint on Invoice."""
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Ad hoc", amount_kes=Decimal("5000.00"),
+    )
+    assert invoice.milestone_id is None
+
+
+# ── notifications ────────────────────────────────────────────────────────────
+
+
+def test_issuing_an_invoice_notifies_everyone_on_the_client_account(signed, staff, client_user):
+    """
+    One row per person, not one per event. "Read" is a fact about a person, and
+    a shared row means one colleague opening it marks it read for everyone.
+    """
+    from portal.models import Notification
+
+    colleague = User.objects.create_user(
+        email="finance@example.com", password=PASSWORD, full_name="Finance",
+        email_verified_at=timezone.now(),
+    )
+    Membership.objects.create(user=colleague, organisation=signed.organisation)
+
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+
+    rows = Notification.objects.filter(kind=Notification.Kind.INVOICE_ISSUED)
+    assert set(rows.values_list("user__email", flat=True)) == {
+        client_user.email, colleague.email,
+    }
+    assert all(r.audience == Notification.Audience.CLIENT for r in rows)
+    assert invoice.number in rows.first().title
+    # Staff are not notified on a client surface, and never the other way.
+    assert not rows.filter(user__is_staff=True).exists()
+
+
+def test_a_client_notification_never_reaches_the_staff_surface(signed, staff):
+    from portal.models import Notification
+
+    services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    assert not Notification.objects.filter(
+        audience=Notification.Audience.STAFF
+    ).exists()

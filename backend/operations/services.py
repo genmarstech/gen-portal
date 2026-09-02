@@ -28,7 +28,9 @@ from portal.models import (
     Invoice,
     Milestone,
     MpesaPayment,
+    Notification,
     Order,
+    PaymentRecord,
     ProgressNote,
     Service,
 )
@@ -869,6 +871,125 @@ def set_staff_active(*, actor: User, user: User, active: bool) -> User:
 # ── invoicing ────────────────────────────────────────────────────────────────
 
 
+
+# ── notifications ────────────────────────────────────────────────────────────
+#
+# Deliberately small and deliberately dumb. A notification points at something
+# that is already true and already visible elsewhere; it is never the only
+# record of a fact, and never how a client is told something that matters.
+# See Notification's docstring.
+#
+# Creation never raises into the caller. An invoice that was issued correctly
+# must not be rolled back because a notification could not be written — the
+# invoice is the thing that matters, and the notification is a convenience.
+
+
+def _notify(
+    *,
+    users,
+    audience: str,
+    kind: str,
+    title: str,
+    body: str = "",
+    url: str = "",
+) -> None:
+    """One row per person. See Notification's docstring for why."""
+    rows = [
+        Notification(
+            user=user,
+            audience=audience,
+            kind=kind,
+            title=title,
+            body=body,
+            url=url,
+        )
+        for user in users
+    ]
+    if not rows:
+        return
+    try:
+        Notification.objects.bulk_create(rows)
+    except Exception:  # pragma: no cover - defensive, see the note above
+        log.exception("could not write %s notifications", kind)
+
+
+def _client_recipients(organisation: Organisation):
+    """
+    Everyone on the client's account, and only people who can still sign in.
+
+    A notification for a deactivated user is a row nobody will ever read.
+    """
+    return User.objects.filter(
+        memberships__organisation=organisation,
+        is_active=True,
+    ).distinct()
+
+
+def _staff_recipients():
+    return User.objects.filter(is_staff=True, is_active=True)
+
+
+def notify_invoice_issued(invoice: Invoice) -> None:
+    _notify(
+        users=_client_recipients(invoice.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.INVOICE_ISSUED,
+        title=f"Invoice {invoice.number}",
+        body=f"KES {invoice.amount_kes:,.2f} — {invoice.description}",
+        url="/invoices",
+    )
+
+
+def notify_payment_recorded(
+    invoice: Invoice, payment: PaymentRecord, *, settled: bool
+) -> None:
+    if settled:
+        title = f"Invoice {invoice.number} paid"
+        body = f"KES {invoice.amount_kes:,.2f} received in full. Thank you."
+    else:
+        title = f"Payment received against {invoice.number}"
+        body = (
+            f"KES {payment.amount_kes:,.2f} received. "
+            f"KES {invoice.balance:,.2f} still outstanding."
+        )
+
+    _notify(
+        users=_client_recipients(invoice.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=(
+            Notification.Kind.INVOICE_PAID
+            if settled
+            else Notification.Kind.PAYMENT_RECORDED
+        ),
+        title=title,
+        body=body,
+        url="/invoices",
+    )
+
+
+def notify_invoice_voided(invoice: Invoice) -> None:
+    _notify(
+        users=_client_recipients(invoice.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.INVOICE_VOIDED,
+        title=f"Invoice {invoice.number} withdrawn",
+        body="It is no longer owed. Nothing is required from you.",
+        url="/invoices",
+    )
+
+
+def notify_enquiry_received(enquiry: Enquiry) -> None:
+    _notify(
+        users=_staff_recipients(),
+        audience=Notification.Audience.STAFF,
+        kind=Notification.Kind.ENQUIRY_RECEIVED,
+        title=f"New enquiry from {enquiry.organisation.name}",
+        body=(enquiry.problem or "")[:200],
+        url="/",
+    )
+
+
+
 def next_invoice_number(today: date | None = None) -> str:
     """
     The next invoice number, e.g. GM-INV-2026-0007.
@@ -975,6 +1096,7 @@ def issue_invoice(
             with transaction.atomic():
                 invoice = Invoice.objects.create(
                     number=next_invoice_number(issued_on),
+                    organisation=order.organisation,
                     order=order,
                     milestone=milestone,
                     description=description,
@@ -994,7 +1116,120 @@ def issue_invoice(
         milestone.status = Milestone.Status.INVOICED
         milestone.save(update_fields=["status"])
 
+    notify_invoice_issued(invoice)
+
     log.info("invoice %s issued for %s by %s", invoice.number, order.reference, actor.email)
+    return invoice
+
+
+@transaction.atomic
+def issue_direct_invoice(
+    *,
+    organisation: Organisation,
+    actor: User,
+    description: str,
+    amount_kes: Decimal,
+    due_on: date | None = None,
+    issued_on: date | None = None,
+) -> Invoice:
+    """
+    Bill a client for something that is not a project milestone.
+
+    ── WHY THIS EXISTS ALONGSIDE issue_invoice ─────────────────────────────────
+
+    issue_invoice refuses to bill without a signed statement of work, and that
+    guard is right: Charter 02 §I puts the agreement before the work and before
+    the bill, and billing project work that nobody signed for is asking someone
+    to pay for something they did not buy.
+
+    But that guard assumes every invoice bills a project, and not every one
+    does. A past client asks for an afternoon's work. A licence renews. A
+    domain gets paid for on their behalf. Forcing those through a fabricated
+    order would put rows in the delivery pipeline for work that has no
+    pipeline, and would make the order board a worse description of reality
+    every time it happened.
+
+    So this is a SEPARATE door with its OWN guard rather than a flag that
+    switches the other one off — a flag would eventually get passed on a
+    project invoice by someone in a hurry, and the contract requirement would
+    quietly stop existing.
+
+    ── THE GUARD HERE ──────────────────────────────────────────────────────────
+
+    The client must be one we have an actual relationship with. Anyone can be
+    added as an organisation; that is not the same as being someone we may
+    send a bill to. So this requires the organisation to have at least one
+    order, or an invoice already — evidence of a prior working relationship,
+    which is exactly the founder's own description of who these invoices are
+    for.
+    """
+    has_history = (
+        organisation.orders.exists()
+        or Invoice.objects.filter(organisation=organisation).exists()
+    )
+    if not has_history:
+        raise OperationsError(
+            f"{organisation.name} has no orders and no previous invoices, so "
+            "there is nothing on file showing we have worked with them. Raise "
+            "the work as an order first, or check this is the right client.",
+            field="organisation",
+        )
+
+    description = description.strip()
+    if not description:
+        raise OperationsError(
+            "Say what this bills. The client's accounts department reads this "
+            "line and nothing else.",
+            field="description",
+        )
+
+    if amount_kes is None:
+        raise OperationsError("An invoice needs an amount.", field="amount_kes")
+    amount_kes = Decimal(amount_kes)
+    if amount_kes <= 0:
+        raise OperationsError(
+            "An invoice must ask for a positive amount. A refund or a "
+            "correction is a credit note, not an invoice.",
+            field="amount_kes",
+        )
+
+    issued_on = issued_on or timezone.localdate()
+    if due_on and due_on < issued_on:
+        raise OperationsError(
+            "That due date is before the invoice date, so it would arrive "
+            "already overdue.",
+            field="due_on",
+        )
+
+    for attempt in range(5):
+        try:
+            with transaction.atomic():
+                invoice = Invoice.objects.create(
+                    number=next_invoice_number(issued_on),
+                    organisation=organisation,
+                    order=None,
+                    milestone=None,
+                    description=description,
+                    amount_kes=amount_kes,
+                    issued_on=issued_on,
+                    due_on=due_on,
+                    issued_by=actor,
+                )
+            break
+        except IntegrityError:
+            if attempt == 4:
+                raise
+    else:  # pragma: no cover - the loop always breaks or raises
+        raise OperationsError("Could not allocate an invoice number.")
+
+    notify_invoice_issued(invoice)
+
+    log.info(
+        "direct invoice %s issued to %s by %s",
+        invoice.number,
+        organisation.name,
+        actor.email,
+    )
     return invoice
 
 
@@ -1003,15 +1238,34 @@ def record_payment(
     *,
     invoice: Invoice,
     actor: User,
-    paid_on: date | None = None,
+    amount_kes: Decimal | None = None,
+    method: str = PaymentRecord.Method.MPESA,
     reference: str = "",
+    paid_on: date | None = None,
+    note: str = "",
+    mpesa_payment: MpesaPayment | None = None,
 ) -> Invoice:
     """
     Write down that money arrived. It does not move any.
 
-    See Invoice's docstring — Genmars processes no payments, and this must not
-    imply otherwise. The reference is what makes the row checkable against a
-    bank statement, so it is asked for rather than optional-in-practice.
+    ── PAYMENTS ADD UP; THEY DO NOT OVERWRITE ──────────────────────────────────
+
+    This used to set a single reference on the invoice and mark it paid. That
+    is wrong for the way invoices are actually settled here: M-Pesa caps a
+    single transaction, so a large invoice arrives as several transfers with
+    several codes. Under the old shape the second code replaced the first and
+    the invoice claimed to be settled by a payment covering a fraction of it.
+
+    Now each payment is its own row, and the invoice is marked paid when the
+    rows ADD UP to the full amount. Below that it stays outstanding with a
+    balance, which is the truth and is what the client sees.
+
+    ── WHY OVERPAYMENT IS REFUSED ──────────────────────────────────────────────
+
+    Recording more than is owed is almost always a typo in the amount, and the
+    version of it that is not a typo — a client genuinely sending too much —
+    needs a decision from a person, not a row that silently absorbs it. Either
+    way the right response is to stop and say so.
     """
     if invoice.status == Invoice.Status.VOID:
         raise OperationsError(
@@ -1022,11 +1276,25 @@ def record_payment(
         raise OperationsError(f"{invoice.number} is already recorded as paid.")
 
     reference = reference.strip()
-    if not reference:
+    if not reference and method != PaymentRecord.Method.CASH:
         raise OperationsError(
             "Record the payment reference — the M-Pesa code or bank reference. "
             "Without it this row cannot be checked against the account.",
             field="reference",
+        )
+
+    if method not in PaymentRecord.Method.values:
+        raise OperationsError("That is not a payment method we record.", field="method")
+
+    # Default to settling the invoice outright, which is the common case and
+    # keeps a one-payment invoice a one-field form.
+    if amount_kes is None:
+        amount_kes = invoice.balance
+    amount_kes = Decimal(amount_kes)
+
+    if amount_kes <= 0:
+        raise OperationsError(
+            "A payment has to be for a positive amount.", field="amount_kes"
         )
 
     paid_on = paid_on or timezone.localdate()
@@ -1036,19 +1304,74 @@ def record_payment(
             field="paid_on",
         )
 
-    invoice.status = Invoice.Status.PAID
-    invoice.paid_on = paid_on
-    invoice.payment_reference = reference
-    invoice.recorded_by = actor
-    invoice.save(
-        update_fields=["status", "paid_on", "payment_reference", "recorded_by"]
+    # Locked, because two people recording the last two payments at once must
+    # not both read the same balance and both decide theirs settles it.
+    #
+    # The lock is taken and the result discarded, then the CALLER'S instance is
+    # refreshed. Rebinding to the fetched row instead would leave every caller
+    # holding an object that still says ISSUED after this function marked it
+    # PAID — which is how a settled invoice gets voided a line later.
+    Invoice.objects.select_for_update().get(pk=invoice.pk)
+    invoice.refresh_from_db()
+    outstanding = invoice.balance
+
+    if amount_kes > outstanding:
+        raise OperationsError(
+            f"That is more than is outstanding on {invoice.number}. "
+            f"KES {outstanding:,.2f} is owed and this records "
+            f"KES {amount_kes:,.2f}. Check the amount.",
+            field="amount_kes",
+        )
+
+    try:
+        payment = PaymentRecord.objects.create(
+            invoice=invoice,
+            method=method,
+            reference=reference,
+            amount_kes=amount_kes,
+            paid_on=paid_on,
+            note=note.strip(),
+            recorded_by=actor,
+            mpesa_payment=mpesa_payment,
+        )
+    except IntegrityError:
+        # The unique constraint on the reference. An M-Pesa code is unique
+        # across the network, so seeing one twice means this payment is
+        # already recorded somewhere — possibly against a different invoice,
+        # which would show us as having been paid money we were not.
+        raise OperationsError(
+            f"{reference} is already recorded against an invoice. The same "
+            "payment cannot settle two of them.",
+            field="reference",
+        ) from None
+
+    settled = invoice.balance <= 0
+    if settled:
+        invoice.status = Invoice.Status.PAID
+        invoice.paid_on = paid_on
+        # Every reference that made it up, in the order they arrived, so the
+        # invoice can be checked against a statement without a join.
+        refs = [p.reference for p in invoice.payments.all() if p.reference]
+        invoice.payment_reference = ", ".join(refs)[:120]
+        invoice.recorded_by = actor
+        invoice.save(
+            update_fields=["status", "paid_on", "payment_reference", "recorded_by"]
+        )
+
+        if invoice.milestone_id:
+            invoice.milestone.mark_paid()
+
+    notify_payment_recorded(invoice, payment, settled=settled)
+
+    log.info(
+        "payment of %s recorded on %s by %s (%s)",
+        amount_kes,
+        invoice.number,
+        actor.email if actor else "system",
+        "settled" if settled else f"balance {invoice.balance}",
     )
-
-    if invoice.milestone_id:
-        invoice.milestone.mark_paid()
-
-    log.info("payment recorded on %s by %s", invoice.number, actor.email)
     return invoice
+
 
 
 @transaction.atomic
@@ -1088,6 +1411,8 @@ def void_invoice(*, invoice: Invoice, actor: User, reason: str) -> Invoice:
     if invoice.milestone_id and invoice.milestone.status == Milestone.Status.INVOICED:
         invoice.milestone.status = Milestone.Status.PENDING
         invoice.milestone.save(update_fields=["status"])
+
+    notify_invoice_voided(invoice)
 
     log.info("invoice %s voided by %s: %s", invoice.number, actor.email, reason)
     return invoice
@@ -1273,13 +1598,38 @@ def record_mpesa_result(parsed: dict) -> MpesaPayment | None:
         )
         return payment
 
-    invoice.status = Invoice.Status.PAID
-    invoice.paid_on = timezone.localdate()
-    invoice.payment_reference = payment.receipt
-    invoice.save(update_fields=["status", "paid_on", "payment_reference"])
-
-    if invoice.milestone_id:
-        invoice.milestone.mark_paid()
+    # Through the same door as every other payment, so there is ONE ledger.
+    #
+    # This used to mark the invoice paid directly. With PaymentRecord that
+    # would have been a visible lie: the invoice would say PAID while
+    # amount_paid stayed at zero and the client's dashboard showed the full
+    # amount still outstanding.
+    #
+    # record_payment applies the same balance arithmetic as a bank transfer,
+    # so a part-payment by M-Pesa now leaves a correct balance instead of
+    # settling the whole invoice.
+    try:
+        record_payment(
+            invoice=invoice,
+            actor=None,
+            amount_kes=Decimal(payment.amount),
+            method=PaymentRecord.Method.MPESA,
+            reference=payment.receipt,
+            paid_on=timezone.localdate(),
+            note="Recorded automatically from the M-Pesa callback.",
+            mpesa_payment=payment,
+        )
+    except OperationsError as exc:
+        # The money arrived; only the bookkeeping refused. Loud, because a
+        # successful payment that did not reach an invoice needs a person
+        # today, not at month end.
+        log.error(
+            "mpesa %s succeeded for %s but could not be recorded: %s",
+            payment.receipt,
+            invoice.number,
+            exc,
+        )
+        return payment
 
     log.info("mpesa %s paid %s", payment.receipt, invoice.number)
     return payment

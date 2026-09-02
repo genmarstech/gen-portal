@@ -458,3 +458,40 @@ def test_mpesa_being_unconfigured_is_a_clear_refusal(settings, invoice):
     with pytest.raises(services.OperationsError) as caught:
         services.start_mpesa_payment(invoice=invoice, phone="0712345678")
     assert "not set up" in str(caught.value)
+
+
+# ── one ledger, whichever way the money arrived ──────────────────────────────
+
+
+def test_a_successful_callback_writes_a_payment_row(pending, invoice):
+    """
+    The callback used to mark the invoice PAID directly, without a payment row.
+    With PaymentRecord as the ledger that is a visible lie: the invoice says
+    PAID while amount_paid stays at zero and the client's dashboard shows the
+    full amount still outstanding.
+    """
+    from portal.models import PaymentRecord
+
+    apply(callback_body(receipt="SLJ7XK2P1Q"))
+
+    invoice.refresh_from_db()
+    assert invoice.status == Invoice.Status.PAID
+    assert invoice.amount_paid == invoice.amount_kes
+    assert invoice.balance == Decimal("0.00")
+
+    record = invoice.payments.get()
+    assert record.method == PaymentRecord.Method.MPESA
+    assert record.reference == "SLJ7XK2P1Q"
+    assert record.amount_kes == invoice.amount_kes
+    # Recorded by the callback, not by a person pretending to have seen it.
+    assert record.recorded_by is None
+    assert record.mpesa_payment_id == pending.pk
+
+
+def test_a_failed_callback_writes_no_payment_row(pending, invoice):
+    apply(callback_body(code=1032, receipt=""))
+
+    invoice.refresh_from_db()
+    assert invoice.status == Invoice.Status.ISSUED
+    assert invoice.payments.count() == 0
+    assert invoice.amount_paid == Decimal("0.00")

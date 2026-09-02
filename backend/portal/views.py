@@ -408,6 +408,10 @@ class EnquiryCreateView(APIView):
             service=service,
             tier=fields["tier"][:120],
         )
+        # Staff see it on the operations surface. Deliberately after the row
+        # exists: a notification pointing at nothing is worse than none.
+        services.notify_enquiry_received(enquiry)
+
         log.info(
             "enquiry %s filed by %s (service=%s tier=%s)",
             enquiry.pk,
