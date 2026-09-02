@@ -40,7 +40,9 @@ BACKUP_DIR="${BACKUP_DIR:-./backups}"
 
 dump_path="${1:-}"
 if [ -z "$dump_path" ]; then
-    dump_path="$(find "$BACKUP_DIR" -maxdepth 1 -name 'portal-*.dump' -type f | sort | tail -1)"
+    dump_path="$(find "$BACKUP_DIR" -maxdepth 1 \
+        \( -name 'portal-*.dump' -o -name 'portal-*.dump.gpg' \) \
+        -type f | sort | tail -1)"
 fi
 
 if [ -z "$dump_path" ] || [ ! -s "$dump_path" ]; then
@@ -50,6 +52,41 @@ fi
 
 dump_name="$(basename "$dump_path")"
 echo "==> Testing restore of ${dump_name}"
+
+# ── DECRYPTION IS PART OF THE TEST, NOT A STEP BEFORE IT ────────────────────
+#
+# An encrypted backup nobody can open is not a backup, and that failure is
+# perfectly silent: gpg encrypts happily to a key whose private half was lost
+# months ago, and every dump since has been unreadable. The only way to know is
+# to decrypt one.
+#
+# So a .gpg dump is decrypted here, into a file this script deletes on the way
+# out. If the private key is missing or wrong, this is where it is found —
+# which is the whole reason the restore test runs weekly rather than once.
+decrypted=""
+cleanup_plaintext() {
+    if [ -n "$decrypted" ]; then
+        rm -f "$decrypted"
+        docker compose exec -T "$DB_SERVICE" rm -f "/backups/$(basename "$decrypted")" \
+            >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup_plaintext EXIT
+
+case "$dump_name" in
+*.gpg)
+    echo "==> Decrypting (this is the half of the test that proves the key works)"
+    decrypted="${BACKUP_DIR}/.restore-check-$$.dump"
+    if ! gpg --batch --yes --quiet --output "$decrypted" --decrypt "$dump_path"; then
+        echo "FATAL: could not decrypt ${dump_name}." >&2
+        echo "       Every backup since encryption was switched on is unreadable" >&2
+        echo "       until the private key is restored. This is the emergency." >&2
+        exit 1
+    fi
+    chmod 600 "$decrypted"
+    dump_name="$(basename "$decrypted")"
+    ;;
+esac
 
 psql_scratch() {
     docker compose exec -T "$DB_SERVICE" \
@@ -70,7 +107,11 @@ cleanup() {
 }
 # Runs on success, failure and Ctrl-C alike. Without it a failed run leaves a
 # scratch database behind, and the next run fails for the wrong reason.
-trap cleanup EXIT
+#
+# Chained with cleanup_plaintext, set earlier: bash keeps only ONE EXIT trap, so
+# replacing it here would leave a decrypted copy of the whole database sitting
+# in the backups directory after every run.
+trap 'cleanup; cleanup_plaintext' EXIT
 
 cleanup
 echo "==> Creating scratch database ${SCRATCH_DB}"
@@ -158,7 +199,9 @@ fi
 # worth a human's attention.
 
 # portal-20260902-021758.dump -> 2026-09-02 02:17:58+00
-stamp="$(echo "$dump_name" | sed -nE 's/^portal-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})\.dump$/\1-\2-\3 \4:\5:\6+00/p')"
+# Read from the ORIGINAL filename, not the decrypted temporary one, which
+# carries a process id instead of a timestamp.
+stamp="$(basename "$dump_path" | sed -nE 's/^portal-([0-9]{4})([0-9]{2})([0-9]{2})-([0-9]{2})([0-9]{2})([0-9]{2})\.dump(\.gpg)?$/\1-\2-\3 \4:\5:\6+00/p')"
 
 if [ -z "$stamp" ]; then
     echo "    note: ${dump_name} is not a scheduled dump name; skipping the"
