@@ -1069,3 +1069,69 @@ def test_an_invoice_paid_before_the_ledger_existed_still_sums(signed, staff):
     invoice.refresh_from_db()
     assert invoice.amount_paid == invoice.amount_kes
     assert invoice.balance == Decimal("0.00")
+
+
+# ── tiers on the catalogue ───────────────────────────────────────────────────
+
+
+def test_the_catalogue_carries_tiers_so_a_client_can_choose_one(client, signed, client_user):
+    """
+    The order page shows the three sizes and prefills from the one picked. That
+    needs the prices, and needs them as numbers rather than the website's
+    display strings, because picking a tier answers the budget question.
+    """
+    from decimal import Decimal as D
+
+    from portal.models import Service, ServiceTier
+
+    service = Service.objects.create(
+        name="Implementation", slug="implementation",
+        summary="Setup and go-live.", price_unit="one-time",
+    )
+    ServiceTier.objects.create(
+        service=service, slug="essential-setup", name="Essential Setup",
+        price_kes=D("25000.00"), lead="A straightforward setup.",
+        includes="Discovery\nBasic configuration", position=1,
+    )
+    ServiceTier.objects.create(
+        service=service, slug="enterprise-setup", name="Enterprise Setup",
+        price_kes=D("150000.00"), is_from=True, lead="Multiple locations.",
+        includes="Discovery\nCustom configuration", position=3,
+    )
+
+    client.force_login(client_user)
+    body = client.get(reverse("service-catalogue")).json()
+    shown = next(s for s in body["services"] if s["slug"] == "implementation")
+
+    assert shown["price_unit"] == "one-time"
+    assert [t["slug"] for t in shown["tiers"]] == ["essential-setup", "enterprise-setup"]
+
+    essential, enterprise = shown["tiers"]
+    # A string, like every other money value crossing this API.
+    assert essential["price_kes"] == "25000.00"
+    assert essential["is_from"] is False
+    assert essential["includes"] == ["Discovery", "Basic configuration"]
+
+    # The top tier is a floor. Losing this flag turns it into a quote we have
+    # not given.
+    assert enterprise["is_from"] is True
+
+
+def test_a_tier_slug_may_repeat_across_services(client, client_user):
+    """
+    "enterprise" is a tier of several services and "basic" of two, so a tier is
+    identified by service AND slug. A global unique constraint would have made
+    the catalogue unseedable.
+    """
+    from decimal import Decimal as D
+
+    from portal.models import Service, ServiceTier
+
+    for slug, name in [("training", "Training"), ("custom-development", "Custom")]:
+        service = Service.objects.create(name=name, slug=slug, summary=name)
+        ServiceTier.objects.create(
+            service=service, slug="enterprise", name="Enterprise",
+            price_kes=D("75000.00"), lead="The big one.", includes="Everything",
+        )
+
+    assert ServiceTier.objects.filter(slug="enterprise").count() == 2

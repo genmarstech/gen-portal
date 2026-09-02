@@ -115,3 +115,189 @@
   font-size: 0.8125rem;
   color: var(--danger);
 }
+
+/* ---------- choosing a service and a size ---------- */
+
+.tiers {
+  margin: 0 0 var(--sp-6);
+  padding: 0;
+  border: 0;
+}
+
+.tiersLegend {
+  padding: 0 0 var(--sp-3);
+  max-width: 56ch;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+}
+
+.serviceGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.serviceChip {
+  padding: 0.4rem 0.8rem;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+  background: none;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.serviceChip:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+/*
+ * auto-fit with a floor, not three fixed columns: at 375px the three cards
+ * have to stack, and a grid that insists on three makes each one 105px wide
+ * with the price wrapping onto three lines.
+ */
+.tierGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  gap: var(--sp-3);
+}
+
+/*
+ * A button, not a div with a click handler. These are the primary control on
+ * the page — they have to be reachable by keyboard and announce their pressed
+ * state, and aria-pressed on a real button gets both for free.
+ */
+.tierCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-4);
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.tierCard:hover {
+  border-color: var(--rule-strong);
+}
+
+.tierCard:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The chosen one has to be unmistakable — the whole point of the cards is that
+   the client can see what they picked before they send. */
+.tierCardOn {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.tierName {
+  font-size: 0.9375rem;
+  color: var(--ink);
+}
+
+.tierPrice {
+  font-size: 1.0625rem;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.tierLead {
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--ink-muted);
+}
+
+.tierIncludes {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tierIncludes li {
+  padding-left: 0.9rem;
+  position: relative;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+.tierIncludes li::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.5em;
+  width: 4px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--rule-strong);
+}
+
+/* "from" pricing. Charter 04 §IV — a floor shown as a price is a quote we
+   have not given, so the card says so on the card. */
+.tierNote {
+  margin-top: auto;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--rule);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--ink-faint);
+}
+
+.changeService {
+  margin: 0 0 var(--sp-5);
+}
+
+.linkButton {
+  padding: 0;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--rule-strong);
+  cursor: pointer;
+}
+
+.linkButton:hover {
+  color: var(--ink);
+}
+
+/* ---------- a question the tier already answered ---------- */
+
+.settled {
+  display: grid;
+  gap: 0.15rem;
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--bg-sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.settledLabel {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.settledValue {
+  font-size: 1rem;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}

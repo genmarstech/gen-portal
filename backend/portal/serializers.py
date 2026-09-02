@@ -22,6 +22,7 @@ from .models import (
     PaymentRecord,
     ProgressNote,
     Service,
+    ServiceTier,
 )
 
 
@@ -466,6 +467,26 @@ class NotificationSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ServiceTierSerializer(serializers.ModelSerializer):
+    """
+    One size a service is sold in.
+
+    `price_kes` is a string, like every other money value crossing this API.
+    `is_from` has to travel with it: the top tier is a floor, and a card
+    showing the number without "from" is a quote we have not given.
+    """
+
+    price_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    includes = serializers.ListField(source="included", read_only=True)
+
+    class Meta:
+        model = ServiceTier
+        fields = ["slug", "name", "price_kes", "is_from", "lead", "includes"]
+        read_only_fields = fields
+
+
 class ClientServiceSerializer(serializers.ModelSerializer):
     """
     The catalogue, as a signed-in client sees it in the portal.
@@ -476,8 +497,10 @@ class ClientServiceSerializer(serializers.ModelSerializer):
     another.
     """
 
+    tiers = ServiceTierSerializer(many=True, read_only=True)
+
     class Meta:
         model = Service
-        fields = ["slug", "name", "summary", "is_active"]
+        fields = ["slug", "name", "summary", "price_unit", "is_active", "tiers"]
         read_only_fields = fields
 

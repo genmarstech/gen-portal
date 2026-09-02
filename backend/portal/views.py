@@ -511,7 +511,11 @@ class ServiceCatalogueView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        services_qs = Service.objects.filter(is_active=True).order_by("name")
+        services_qs = (
+            Service.objects.filter(is_active=True)
+            .prefetch_related("tiers")
+            .order_by("name")
+        )
         return Response(
             {"services": ClientServiceSerializer(services_qs, many=True).data}
         )

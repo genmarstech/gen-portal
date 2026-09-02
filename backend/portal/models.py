@@ -469,6 +469,16 @@ class Service(models.Model):
         help_text="One per line. What the client actually receives.",
     )
 
+    # "per month", "one-time", "per session". Carried from the website because
+    # a tier card showing KES 10,000 for something billed monthly misstates the
+    # price — Charter 04 §IV, and the kind of error a client only finds on the
+    # second invoice.
+    price_unit = models.CharField(
+        max_length=40,
+        blank=True,
+        help_text='How the tier prices are charged: "per month", "one-time".',
+    )
+
     is_active = models.BooleanField(
         default=True,
         help_text=(
@@ -1045,4 +1055,78 @@ class Notification(models.Model):
     @property
     def is_read(self) -> bool:
         return self.read_at is not None
+
+
+class ServiceTier(models.Model):
+    """
+    One of the three sizes a service is sold in.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE WEBSITE IS THE PRICE LIST. THIS IS A COPY OF IT.
+
+    genmars.co.ke/services publishes these prices to the public, and that page
+    is authoritative. These rows exist so a signed-in client can pick a tier
+    inside the portal without being sent back out to the website to read the
+    number and come back — not so the portal can have prices of its own.
+
+    Two price lists is how a client is quoted one number and billed another, so
+    when a price changes on the website `seed_services --force` must be re-run.
+    The seed command carries the same data and says the same thing.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY THE PRICE IS A NUMBER AND NOT THE STRING FROM THE WEBSITE ───────────
+
+    The website stores "KES 25,000" because it renders it. Here it has to be
+    compared: picking a tier answers the budget question on the order form, and
+    that needs arithmetic, not a string. Decimal, like every other money field
+    in this file.
+
+    `is_from` carries what the website calls `open` — the top tier is a floor,
+    not a price, and a card that shows KES 150,000 without saying "from" is a
+    quote we have not given.
+    """
+
+    service = models.ForeignKey(
+        Service, on_delete=models.CASCADE, related_name="tiers"
+    )
+    # Not globally unique: "enterprise" is a tier of several services, and
+    # "basic" of two. Unique WITHIN a service, which is what identifies one.
+    slug = models.SlugField(max_length=120)
+    name = models.CharField(max_length=120)
+
+    price_kes = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Null where the tier is quoted individually rather than listed.",
+    )
+    is_from = models.BooleanField(
+        default=False,
+        help_text='Shown as "from KES X" — a floor, not a quote.',
+    )
+
+    lead = models.CharField(
+        max_length=200, help_text="One line on who this size is for."
+    )
+    includes = models.TextField(
+        help_text="One item per line, in the order the website lists them."
+    )
+
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["service", "position", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["service", "slug"], name="unique_tier_slug_per_service"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.service.name} — {self.name}"
+
+    @property
+    def included(self) -> list[str]:
+        return [line.strip() for line in self.includes.splitlines() if line.strip()]
 

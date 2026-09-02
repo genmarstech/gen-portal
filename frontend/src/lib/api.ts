@@ -208,10 +208,29 @@ export type Notification = {
   read: boolean;
 };
 
+/**
+ * One of the three sizes a service is sold in.
+ *
+ * `price_kes` is a decimal STRING, like every money value crossing this API,
+ * and `is_from` travels with it: the top tier is published as a floor, so
+ * rendering the number without "from" states a quote we have not given.
+ */
+export type ServiceTier = {
+  slug: string;
+  name: string;
+  price_kes: string | null;
+  is_from: boolean;
+  lead: string;
+  includes: string[];
+};
+
 export type CatalogueService = {
   slug: string;
   name: string;
   summary: string;
+  /** "per month", "one-time", "per session" — how the tier prices are charged. */
+  price_unit: string;
+  tiers: ServiceTier[];
 };
 
 /**
