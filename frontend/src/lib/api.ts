@@ -249,6 +249,36 @@ export type Ticket = {
   messages: TicketMessage[];
 };
 
+/** Something Genmars is waiting on this client for. */
+export type WaitingOnYou = {
+  id: number;
+  summary: string;
+  detail: string;
+  order_reference: string;
+  order_title: string;
+  raised_at: string;
+  /** How long it has been sitting. The reason the list is worth reading. */
+  waiting_days: number;
+};
+
+/**
+ * A system Genmars runs for this client.
+ *
+ * `health` and `checked_at` travel together on purpose: "up" with no timestamp
+ * is a claim, "up, checked four minutes ago" is an observation.
+ */
+export type YourSystem = {
+  name: string;
+  slug: string;
+  purpose: string;
+  url: string;
+  status: string;
+  status_label: string;
+  health: "unknown" | "up" | "down" | "degraded";
+  health_label: string;
+  checked_at: string | null;
+};
+
 export type Notification = {
   id: number;
   kind: string;
@@ -416,6 +446,9 @@ export const portal = {
     post<{ unread: number }>("/notifications", id === undefined ? {} : { id }),
 
   catalogue: () => get<{ services: CatalogueService[] }>("/services"),
+
+  dashboard: () =>
+    get<{ waiting_on_you: WaitingOnYou[]; systems: YourSystem[] }>("/dashboard"),
 
   support: () => get<{ tickets: Ticket[] }>("/support"),
   raiseTicket: (body: { subject: string; body: string; order?: string }) =>

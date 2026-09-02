@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { LoadingMark } from "@/components/LoadingMark";
+import { DashboardApps } from "./DashboardApps";
 import { EmptyState } from "@/components/app/EmptyState";
 import { portal, type OrderSummary } from "@/lib/api";
 import styles from "./page.module.css";
@@ -59,6 +60,11 @@ export default function DashboardPage() {
           {orders.length === 1 ? "One engagement" : `${orders.length} engagements`}
         </h1>
       </header>
+
+      {/* Above the engagement list, because these are the things that need
+          somebody to do something. They render nothing when there is nothing —
+          see DashboardApps. */}
+      <DashboardApps />
 
       <ul className={styles.list}>
         {orders.map((order) => (

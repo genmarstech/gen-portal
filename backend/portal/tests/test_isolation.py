@@ -17,6 +17,7 @@ import datetime as dt
 import pytest
 
 from django.db import models
+from django.utils import timezone
 
 from accounts.models import Membership, Organisation, User
 from portal.models import Milestone, Order, ProgressNote
@@ -233,3 +234,132 @@ def test_a_staff_notification_is_not_on_the_client_surface(world, staff):
         audience=Notification.Audience.CLIENT
     )
     assert not visible.exists()
+
+
+# ── the client dashboard apps ────────────────────────────────────────────────
+#
+# Both read data that was internal until now — delivery blockers and the
+# systems registry — so both are new paths to another client's information.
+
+
+@pytest.fixture
+def blocked(world, staff):
+    """One blocker per client, plus one on us that nobody should see listed."""
+    from portal.models import Blocker
+
+    a = Blocker.objects.create(
+        order=world["order_a"], summary="We need the August export",
+        waiting_on=Blocker.WaitingOn.CLIENT, raised_by=staff,
+    )
+    b = Blocker.objects.create(
+        order=world["order_b"], summary="Beta must approve the schema",
+        waiting_on=Blocker.WaitingOn.CLIENT, raised_by=staff,
+    )
+    ours = Blocker.objects.create(
+        order=world["order_a"], summary="We are rewriting the importer",
+        waiting_on=Blocker.WaitingOn.US, raised_by=staff,
+    )
+    return {"a": a, "b": b, "ours": ours}
+
+
+def test_a_client_sees_only_what_they_are_holding_up(world, blocked):
+    from portal.selectors import waiting_on_client
+
+    mine = list(waiting_on_client(world["user_a"]))
+    assert [b.summary for b in mine] == ["We need the August export"]
+
+
+def test_blockers_on_us_are_not_listed_to_the_client(world, blocked):
+    """
+    Ours are ours to fix, and listing them here would read as excuses. A list
+    of things you cannot act on is noise.
+    """
+    from portal.selectors import waiting_on_client
+
+    summaries = [b.summary for b in waiting_on_client(world["user_a"])]
+    assert "We are rewriting the importer" not in summaries
+
+
+def test_a_cleared_blocker_drops_off(world, blocked, staff):
+    from portal.selectors import waiting_on_client
+
+    blocked["a"].cleared_at = timezone.now()
+    blocked["a"].save()
+
+    assert not waiting_on_client(world["user_a"]).exists()
+
+
+def test_client_systems_do_not_cross_organisations(world):
+    from portal.models import System
+    from portal.selectors import systems_for
+
+    for key, org in (("a", world["org_a"]), ("b", world["org_b"])):
+        System.objects.create(
+            name=f"{key} site", slug=f"{key}-site", kind=System.Kind.CLIENT,
+            criticality=System.Criticality.IMPORTANT, purpose="Their site.",
+            impact_if_down="It is down.", owner=world["user_a"],
+            organisation=org,
+        )
+
+    mine = systems_for(world["user_a"])
+    assert [s.slug for s in mine] == ["a-site"]
+
+
+def test_our_own_systems_are_invisible_to_every_client(world):
+    """
+    Internal systems have no organisation, so the filter excludes them. A
+    client should not learn what runs Genmars.
+    """
+    from portal.models import System
+    from portal.selectors import systems_for
+
+    System.objects.create(
+        name="Client portal", slug="gen-portal", kind=System.Kind.INTERNAL,
+        criticality=System.Criticality.CRITICAL, purpose="Internal.",
+        impact_if_down="Everything.", owner=world["user_a"],
+    )
+
+    assert not systems_for(world["user_a"]).exists()
+    assert not systems_for(world["user_b"]).exists()
+
+
+def test_the_dashboard_never_hands_over_how_we_operate_a_system(client, world):
+    """
+    The health-check URL, the runbook and the reporting keys are facts about
+    how we run it, not about whether their service is working.
+    """
+    from django.urls import reverse
+    from portal.models import System
+
+    System.objects.create(
+        name="Acme site", slug="acme-site", kind=System.Kind.CLIENT,
+        criticality=System.Criticality.CRITICAL, purpose="Their booking site.",
+        impact_if_down="Nobody can book.", owner=world["user_a"],
+        organisation=world["org_a"],
+        health_url="https://internal.example/secret-health",
+        runbook="ssh in as root and restart the thing",
+        repository="genmarstech/acme",
+    )
+
+    client.force_login(world["user_a"])
+    body = client.get(reverse("dashboard")).json()
+
+    shown = body["systems"][0]
+    assert shown["name"] == "Acme site"
+    for leaked in ("health_url", "runbook", "repository", "criticality", "owner"):
+        assert leaked not in shown, leaked
+
+    blob = str(body)
+    assert "secret-health" not in blob
+    assert "ssh in as root" not in blob
+
+
+def test_the_dashboard_is_empty_for_someone_with_no_membership(client):
+    from django.urls import reverse
+
+    nobody = User.objects.create_user(email="nobody@example.com", password="x" * 12)
+    client.force_login(nobody)
+    body = client.get(reverse("dashboard")).json()
+
+    assert body["waiting_on_you"] == []
+    assert body["systems"] == []

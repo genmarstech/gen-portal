@@ -10,6 +10,7 @@ urlpatterns = [
     # onboarding runs once, so without this a returning client's order was
     # silently discarded.
     path("enquiries", views.EnquiryCreateView.as_view(), name="enquiry-create"),
+    path("dashboard", views.DashboardView.as_view(), name="dashboard"),
     path("invoices", views.InvoiceListView.as_view(), name="invoice-list"),
     path("support", views.SupportView.as_view(), name="support"),
     path(

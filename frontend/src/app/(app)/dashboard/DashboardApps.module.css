@@ -1,0 +1,182 @@
+/*
+ * Two panels above the order list, side by side where there is room.
+ *
+ * auto-fit rather than a fixed pair: one of them is usually absent — most weeks
+ * nothing is blocked on the client — and a two-column grid holding one panel
+ * leaves a hole where the reader expects content.
+ */
+.apps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+  gap: var(--sp-4);
+  margin-bottom: var(--sp-8);
+}
+
+.panel {
+  min-width: 0;
+  padding: var(--sp-5);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2);
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.count {
+  padding: 0.05rem 0.45rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+}
+
+.lede {
+  margin: 0 0 var(--sp-4);
+  max-width: 46ch;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+}
+
+.list {
+  display: grid;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---------- waiting on you ---------- */
+
+.blocker {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--rule);
+}
+
+.list li:last-child.blocker {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.blockerTop {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.summary {
+  font-size: 0.875rem;
+  line-height: 1.45;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Two days is a note. Three weeks is a conversation somebody should have had a
+ * fortnight ago, so past a week it stops being grey.
+ */
+.days {
+  flex: none;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.daysLong {
+  color: var(--danger);
+}
+
+.detail {
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.order {
+  justify-self: start;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  border-bottom: 1px solid var(--rule);
+}
+
+.order:hover {
+  color: var(--ink);
+}
+
+.hint {
+  margin: var(--sp-4) 0 0;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+/* ---------- your systems ---------- */
+
+.system {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.systemTop {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--rule-strong);
+}
+
+.dot_up { background: var(--accent); }
+/* Degraded is not down and must not look like it. Answering badly and not
+   answering at all are different problems. */
+.dot_degraded { background: color-mix(in srgb, var(--accent) 50%, var(--danger)); }
+.dot_down { background: var(--danger); }
+.dot_unknown { background: var(--rule-strong); }
+
+.systemName {
+  margin-right: auto;
+  font-size: 0.875rem;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.health {
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.purpose {
+  padding-left: calc(8px + var(--sp-2));
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.checked {
+  padding-left: calc(8px + var(--sp-2));
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}

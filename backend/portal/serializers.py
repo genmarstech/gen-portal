@@ -13,7 +13,10 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from django.utils import timezone
+
 from .models import (
+    Blocker,
     Contract,
     Invoice,
     Milestone,
@@ -24,6 +27,7 @@ from .models import (
     ProgressNote,
     SupportMessage,
     SupportTicket,
+    System,
     Service,
     ServiceTier,
 )
@@ -601,4 +605,61 @@ class ClientTicketSerializer(serializers.ModelSerializer):
         return ClientSupportMessageSerializer(
             visible, many=True, context=self.context
         ).data
+
+
+class ClientBlockerSerializer(serializers.ModelSerializer):
+    """
+    Something we are waiting on, as the client sees it.
+
+    `waiting_on` is not sent: everything in this list is waiting on them by
+    definition, and a field repeating that on every row is noise. `raised_by`
+    is not sent either — which of us noticed is our bookkeeping.
+    """
+
+    order_reference = serializers.CharField(source="order.reference", read_only=True)
+    order_title = serializers.CharField(source="order.title", read_only=True)
+    waiting_days = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Blocker
+        fields = [
+            "id", "summary", "detail",
+            "order_reference", "order_title", "raised_at", "waiting_days",
+        ]
+        read_only_fields = fields
+
+    def get_waiting_days(self, blocker: Blocker) -> int:
+        """
+        How long it has been sitting. Stated plainly rather than dressed up:
+        the number is the whole reason this list is worth reading.
+        """
+        return (timezone.now() - blocker.raised_at).days
+
+
+class ClientSystemSerializer(serializers.ModelSerializer):
+    """
+    A system we run for this client, as they may see it.
+
+    ── WHAT IS DELIBERATELY NOT HERE ───────────────────────────────────────────
+
+    The health-check URL, the runbook, the reporting keys, the owner, the
+    criticality. None of those are facts about whether their service is
+    working; they are facts about how we operate it, and a client reading an
+    internal runbook learns nothing except that we left it lying around.
+
+    `health` and `checked_at` go together on purpose. "Up" with no timestamp is
+    a claim; "up, checked four minutes ago" is an observation.
+    """
+
+    health_label = serializers.CharField(source="get_health_display", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = System
+        fields = [
+            "name", "slug", "purpose", "url",
+            "status", "status_label",
+            "health", "health_label", "checked_at",
+        ]
+        read_only_fields = fields
 

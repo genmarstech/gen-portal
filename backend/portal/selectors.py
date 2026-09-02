@@ -23,7 +23,14 @@ from __future__ import annotations
 from django.db.models import QuerySet
 
 from accounts.models import User
-from portal.models import Contract, Invoice, Order, SupportTicket
+from portal.models import (
+    Blocker,
+    Contract,
+    Invoice,
+    Order,
+    SupportTicket,
+    System,
+)
 
 
 def organisation_ids_for(user: User) -> QuerySet:
@@ -252,4 +259,54 @@ def tickets_for(user: User) -> QuerySet[SupportTicket]:
 
 def ticket_for(user: User, reference: str) -> SupportTicket | None:
     return tickets_for(user).filter(reference=reference).first()
+
+
+def waiting_on_client(user: User) -> QuerySet[Blocker]:
+    """
+    Open blockers where WE are waiting on THEM.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE MOST USEFUL THING THIS PORTAL CAN TELL A CLIENT.
+
+    The commonest way a project stalls is not that anybody stopped working. It
+    is that we are waiting on something — an export, an approval, a login — and
+    the client does not know it, because the only place that fact lived was a
+    blocker on an internal delivery board.
+
+    Two weeks later both sides believe the other is being slow. Nobody was
+    doing anything wrong; the information was simply on one side of a wall.
+    ══════════════════════════════════════════════════════════════════════════
+
+    Deliberately ONLY `waiting_on = client`. Blockers on us are ours to fix and
+    listing them here would read as excuses; blockers on a third party are
+    usually a supplier the client has no lever over. Neither is something they
+    can act on, and a list of things you cannot act on is noise.
+    """
+    return (
+        Blocker.objects.filter(
+            order__organisation_id__in=organisation_ids_for(user),
+            waiting_on=Blocker.WaitingOn.CLIENT,
+            cleared_at__isnull=True,
+        )
+        .select_related("order")
+        .order_by("raised_at")
+    )
+
+
+def systems_for(user: User) -> QuerySet[System]:
+    """
+    Systems Genmars runs FOR this client, as the client may see them.
+
+    Scoped on `organisation`, which is set only where we run something on a
+    client's behalf. Our own internal systems have no organisation and are
+    therefore invisible here — that is the filter doing its job, not an
+    omission.
+
+    What reaches them is decided by ClientSystemSerializer, not by this
+    queryset: the runbook, the health-check URL and the reporting keys are
+    ours, and none of them are a fact about their service being up.
+    """
+    return System.objects.filter(
+        organisation_id__in=organisation_ids_for(user)
+    ).exclude(status=System.Status.RETIRED)
 

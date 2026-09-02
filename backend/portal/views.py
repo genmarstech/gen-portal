@@ -39,8 +39,10 @@ from .selectors import (
     orders_for,
 )
 from .serializers import (
+    ClientBlockerSerializer,
     ClientInvoiceSerializer,
     ClientOfferSerializer,
+    ClientSystemSerializer,
     ClientTicketSerializer,
     ClientServiceSerializer,
     EnquirySerializer,
@@ -713,5 +715,41 @@ class SupportReplyView(APIView):
         ticket.refresh_from_db()
         return Response(
             ClientTicketSerializer(ticket, context={"user": request.user}).data
+        )
+
+
+class DashboardView(APIView):
+    """
+    The two things a client can act on, in one call.
+
+    ── WHY THESE TWO AND NOT A WALL OF FIGURES ─────────────────────────────────
+
+    A dashboard that shows everything is a dashboard nobody reads twice. These
+    are the only two things on it that change what somebody DOES:
+
+      · what we are waiting on them for, which is the commonest reason a
+        project quietly stops moving; and
+      · whether the thing we run for them is up, which is the question they
+        would otherwise be asking us by email.
+
+    Everything else they might want — invoices, offers, progress notes — has
+    its own page and is better there.
+
+    ── ONE CALL, BECAUSE IT IS ONE SCREEN ──────────────────────────────────────
+
+    Two round trips to paint one view is two chances for half of it to arrive.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        blockers = selectors.waiting_on_client(request.user)
+        systems = selectors.systems_for(request.user)
+
+        return Response(
+            {
+                "waiting_on_you": ClientBlockerSerializer(blockers, many=True).data,
+                "systems": ClientSystemSerializer(systems, many=True).data,
+            }
         )
 
