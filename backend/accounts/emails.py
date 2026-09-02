@@ -304,3 +304,49 @@ def send_support_reply(email: str, reference: str, subject: str, body: str) -> N
         },
     )
 
+
+def send_data_export_notice(email: str, who: str, organisation: str, when: str) -> None:
+    """
+    Somebody exported everything we hold about them.
+
+    ── WHY THIS IS RECORDED AT ALL ─────────────────────────────────────────────
+
+    Charter 05 §VIII gives every client their data back on demand, and the
+    portal does it without a human involved — which is right, and also means
+    the only trace would be a log line nobody reads.
+
+    "Who asked for their data, and when" is the first question in any
+    data-protection conversation, so it goes to the address the privacy policy
+    names. It is a notice, not an approval step: nothing here can or should
+    stop the export.
+
+    The export ITSELF is not attached. It is the client's personal data, and
+    mailing a copy to ourselves every time somebody exercises a right would be
+    a new copy of their data created by the act of respecting their privacy.
+    """
+    _send(
+        to=email,
+        subject=f"Data export — {organisation}",
+        text=(
+            f"{who} exported their data from the client portal.\n\n"
+            f"Organisation: {organisation}\n"
+            f"When: {when}\n\n"
+            "This is a record, not a request. The export has already happened — "
+            "Charter 05 §VIII, and nothing should stand between a client and "
+            "their own data.\n\n"
+            "The export is not attached. It is their personal data, and copying "
+            "it to ourselves every time somebody exercises a right would create "
+            "a new copy by the act of respecting their privacy.\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/data_export.html",
+        context={
+            "heading": "A client exported their data",
+            "preheader": f"{organisation} — {when}",
+            "who": who,
+            "organisation": organisation,
+            "when": when,
+        },
+    )
+

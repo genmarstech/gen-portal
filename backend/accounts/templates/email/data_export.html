@@ -1,0 +1,34 @@
+{% extends "email/base.html" %}
+{% block content %}
+<p style="margin:0 0 16px 0;">
+  <strong style="color:#2e2b34; font-weight:600;">{{ who }}</strong> exported
+  their data from the client portal.
+</p>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="background-color:#f4efec; border:1px solid #e2dbd6; border-radius:4px;">
+  <tr>
+    <td style="padding:14px 16px; font-size:14px; line-height:1.7; color:#5f5867;">
+      <strong style="color:#2e2b34;">Organisation</strong><br>{{ organisation }}<br><br>
+      <strong style="color:#2e2b34;">When</strong><br>{{ when }}
+    </td>
+  </tr>
+</table>
+
+<p style="margin:18px 0 0 0;">
+  This is a record, not a request. The export has already happened &mdash;
+  Charter 05 &sect;VIII, and nothing should stand between a client and their
+  own data.
+</p>
+
+{% comment %}
+The export itself is deliberately not attached. It is the client's personal
+data, and mailing a copy to ourselves every time somebody exercises a right
+would create a new copy of it by the act of respecting their privacy.
+{% endcomment %}
+<p style="margin:14px 0 0 0; font-size:13px; color:#7a7480;">
+  The export is not attached, on purpose: copying a client's data to ourselves
+  each time they ask for it would be a new copy created by the act of
+  respecting their privacy.
+</p>
+{% endblock %}

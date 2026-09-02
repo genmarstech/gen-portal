@@ -287,3 +287,63 @@ def test_the_client_cannot_set_their_own_priority(client, org, client_user):
     )
 
     assert SupportTicket.objects.get().priority == SupportTicket.Priority.NORMAL
+
+
+# ── the privacy record ───────────────────────────────────────────────────────
+
+
+def test_exporting_data_tells_privacy_but_never_blocks_the_client(
+    client, org, client_user, settings
+):
+    """
+    Charter 05 §VIII: nothing stands between a client and their own data. The
+    notice to privacy@ is a record, not an approval step.
+    """
+    settings.PRIVACY_EMAIL = "privacy@genmars.co.ke"
+
+    client.force_login(client_user)
+    response = client.get(reverse("export"))
+
+    assert response.status_code == 200
+    assert "attachment" in response["Content-Disposition"]
+
+    notice = mail.outbox[-1]
+    assert notice.to == ["privacy@genmars.co.ke"]
+    assert "Kilimani Dental" in notice.body
+    assert client_user.full_name in notice.body
+
+
+def test_the_export_itself_is_never_attached_to_that_notice(
+    client, org, client_user, settings
+):
+    """
+    Copying a client's personal data to ourselves every time they exercise a
+    right would create a new copy of it by the act of respecting their privacy.
+    """
+    settings.PRIVACY_EMAIL = "privacy@genmars.co.ke"
+
+    client.force_login(client_user)
+    client.get(reverse("export"))
+
+    notice = mail.outbox[-1]
+    assert notice.attachments == []
+    # And nothing export-shaped smuggled into the body.
+    assert "genmars-export.json" not in notice.body
+    assert client_user.email not in notice.body
+
+
+def test_a_mail_failure_never_stops_a_client_getting_their_data(
+    client, org, client_user, monkeypatch
+):
+    from accounts import emails as email_module
+
+    def boom(**kwargs):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(email_module, "send_data_export_notice", boom)
+
+    client.force_login(client_user)
+    response = client.get(reverse("export"))
+
+    assert response.status_code == 200
+    assert b"organisation" in response.content.lower()

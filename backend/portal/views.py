@@ -21,7 +21,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from accounts import identity
+from accounts import emails, identity
 from accounts.throttling import EnquiryThrottle, MpesaThrottle
 from operations import services
 
@@ -111,6 +111,30 @@ class ExportView(APIView):
         response["Content-Disposition"] = (
             'attachment; filename="genmars-export.json"'
         )
+
+        # A record for privacy@, which the privacy policy names. "Who asked for
+        # their data, and when" is the first question in any data-protection
+        # conversation, and without this the only trace is a log line nobody
+        # reads.
+        #
+        # Wrapped, and deliberately AFTER the payload is built: a client's right
+        # to their own data must not depend on a mail provider being up.
+        # Charter 05 §VIII.
+        try:
+            membership = request.user.memberships.select_related(
+                "organisation"
+            ).first()
+            emails.send_data_export_notice(
+                email=settings.PRIVACY_EMAIL,
+                who=request.user.full_name or request.user.email,
+                organisation=(
+                    membership.organisation.name if membership else "no organisation"
+                ),
+                when=timezone.now().strftime("%-d %B %Y, %H:%M UTC"),
+            )
+        except Exception:
+            log.exception("could not record the data export notice")
+
         return response
 
 

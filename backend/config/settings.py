@@ -397,6 +397,27 @@ ADMINS = [("Genmars Tech", env("ERROR_EMAIL", default="edwin@genmars.co.ke"))]
 # after that delivered too — so this is the default. Anything pointed here in
 # future gets the same treatment: prove the mailbox, then point at it.
 SUPPORT_EMAIL = env("SUPPORT_EMAIL", default="support@genmars.co.ke")
+
+# ── privacy@ and security@ ──────────────────────────────────────────────────
+#
+# Both aliases exist and both were proven to deliver before anything was
+# pointed at them, which is the order every address here gets: prove the
+# mailbox, then route to it. See GM-INC-2026-0001 for what the other order
+# costs.
+#
+# privacy@ is where a data-subject request lands. The privacy policy names it,
+# and the portal copies it on the one privacy-relevant thing the software does
+# by itself — a client exporting everything we hold about them, Charter 05
+# §VIII. That is a record worth having: "who asked for their data and when" is
+# the first question in any data-protection conversation.
+PRIVACY_EMAIL = env("PRIVACY_EMAIL", default="privacy@genmars.co.ke")
+
+# security@ is where a vulnerability report arrives. Nothing in this codebase
+# sends to it — a security mailbox exists to RECEIVE, and routing our own
+# alerts there would bury a researcher's report under our own noise. What makes
+# it work is /.well-known/security.txt on the website, which is how a finder
+# knows where to write at all.
+SECURITY_EMAIL = env("SECURITY_EMAIL", default="security@genmars.co.ke")
 SERVER_EMAIL = env("SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
 
 LOGGING = {
