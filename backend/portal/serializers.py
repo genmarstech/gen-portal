@@ -13,7 +13,16 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import Contract, Invoice, Milestone, Order, ProgressNote
+from .models import (
+    Contract,
+    Invoice,
+    Milestone,
+    Notification,
+    Order,
+    PaymentRecord,
+    ProgressNote,
+    Service,
+)
 
 
 class ContactSerializer(serializers.Serializer):
@@ -97,6 +106,27 @@ class ClientContractSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ClientPaymentSerializer(serializers.ModelSerializer):
+    """
+    One payment we recorded, as the client sees it.
+
+    They get the reference back so they can check we credited the payment they
+    actually made, rather than taking "paid" on trust. `recorded_by` is left
+    out — which of us typed it in is our bookkeeping, not a fact about their
+    money.
+    """
+
+    method_label = serializers.CharField(source="get_method_display", read_only=True)
+    amount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+
+    class Meta:
+        model = PaymentRecord
+        fields = ["method", "method_label", "reference", "amount_kes", "paid_on"]
+        read_only_fields = fields
+
+
 class ClientInvoiceSerializer(serializers.ModelSerializer):
     """
     An invoice, as the CLIENT sees it.
@@ -124,12 +154,30 @@ class ClientInvoiceSerializer(serializers.ModelSerializer):
         max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
     )
     overdue = serializers.SerializerMethodField()
+    # Both strings, for the same reason amount_kes is. These are numbers about
+    # money on a page someone reconciles against their own records.
+    amount_paid = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    balance = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    payments = ClientPaymentSerializer(many=True, read_only=True)
+    order_reference = serializers.CharField(
+        source="order.reference", read_only=True, default=None
+    )
 
     class Meta:
         model = Invoice
         fields = [
             "number", "description", "amount_kes", "status", "status_label",
             "issued_on", "due_on", "overdue", "paid_on",
+            # What has arrived and what is left. An invoice settled by four
+            # M-Pesa transfers shows all four and a balance of zero, rather
+            # than a single reference that describes one of them.
+            "amount_paid", "balance", "payments",
+            # Null for an invoice raised straight to the client.
+            "order_reference",
             # The reference we matched their payment against. Shown so they can
             # confirm we credited the payment they actually made, rather than
             # taking "paid" on trust.
@@ -398,3 +446,38 @@ class InvoiceDocumentSerializer(serializers.Serializer):
                 else None
             ),
         }
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    """
+    A notification, on whichever surface asked for it.
+
+    `url` is relative and stays that way. A notification is a pointer at
+    something already visible in the app the reader is standing in; an absolute
+    URL here would be a link somebody clicks without looking, written by
+    whatever code created the row.
+    """
+
+    read = serializers.BooleanField(source="is_read", read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = ["id", "kind", "title", "body", "url", "created_at", "read"]
+        read_only_fields = fields
+
+
+class ClientServiceSerializer(serializers.ModelSerializer):
+    """
+    The catalogue, as a signed-in client sees it in the portal.
+
+    Deliberately the same facts the public site publishes and no more. A price
+    that appears here but not on genmars.co.ke would be a private price list,
+    and two price lists is how a client is quoted one number and billed
+    another.
+    """
+
+    class Meta:
+        model = Service
+        fields = ["slug", "name", "summary", "is_active"]
+        read_only_fields = fields
+

@@ -27,7 +27,10 @@ from operations import services
 
 from . import mpesa
 
-from .models import Enquiry, Service
+from django.utils import timezone
+
+from . import selectors
+from .models import Enquiry, Notification, Service
 from .selectors import (
     export_payload,
     invoice_for,
@@ -36,9 +39,12 @@ from .selectors import (
     orders_for,
 )
 from .serializers import (
+    ClientInvoiceSerializer,
+    ClientServiceSerializer,
     EnquirySerializer,
     InvoiceDocumentSerializer,
     OnboardingSerializer,
+    NotificationSerializer,
     OrderDetailSerializer,
     OrderListSerializer,
 )
@@ -426,3 +432,87 @@ class EnquiryCreateView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class InvoiceListView(APIView):
+    """
+    Every invoice addressed to the client, in one place.
+
+    Invoices used to be reachable only through their order. Direct invoices
+    have no order, so without this a client could be sent a bill their own
+    portal insisted did not exist.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        invoices = selectors.invoices_for(request.user)
+        return Response(
+            {"invoices": ClientInvoiceSerializer(invoices, many=True).data}
+        )
+
+
+class NotificationListView(APIView):
+    """
+    The signed-in person's notifications on the CLIENT surface.
+
+    Audience is filtered here and not left to the caller. A staff notification
+    is written about internal work — an enquiry arriving, who it was assigned
+    to — and must not become readable by passing a query parameter.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        rows = request.user.notifications.filter(
+            audience=Notification.Audience.CLIENT
+        )[:50]
+        unread = request.user.notifications.filter(
+            audience=Notification.Audience.CLIENT, read_at__isnull=True
+        ).count()
+        return Response(
+            {
+                "notifications": NotificationSerializer(rows, many=True).data,
+                "unread": unread,
+            }
+        )
+
+    def post(self, request):
+        """
+        Mark as read. One id, or all of them.
+
+        Scoped to `request.user` in the filter itself rather than checked
+        afterwards, so an id belonging to someone else matches nothing instead
+        of being found and then rejected.
+        """
+        pk = request.data.get("id")
+        rows = request.user.notifications.filter(
+            audience=Notification.Audience.CLIENT, read_at__isnull=True
+        )
+        if pk is not None:
+            rows = rows.filter(pk=pk)
+
+        rows.update(read_at=timezone.now())
+        unread = request.user.notifications.filter(
+            audience=Notification.Audience.CLIENT, read_at__isnull=True
+        ).count()
+        return Response({"unread": unread})
+
+
+class ServiceCatalogueView(APIView):
+    """
+    The catalogue, so a client can order without leaving the portal.
+
+    Active services only. An inactive one is something we have stopped
+    selling, and listing it invites an order we would have to refuse — Charter
+    04 §IV, in the smallest possible form.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        services_qs = Service.objects.filter(is_active=True).order_by("name")
+        return Response(
+            {"services": ClientServiceSerializer(services_qs, many=True).data}
+        )
+

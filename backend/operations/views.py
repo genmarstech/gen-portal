@@ -13,6 +13,7 @@ re-implemented slightly differently by the next endpoint.
 from __future__ import annotations
 
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
 from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -24,6 +25,7 @@ from portal.models import (
     DeliveryGate,
     Invoice,
     Milestone,
+    Notification,
     Order,
     ProgressNote,
     Service,
@@ -32,7 +34,9 @@ from portal.models import (
 from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
+    DirectInvoiceSerializer,
     InvoiceSerializer,
+    NotificationSerializer,
     InvoiceWriteSerializer,
     PaymentSerializer,
     VoidInvoiceSerializer,
@@ -671,8 +675,11 @@ class InvoicePaymentView(StaffView):
             invoice = services.record_payment(
                 invoice=invoice,
                 actor=request.user,
+                amount_kes=form.validated_data["amount_kes"],
+                method=form.validated_data["method"],
                 reference=form.validated_data["reference"],
                 paid_on=form.validated_data["paid_on"],
+                note=form.validated_data["note"],
             )
         except services.OperationsError as exc:
             return _refuse(exc)
@@ -695,3 +702,150 @@ class InvoiceVoidView(StaffView):
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(InvoiceSerializer(invoice).data)
+
+
+# ── invoices that are not attached to an order ───────────────────────────────
+#
+# The views above are all nested under an order, which was right while every
+# invoice had one. These are the flat equivalents. They work for EVERY invoice,
+# direct or not, so operations has one place to look rather than having to know
+# which kind it is dealing with before it can find it.
+
+
+class AllInvoiceListView(StaffView):
+    """
+    Every invoice in the company, and raising one straight to a client.
+
+    CanCommit, like the nested view. Billing is the same authority as pricing
+    and signing — Charter 02 §I keeps money with the founder and the commercial
+    partners.
+    """
+
+    permission_classes = [CanCommit]
+
+    def get(self, request):
+        invoices = (
+            Invoice.objects.select_related(
+                "organisation", "order", "milestone", "issued_by"
+            )
+            .prefetch_related("payments")
+            .all()
+        )
+
+        organisation = request.query_params.get("organisation")
+        if organisation:
+            invoices = invoices.filter(organisation_id=organisation)
+
+        state = request.query_params.get("status")
+        if state in Invoice.Status.values:
+            invoices = invoices.filter(status=state)
+
+        return Response({"invoices": InvoiceSerializer(invoices, many=True).data})
+
+    def post(self, request):
+        form = DirectInvoiceSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        organisation = get_object_or_404(
+            Organisation, pk=form.validated_data["organisation"]
+        )
+        try:
+            invoice = services.issue_direct_invoice(
+                organisation=organisation,
+                actor=request.user,
+                description=form.validated_data["description"],
+                amount_kes=form.validated_data["amount_kes"],
+                due_on=form.validated_data["due_on"],
+                issued_on=form.validated_data["issued_on"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(InvoiceSerializer(invoice).data, status=http.HTTP_201_CREATED)
+
+
+class AnyInvoicePaymentView(StaffView):
+    """
+    Add a payment to any invoice, by id.
+
+    Several of these settle one invoice — see PaymentRecord. The arithmetic,
+    the overpayment refusal and the duplicate-reference check all live in
+    services.record_payment, so this door and the nested one cannot drift.
+    """
+
+    permission_classes = [CanCommit]
+
+    def post(self, request, pk: int):
+        invoice = get_object_or_404(Invoice, pk=pk)
+        form = PaymentSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            invoice = services.record_payment(
+                invoice=invoice,
+                actor=request.user,
+                amount_kes=form.validated_data["amount_kes"],
+                method=form.validated_data["method"],
+                reference=form.validated_data["reference"],
+                paid_on=form.validated_data["paid_on"],
+                note=form.validated_data["note"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(InvoiceSerializer(invoice).data)
+
+
+class AnyInvoiceVoidView(StaffView):
+    """Withdraw any invoice, by id."""
+
+    permission_classes = [CanCommit]
+
+    def post(self, request, pk: int):
+        invoice = get_object_or_404(Invoice, pk=pk)
+        form = VoidInvoiceSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            invoice = services.void_invoice(
+                invoice=invoice,
+                actor=request.user,
+                reason=form.validated_data["reason"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(InvoiceSerializer(invoice).data)
+
+
+class StaffNotificationView(StaffView):
+    """
+    The signed-in staff member's notifications on the OPERATIONS surface.
+
+    Audience is filtered here rather than accepted from the caller, exactly as
+    on the client side. The two surfaces share a table and must not share a
+    view of it.
+    """
+
+    def get(self, request):
+        rows = request.user.notifications.filter(
+            audience=Notification.Audience.STAFF
+        )[:50]
+        unread = request.user.notifications.filter(
+            audience=Notification.Audience.STAFF, read_at__isnull=True
+        ).count()
+        return Response(
+            {
+                "notifications": NotificationSerializer(rows, many=True).data,
+                "unread": unread,
+            }
+        )
+
+    def post(self, request):
+        pk = request.data.get("id")
+        rows = request.user.notifications.filter(
+            audience=Notification.Audience.STAFF, read_at__isnull=True
+        )
+        if pk is not None:
+            rows = rows.filter(pk=pk)
+        rows.update(read_at=timezone.now())
+        unread = request.user.notifications.filter(
+            audience=Notification.Audience.STAFF, read_at__isnull=True
+        ).count()
+        return Response({"unread": unread})
+

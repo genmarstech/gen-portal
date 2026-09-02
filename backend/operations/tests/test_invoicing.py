@@ -865,3 +865,170 @@ def test_a_client_notification_never_reaches_the_staff_surface(signed, staff):
     assert not Notification.objects.filter(
         audience=Notification.Audience.STAFF
     ).exists()
+
+
+# ── over HTTP ────────────────────────────────────────────────────────────────
+#
+# Driven through the real request path, not the service functions. The last
+# invoicing bug that reached production was a serializer default that raised
+# KeyError into a 500, and no service-level test could have caught it.
+
+
+def test_operations_can_raise_a_direct_invoice_over_http(client, signed, staff):
+    client.force_login(staff)
+    response = client.post(
+        reverse("ops-all-invoices"),
+        {
+            "organisation": signed.organisation_id,
+            "description": "Domain renewal paid on their behalf",
+            "amount_kes": "2400.00",
+        },
+        content_type="application/json",
+    )
+
+    assert response.status_code == 201, response.content
+    body = response.json()
+    assert body["order_reference"] is None
+    assert body["organisation_name"] == signed.organisation.name
+    assert body["amount_kes"] == "2400.00"
+    assert body["balance"] == "2400.00"
+    assert body["payments"] == []
+
+
+def test_two_payment_codes_settle_one_invoice_over_http(client, signed, staff):
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    client.force_login(staff)
+    url = reverse("ops-invoice-payments", args=[invoice.pk])
+
+    first = client.post(
+        url,
+        {"method": "mpesa", "reference": "SLJ7XK2P1Q", "amount_kes": "100000.00"},
+        content_type="application/json",
+    )
+    assert first.status_code == 200, first.content
+    assert first.json()["status"] == "issued"
+    assert first.json()["balance"] == "50000.00"
+
+    second = client.post(
+        url,
+        {"method": "bank", "reference": "FT26091200881", "amount_kes": "50000.00"},
+        content_type="application/json",
+    )
+    assert second.status_code == 200, second.content
+    body = second.json()
+    assert body["status"] == "paid"
+    assert body["balance"] == "0.00"
+    assert len(body["payments"]) == 2
+
+
+def test_recording_too_much_over_http_is_refused_not_a_500(client, signed, staff):
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    client.force_login(staff)
+    response = client.post(
+        reverse("ops-invoice-payments", args=[invoice.pk]),
+        {"method": "mpesa", "reference": "SLJ7XK2P1Q", "amount_kes": "999999.00"},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 400, response.content
+    assert "outstanding" in str(response.json())
+    invoice.refresh_from_db()
+    assert invoice.status == Invoice.Status.ISSUED
+
+
+def test_a_payment_with_only_a_reference_settles_the_whole_invoice(client, signed, staff):
+    """Amount is optional: the common case is one payment for the whole thing."""
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    client.force_login(staff)
+    response = client.post(
+        reverse("ops-invoice-payments", args=[invoice.pk]),
+        {"reference": "SLJ7XK2P1Q"},
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200, response.content
+    assert response.json()["status"] == "paid"
+
+
+def test_a_client_sees_a_direct_invoice_in_their_own_list(client, signed, staff, client_user):
+    """
+    The list route exists precisely because an invoice with no order was
+    invisible: the client would hold a bill their portal said did not exist.
+    """
+    services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Domain renewal", amount_kes=Decimal("2400.00"),
+    )
+    client.force_login(client_user)
+    body = client.get(reverse("invoice-list")).json()
+
+    assert len(body["invoices"]) == 1
+    shown = body["invoices"][0]
+    assert shown["description"] == "Domain renewal"
+    assert shown["order_reference"] is None
+    assert shown["balance"] == "2400.00"
+
+
+def test_the_client_notification_feed_answers_and_marks_read(client, signed, staff, client_user):
+    services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    client.force_login(client_user)
+
+    body = client.get(reverse("notifications")).json()
+    assert body["unread"] == 1
+    assert body["notifications"][0]["read"] is False
+    assert body["notifications"][0]["url"] == "/invoices"
+
+    marked = client.post(reverse("notifications"), {}, content_type="application/json")
+    assert marked.json()["unread"] == 0
+
+
+def test_a_client_cannot_mark_someone_elses_notification_read(client, signed, staff, client_user):
+    """
+    Scoped in the filter rather than checked afterwards, so another person's
+    id matches nothing instead of being found and then rejected.
+    """
+    from portal.models import Notification
+
+    outsider = User.objects.create_user(
+        email="outsider@example.com", password=PASSWORD, full_name="Outsider",
+        email_verified_at=timezone.now(),
+    )
+    theirs = Notification.objects.create(
+        user=outsider, audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.INVOICE_ISSUED, title="Not yours",
+    )
+
+    client.force_login(client_user)
+    client.post(reverse("notifications"), {"id": theirs.pk}, content_type="application/json")
+
+    theirs.refresh_from_db()
+    assert theirs.read_at is None
+
+
+def test_the_client_can_read_the_catalogue_from_inside_the_portal(client, signed, client_user):
+    from portal.models import Service
+
+    Service.objects.create(
+        name="Business Setup", slug="business-setup", summary="Get online properly.",
+    )
+    Service.objects.create(
+        name="Retired Thing", slug="retired-thing", summary="No longer sold.",
+        is_active=False,
+    )
+
+    client.force_login(client_user)
+    body = client.get(reverse("service-catalogue")).json()
+
+    slugs = [s["slug"] for s in body["services"]]
+    assert "business-setup" in slugs
+    # Listing something we have stopped selling invites an order we would have
+    # to refuse. Charter 04 §IV, in the smallest possible form.
+    assert "retired-thing" not in slugs

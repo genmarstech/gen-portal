@@ -16,6 +16,25 @@ urlpatterns = [
     path("ops/staff", views.StaffDirectoryView.as_view(), name="ops-staff"),
     path("ops/staff/<int:pk>", views.StaffDetailView.as_view(), name="ops-staff-member"),
 
+    # invoicing — flat, so every invoice is reachable whether or not it has
+    # an order behind it. The nested routes below stay for milestone billing.
+    path("ops/invoices", views.AllInvoiceListView.as_view(), name="ops-all-invoices"),
+    path(
+        "ops/invoices/<int:pk>/payments",
+        views.AnyInvoicePaymentView.as_view(),
+        name="ops-invoice-payments",
+    ),
+    path(
+        "ops/invoices/<int:pk>/void",
+        views.AnyInvoiceVoidView.as_view(),
+        name="ops-invoice-void-flat",
+    ),
+    path(
+        "ops/notifications",
+        views.StaffNotificationView.as_view(),
+        name="ops-notifications",
+    ),
+
     # invoicing
     path(
         "ops/orders/<str:reference>/invoices",

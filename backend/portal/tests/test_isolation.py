@@ -16,6 +16,8 @@ import datetime as dt
 
 import pytest
 
+from django.db import models
+
 from accounts.models import Membership, Organisation, User
 from portal.models import Milestone, Order, ProgressNote
 from portal.selectors import orders_for, order_for
@@ -120,3 +122,114 @@ def test_unpublished_notes_are_not_visible_to_clients(world, staff):
     order = order_for(world["user_a"], "GM-001")
     assert order is not None
     assert order.notes.filter(published_at__isnull=False).count() == 0
+
+
+# ── invoices, including the ones with no order ───────────────────────────────
+#
+# invoice_for scopes through the order, so the isolation was inherited. Direct
+# invoices have no order and are scoped on `organisation` instead, which is a
+# NEW path to another client's billing document — and an invoice number is
+# guessable. These tests exist because that filter is now the only thing
+# standing between the two.
+
+
+@pytest.fixture
+def billed(world):
+    """One invoice per client, one of each raised with no order at all."""
+    from decimal import Decimal
+
+    from portal.models import Invoice
+
+    def make(number, org, order):
+        return Invoice.objects.create(
+            number=number, organisation=org, order=order,
+            description="Work", amount_kes=Decimal("1000.00"),
+            issued_on=dt.date(2026, 9, 1),
+        )
+
+    return {
+        "a_order": make("GM-INV-2026-0001", world["org_a"], world["order_a"]),
+        "a_direct": make("GM-INV-2026-0002", world["org_a"], None),
+        "b_order": make("GM-INV-2026-0003", world["org_b"], world["order_b"]),
+        "b_direct": make("GM-INV-2026-0004", world["org_b"], None),
+    }
+
+
+def test_a_client_sees_only_their_own_invoices(world, billed):
+    from portal.selectors import invoices_for
+
+    numbers = set(invoices_for(world["user_a"]).values_list("number", flat=True))
+    assert numbers == {"GM-INV-2026-0001", "GM-INV-2026-0002"}
+
+
+def test_a_direct_invoice_is_visible_to_its_client(world, billed):
+    """The whole reason invoices_for exists: an order-scoped query misses it."""
+    from portal.selectors import client_invoice_for
+
+    found = client_invoice_for(world["user_a"], "GM-INV-2026-0002")
+    assert found is not None
+    assert found.order_id is None
+
+
+def test_guessing_another_clients_invoice_number_finds_nothing(world, billed):
+    from portal.selectors import client_invoice_for
+
+    for number in ["GM-INV-2026-0003", "GM-INV-2026-0004"]:
+        assert client_invoice_for(world["user_a"], number) is None
+
+
+def test_a_user_with_no_membership_sees_no_invoices(billed):
+    from portal.selectors import invoices_for
+
+    nobody = User.objects.create_user(email="nobody@example.com", password="x" * 12)
+    assert not invoices_for(nobody).exists()
+
+
+def test_an_invoice_never_disagrees_with_its_order_about_the_client(world, billed):
+    """
+    invoices_for reads the client off the invoice rather than through a join,
+    which is only safe while the two cannot disagree. issue_invoice copies the
+    organisation from the order and nothing else writes it.
+    """
+    from portal.models import Invoice
+
+    mismatched = Invoice.objects.exclude(order__isnull=True).exclude(
+        organisation_id=models.F("order__organisation_id")
+    )
+    assert not mismatched.exists()
+
+
+# ── notifications ────────────────────────────────────────────────────────────
+
+
+def test_notifications_do_not_cross_between_people(world):
+    from portal.models import Notification
+
+    for user in [world["user_a"], world["user_b"]]:
+        Notification.objects.create(
+            user=user, audience=Notification.Audience.CLIENT,
+            kind=Notification.Kind.INVOICE_ISSUED, title=f"For {user.email}",
+        )
+
+    mine = world["user_a"].notifications.all()
+    assert mine.count() == 1
+    assert mine.first().title == f"For {world['user_a'].email}"
+
+
+def test_a_staff_notification_is_not_on_the_client_surface(world, staff):
+    """
+    Audience is filtered by the view, not chosen by the caller. A staff
+    notification is written about internal work and must not become readable
+    by passing a query parameter.
+    """
+    from portal.models import Notification
+
+    Notification.objects.create(
+        user=world["user_a"], audience=Notification.Audience.STAFF,
+        kind=Notification.Kind.ENQUIRY_RECEIVED, title="Internal",
+    )
+
+    visible = world["user_a"].notifications.filter(
+        audience=Notification.Audience.CLIENT
+    )
+    assert not visible.exists()

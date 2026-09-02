@@ -76,6 +76,42 @@ def invoice_for(user: User, reference: str, number: str) -> Invoice | None:
     return order.invoices.filter(number=number).first()
 
 
+def invoices_for(user: User) -> QuerySet[Invoice]:
+    """
+    Every invoice addressed to the user's organisations.
+
+    ── WHY THIS DOES NOT GO THROUGH orders_for ─────────────────────────────────
+
+    `invoice_for` below scopes through the order, and that was right when every
+    invoice had one. Direct invoices do not — a renewal billed to a past client
+    has no project — so an order-scoped query cannot see them at all, and the
+    client would be asked to pay a document their portal says does not exist.
+
+    So this scopes on `organisation` instead. That is not a weaker filter: an
+    invoice's organisation is written once, from the order, when it is issued,
+    and `test_an_invoice_never_disagrees_with_its_order_about_the_client`
+    proves the two cannot disagree. The isolation is the same isolation; it is
+    just read from the invoice rather than inferred through a join.
+    """
+    return (
+        Invoice.objects.filter(organisation_id__in=organisation_ids_for(user))
+        .select_related("order", "organisation")
+        .prefetch_related("payments")
+    )
+
+
+def client_invoice_for(user: User, number: str) -> Invoice | None:
+    """
+    One invoice by number, scoped to the user.
+
+    An invoice number is guessable (GM-INV-2026-0004), so this MUST start from
+    the user's organisations rather than from Invoice. It does — see
+    `invoices_for` — and there is a test that hands one client another's
+    number and expects a 404.
+    """
+    return invoices_for(user).filter(number=number).first()
+
+
 def published_notes_for(order: Order) -> QuerySet:
     """
     Published notes only. A draft is not a promise; Charter 05 §I is about what

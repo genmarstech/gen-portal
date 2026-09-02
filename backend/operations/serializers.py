@@ -18,7 +18,9 @@ from portal.models import (
     Enquiry,
     Invoice,
     Milestone,
+    Notification,
     Order,
+    PaymentRecord,
     ProgressNote,
     Service,
 )
@@ -224,6 +226,28 @@ class VoidSerializer(serializers.Serializer):
     reason = serializers.CharField()
 
 
+class PaymentRecordSerializer(serializers.ModelSerializer):
+    """One recorded payment, as operations sees it."""
+
+    method_label = serializers.CharField(source="get_method_display", read_only=True)
+    recorded_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PaymentRecord
+        fields = [
+            "id", "method", "method_label", "reference", "amount_kes",
+            "paid_on", "note", "recorded_by_name", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_recorded_by_name(self, payment: PaymentRecord) -> str:
+        who = payment.recorded_by
+        if who is None:
+            # The M-Pesa callback, not a person who claims to have seen it.
+            return "M-Pesa callback" if payment.mpesa_payment_id else ""
+        return who.full_name or who.email
+
+
 class InvoiceSerializer(serializers.ModelSerializer):
     """
     An invoice, as operations sees it.
@@ -237,6 +261,19 @@ class InvoiceSerializer(serializers.ModelSerializer):
     milestone_name = serializers.CharField(source="milestone.name", read_only=True, default="")
     issued_by_name = serializers.SerializerMethodField()
     overdue = serializers.SerializerMethodField()
+    organisation_name = serializers.CharField(
+        source="organisation.name", read_only=True
+    )
+    order_reference = serializers.CharField(
+        source="order.reference", read_only=True, default=None
+    )
+    amount_paid = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    balance = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    payments = PaymentRecordSerializer(many=True, read_only=True)
 
     class Meta:
         model = Invoice
@@ -244,6 +281,8 @@ class InvoiceSerializer(serializers.ModelSerializer):
             "id", "number", "description", "amount_kes", "status", "status_label",
             "issued_on", "due_on", "overdue", "paid_on", "payment_reference",
             "milestone", "milestone_name", "issued_by_name", "void_reason",
+            "organisation", "organisation_name", "order_reference",
+            "amount_paid", "balance", "payments",
         ]
         read_only_fields = fields
 
@@ -281,8 +320,49 @@ class InvoiceWriteSerializer(serializers.Serializer):
 
 
 class PaymentSerializer(serializers.Serializer):
-    reference = serializers.CharField(max_length=120)
+    """
+    One payment against an invoice. Several of these can settle one invoice.
+
+    `amount_kes` is optional and defaults to the whole outstanding balance,
+    because settling an invoice in one go is the common case and should stay a
+    one-field form. Everything else about the arithmetic lives in
+    services.record_payment.
+
+    `reference` may be blank only for cash — the service enforces that, not
+    this serializer, so the rule has one home.
+    """
+
+    method = serializers.ChoiceField(
+        choices=PaymentRecord.Method.choices,
+        required=False,
+        default=PaymentRecord.Method.MPESA,
+    )
+    reference = serializers.CharField(
+        max_length=64, required=False, allow_blank=True, default=""
+    )
+    amount_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True, default=None
+    )
     paid_on = serializers.DateField(required=False, allow_null=True, default=None)
+    note = serializers.CharField(
+        max_length=200, required=False, allow_blank=True, default=""
+    )
+
+
+class DirectInvoiceSerializer(serializers.Serializer):
+    """
+    An invoice raised straight to a client, with no order behind it.
+
+    No `milestone` field, and there never should be: a milestone belongs to an
+    order, and the database refuses the combination anyway — see the check
+    constraint on Invoice.
+    """
+
+    organisation = serializers.IntegerField()
+    description = serializers.CharField(max_length=300)
+    amount_kes = serializers.DecimalField(max_digits=12, decimal_places=2)
+    due_on = serializers.DateField(required=False, allow_null=True, default=None)
+    issued_on = serializers.DateField(required=False, allow_null=True, default=None)
 
 
 class VoidInvoiceSerializer(serializers.Serializer):
@@ -478,3 +558,15 @@ class StaffInviteSerializer(serializers.Serializer):
 class StaffWriteSerializer(serializers.Serializer):
     role = serializers.ChoiceField(choices=User.StaffRole.choices, required=False)
     is_active = serializers.BooleanField(required=False)
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    """A notification on the operations surface. Same shape as the client one."""
+
+    read = serializers.BooleanField(source="is_read", read_only=True)
+
+    class Meta:
+        model = Notification
+        fields = ["id", "kind", "title", "body", "url", "created_at", "read"]
+        read_only_fields = fields
+
