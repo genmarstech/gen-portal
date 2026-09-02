@@ -385,17 +385,18 @@ ADMINS = [("Genmars Tech", env("ERROR_EMAIL", default="edwin@genmars.co.ke"))]
 
 # Where a new support request is announced.
 #
-# ── WHY THIS DOES NOT DEFAULT TO support@genmars.co.ke ──────────────────────
-# Because that is exactly how GM-INC-2026-0001 happened. An alert was pointed
-# at an address before the mailbox behind it existed, Zoho answered 550, the
-# provider suppressed it, and thirty-one hours of alerts were dropped in
-# silence while the API kept returning 200.
+# ── THE ORDER THIS WAS DONE IN IS THE POINT ─────────────────────────────────
+# It first defaulted to a mailbox already known to receive, NOT to support@,
+# because pointing an alert at an address before its mailbox exists is exactly
+# how GM-INC-2026-0001 happened: Zoho answered 550, Resend suppressed the
+# address, and thirty-one hours of alerts were dropped in silence while the API
+# kept returning 200.
 #
-# So it defaults to a mailbox we KNOW receives, and moves to support@ by
-# changing this variable once that address has been created and proven. The
-# suppression check in accounts/mail_health.py catches it either way, but not
-# repeating the mistake is better than detecting it.
-SUPPORT_EMAIL = env("SUPPORT_EMAIL", default=env("ERROR_EMAIL", default="edwin@genmars.co.ke"))
+# The alias now exists and was proven — a message sent to it on 2026-09-02
+# delivered in six seconds, and a real ticket raised through the full code path
+# after that delivered too — so this is the default. Anything pointed here in
+# future gets the same treatment: prove the mailbox, then point at it.
+SUPPORT_EMAIL = env("SUPPORT_EMAIL", default="support@genmars.co.ke")
 SERVER_EMAIL = env("SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
 
 LOGGING = {
