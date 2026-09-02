@@ -1,0 +1,327 @@
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-16);
+}
+
+.notFound {
+  margin-block: var(--sp-8) var(--sp-4);
+  color: var(--ink);
+}
+
+.back {
+  margin-block: var(--sp-6) var(--sp-4);
+  font-size: 0.875rem;
+}
+
+/* The document itself. Constrained to roughly a page width so what is on
+   screen is what comes out of the printer. */
+.doc {
+  max-width: 46rem;
+  margin-bottom: var(--sp-8);
+  padding: clamp(var(--sp-6), 4vw, var(--sp-10));
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.docVoid {
+  opacity: 0.75;
+}
+
+/* Before the amount, not after it. Somebody skimming must not read the figure
+   first and act on it. */
+.voidBanner {
+  margin-bottom: var(--sp-6);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--danger);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--radius);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: var(--sp-5);
+  margin-bottom: var(--sp-6);
+  border-bottom: 1px solid var(--rule);
+}
+
+.number {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 1.25rem;
+  font-weight: 400;
+  color: var(--ink);
+}
+
+.title {
+  margin-top: 0.15rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.paid,
+.void,
+.overdue,
+.due {
+  padding: 0.15rem 0.6rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.paid {
+  color: var(--accent-text);
+  border: 1px solid var(--accent);
+}
+
+.due {
+  color: var(--ink-muted);
+  border: 1px solid var(--rule-strong);
+}
+
+.void {
+  color: var(--ink-faint);
+  border: 1px solid var(--rule);
+}
+
+.overdue {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.parties {
+  display: grid;
+  gap: var(--sp-6);
+  margin-bottom: var(--sp-8);
+}
+
+@media (min-width: 34rem) {
+  .parties {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.label {
+  margin-bottom: var(--sp-2);
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.partyName {
+  font-size: 0.9375rem;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.partyLine {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+
+.lines {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: var(--sp-8);
+}
+
+.lines th,
+.lines td {
+  padding: var(--sp-3) 0;
+  text-align: left;
+  vertical-align: top;
+  font-size: 0.9375rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.lines thead th {
+  font-size: 0.625rem;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* Tabular figures and right alignment so the total sits under the line
+   amount — the one thing a reader checks by eye. */
+.numeric {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.lines tfoot th,
+.lines tfoot td {
+  padding-top: var(--sp-4);
+  font-size: 1.0625rem;
+  color: var(--ink);
+  border-bottom: 0;
+}
+
+.against {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+}
+
+.pay,
+.settled {
+  padding: var(--sp-4);
+  margin-bottom: var(--sp-6);
+  background: var(--bg);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.payDetails {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem var(--sp-4);
+  margin-bottom: var(--sp-3);
+  font-size: 0.9375rem;
+}
+
+.payDetails dt {
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.payDetails dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.bank {
+  /* Bank details are typed by a human and their line breaks are meaningful. */
+  white-space: pre-wrap;
+  font-size: 0.875rem;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.terms {
+  margin-top: var(--sp-3);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--ink-faint);
+}
+
+.foot {
+  padding-top: var(--sp-5);
+  font-size: 0.75rem;
+  line-height: 1.7;
+  color: var(--ink-faint);
+  border-top: 1px solid var(--rule);
+}
+
+.printHint {
+  margin-bottom: var(--sp-12);
+}
+
+.printButton {
+  padding: 0.5rem 0.9rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--ink);
+  background: none;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.printButton:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── print ──────────────────────────────────────────────────────────────────
+   No PDF generator, no new dependency (Charter 03 §I). Every browser prints to
+   PDF; this is what makes the result something you would send to an accountant
+   rather than a screenshot of a web app. Colours are forced to black on white
+   because a dark-theme invoice wastes toner and reads as a mistake. */
+@media print {
+  /* body{background:#fff;color:#000} for print already lives in globals.css,
+     which is where a rule about the page rather than this component belongs —
+     and a CSS module cannot express it anyway (":global(body)" alone is not a
+     pure selector and fails the build). */
+  .back,
+  .printHint {
+    display: none !important;
+  }
+
+  .doc {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    border: 0;
+    border-radius: 0;
+    opacity: 1;
+  }
+
+  .doc,
+  .number,
+  .partyName,
+  .lines th,
+  .lines td,
+  .payDetails dd,
+  .bank {
+    color: #000;
+  }
+
+  .title,
+  .label,
+  .partyLine,
+  .against,
+  .terms,
+  .foot,
+  .payDetails dt {
+    color: #444;
+  }
+
+  .head,
+  .lines th,
+  .lines td,
+  .foot {
+    border-color: #ccc;
+  }
+
+  .pay,
+  .settled {
+    background: #fff;
+    border-color: #ccc;
+  }
+
+  .paid,
+  .void,
+  .overdue,
+  .due,
+  .voidBanner {
+    color: #000;
+    border-color: #666;
+  }
+
+  /* A page break through the total or the payment details is the one place a
+     split makes the document harder to act on. */
+  .lines,
+  .pay,
+  .settled {
+    break-inside: avoid;
+  }
+}

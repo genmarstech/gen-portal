@@ -484,3 +484,167 @@ def test_a_negative_amount_is_refused_over_http(client, signed, staff):
     )
     assert response.status_code == 400, response.json()
     assert "credit note" in response.json()["detail"]
+
+
+# ── the invoice document ─────────────────────────────────────────────────────
+
+
+def test_the_document_carries_everything_needed_to_pay_it(
+    client, signed, staff, client_user
+):
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first(),
+        due_on=timezone.localdate() + timedelta(days=30),
+    )
+    client.force_login(client_user)
+    body = client.get(
+        reverse("invoice-document", args=[signed.reference, invoice.number])
+    ).json()
+
+    assert body["invoice"]["number"] == invoice.number
+    assert body["invoice"]["amount_kes"] == "150000.00"
+    assert body["billed_to"]["organisation"] == "Kilimani Dental"
+    assert body["biller"]["legal_name"] == "Genmars Tech Limited"
+    # The agreement it arises from, so "what is this for" needs no phone call.
+    assert body["order"]["contract_reference"] == f"{signed.reference}-SOW-01"
+    assert body["order"]["contract_signed_on"] is not None
+
+
+def test_unconfigured_billing_details_are_absent_rather_than_blank(
+    client, signed, staff, client_user
+):
+    """
+    Charter 04 §IV. An invoice carrying an invented KRA PIN or paybill is not a
+    cosmetic bug — it is a document somebody pays against, or fails to file.
+    Nothing is configured in tests, so nothing must be asserted.
+    """
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, description="Work", amount_kes=Decimal("1000.00")
+    )
+    client.force_login(client_user)
+    body = client.get(
+        reverse("invoice-document", args=[signed.reference, invoice.number])
+    ).json()
+
+    assert body["biller"]["kra_pin"] is None
+    assert body["payment"]["mpesa_paybill"] is None
+    assert body["payment"]["bank_details"] is None
+    # And the page must not offer a payment it cannot take.
+    assert body["payment"]["stk_available"] is False
+
+
+def test_the_paybill_account_carries_the_invoice_number(
+    client, signed, staff, client_user, settings
+):
+    """Putting the invoice number in the account field is what makes a payment
+    reconcilable without a phone call."""
+    settings.BILLING_MPESA_PAYBILL = "247247"
+    settings.BILLING_MPESA_ACCOUNT_HINT = "GEN{number}"
+
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, description="Work", amount_kes=Decimal("1000.00")
+    )
+    client.force_login(client_user)
+    body = client.get(
+        reverse("invoice-document", args=[signed.reference, invoice.number])
+    ).json()
+
+    assert body["payment"]["mpesa_paybill"] == "247247"
+    assert body["payment"]["mpesa_account"] == f"GEN{invoice.number}"
+
+
+def test_another_clients_invoice_is_404_not_403(client, signed, staff):
+    """
+    THE ENUMERATION ORACLE.
+
+    Invoice numbers are sequential and therefore guessable. A 403 would confirm
+    which numbers are real — telling an outsider how much business Genmars is
+    doing, and with whom, one request at a time. It must be indistinguishable
+    from a number that was never issued.
+    """
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    outsider = User.objects.create_user(
+        email="outsider@example.com", password=PASSWORD,
+        email_verified_at=timezone.now(),
+    )
+    client.force_login(outsider)
+
+    real = client.get(
+        reverse("invoice-document", args=[signed.reference, invoice.number])
+    )
+    invented = client.get(
+        reverse("invoice-document", args=[signed.reference, "GM-INV-2026-9999"])
+    )
+
+    assert real.status_code == 404
+    # Byte-identical, not merely both 404 — a difference in the body is the
+    # same oracle wearing a different hat.
+    assert real.content == invented.content
+
+
+def test_an_invoice_number_from_another_order_is_not_reachable(
+    client, signed, staff, client_user
+):
+    """The reference and the number must agree. Otherwise a client could read
+    any invoice by pairing their own order with somebody else's number."""
+    other_org = Organisation.objects.create(name="Somebody Else")
+    other_user = User.objects.create_user(
+        email="other@example.com", password=PASSWORD, email_verified_at=timezone.now()
+    )
+    Membership.objects.create(user=other_user, organisation=other_org)
+    other_order = services.convert_enquiry(
+        enquiry=Enquiry.objects.create(
+            organisation=other_org, submitted_by=other_user,
+            problem="A different problem entirely.",
+        ),
+        actor=staff, title="Their work", scope="Their scope.",
+    )
+    contract = services.issue_contract(order=other_order, actor=staff)
+    services.record_signature(
+        contract=contract, actor=staff, signed_on=timezone.localdate(),
+        signed_by_name="Them", note="Filed.",
+    )
+    theirs = services.issue_invoice(
+        order=other_order, actor=staff, description="Theirs",
+        amount_kes=Decimal("999.00"),
+    )
+
+    client.force_login(client_user)
+    response = client.get(
+        reverse("invoice-document", args=[signed.reference, theirs.number])
+    )
+    assert response.status_code == 404
+
+
+def test_an_anonymous_visitor_gets_nothing(client, signed, staff):
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    response = client.get(
+        reverse("invoice-document", args=[signed.reference, invoice.number])
+    )
+    assert response.status_code in {401, 403}
+
+
+def test_the_document_is_addressed_to_the_organisation_not_our_own_contact(
+    client, signed, staff, client_user
+):
+    """
+    `order.contact` is the GENMARS point of contact (Charter 05 §I). Rendering
+    it under "To" made the invoice read "To: Kilimani Dental, Ops" — as though
+    we were billing our own staff member.
+    """
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+    client.force_login(client_user)
+    body = client.get(
+        reverse("invoice-document", args=[signed.reference, invoice.number])
+    ).json()
+
+    assert body["billed_to"]["organisation"] == "Kilimani Dental"
+    # Whoever it is addressed to, it is not a Genmars employee.
+    assert staff.full_name not in str(body["billed_to"])
+    assert staff.email not in str(body["billed_to"])

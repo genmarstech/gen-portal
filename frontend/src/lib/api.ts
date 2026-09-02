@@ -178,6 +178,40 @@ export type ClientInvoice = {
   void_reason: string;
 };
 
+/**
+ * An invoice as a printable document.
+ *
+ * Every field under `biller` and `payment` may be null: settings.py leaves
+ * billing identity unconfigured by default and the document OMITS what it has
+ * not been told rather than rendering a blank or a guess. An invoice carrying
+ * an invented KRA PIN or paybill is not a cosmetic bug.
+ */
+export type InvoiceDocument = {
+  invoice: ClientInvoice;
+  billed_to: { organisation: string; contact: string };
+  biller: {
+    legal_name: string;
+    email: string;
+    kra_pin: string | null;
+    postal_address: string | null;
+  };
+  payment: {
+    mpesa_paybill: string | null;
+    mpesa_account: string | null;
+    bank_details: string | null;
+    terms: string;
+    /** False until M-Pesa credentials are configured. Nothing may imply
+        otherwise while it is false — see settings.py. */
+    stk_available: boolean;
+  };
+  order: {
+    reference: string;
+    title: string;
+    contract_reference: string | null;
+    contract_signed_on: string | null;
+  };
+};
+
 export type OrderDetail = OrderSummary & {
   organisation: string;
   scope: string;
@@ -224,6 +258,8 @@ export const portal = {
       "/orders",
     ),
   order: (reference: string) => get<OrderDetail>(`/orders/${reference}`),
+  invoice: (reference: string, number: string) =>
+    get<InvoiceDocument>(`/orders/${reference}/invoices/${number}`),
   /** Charter 05 §VIII — a plain link, so the browser downloads it. */
   exportUrl: "/api/account/export",
 };

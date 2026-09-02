@@ -460,3 +460,71 @@ if not DEBUG:
                 "specific password (Zoho Mail > Settings > Security > App "
                 "Passwords), not the account password, when two-factor is on."
             )
+
+
+# ── billing identity ─────────────────────────────────────────────────────────
+#
+# What appears on an invoice document.
+#
+# EVERY ONE OF THESE DEFAULTS TO EMPTY, AND AN EMPTY FIELD IS OMITTED FROM THE
+# DOCUMENT RATHER THAN RENDERED BLANK OR GUESSED. Charter 04 §IV — nothing
+# untrue on a Genmars surface — and an invoice is the most consequential surface
+# there is: a wrong KRA PIN or paybill on a document a client pays against is
+# not a cosmetic bug.
+#
+# So the invoice shows what it has been told and no more. A document with no
+# payment details says so plainly and points at the named contact, which is
+# survivable; one carrying a plausible-looking wrong number is not.
+BILLING_LEGAL_NAME = env("BILLING_LEGAL_NAME", default="Genmars Tech Limited")
+BILLING_EMAIL = env("BILLING_EMAIL", default=DEFAULT_FROM_EMAIL)
+
+# Kenya Revenue Authority PIN. Required on a tax invoice; omitted until set,
+# because an invoice carrying an invented PIN is a document nobody can file.
+BILLING_KRA_PIN = env("BILLING_KRA_PIN", default="")
+
+BILLING_POSTAL_ADDRESS = env("BILLING_POSTAL_ADDRESS", default="")
+
+# M-Pesa paybill / till, and what the client should put in the account field.
+# ACCOUNT_HINT supports {number}, replaced with the invoice number — putting the
+# invoice number in the account field is what makes a payment reconcilable
+# without a phone call.
+BILLING_MPESA_PAYBILL = env("BILLING_MPESA_PAYBILL", default="")
+BILLING_MPESA_ACCOUNT_HINT = env("BILLING_MPESA_ACCOUNT_HINT", default="{number}")
+
+# Free text — bank name, branch, account name and number, as they should be
+# typed. One field rather than five because bank details vary in shape and a
+# rigid schema would force a wrong one.
+BILLING_BANK_DETAILS = env("BILLING_BANK_DETAILS", default="")
+
+# Standard payment terms, shown on every invoice that does not override them.
+BILLING_TERMS = env(
+    "BILLING_TERMS",
+    default="Payment is due on the date shown. Quote the invoice number as the account reference.",
+)
+
+# ── M-Pesa STK push (not yet enabled) ────────────────────────────────────────
+#
+# When these are set, the client-facing invoice can offer "Pay by M-Pesa" and
+# the request genuinely initiates an STK push. Until then the capability does
+# not exist and NOTHING in the UI may suggest it does — a button that only
+# marks a row would be the worst possible version of the Charter 04 §IV
+# violation, because the client would believe they had paid.
+#
+# `MPESA_ENABLED` below is what every code path checks. It is deliberately
+# derived rather than a flag somebody can turn on without supplying credentials.
+MPESA_SHORTCODE = env("MPESA_SHORTCODE", default="")
+MPESA_PASSKEY = env("MPESA_PASSKEY", default="")
+MPESA_CONSUMER_KEY = env("MPESA_CONSUMER_KEY", default="")
+MPESA_CONSUMER_SECRET = env("MPESA_CONSUMER_SECRET", default="")
+MPESA_CALLBACK_URL = env("MPESA_CALLBACK_URL", default="")
+MPESA_ENVIRONMENT = env("MPESA_ENVIRONMENT", default="sandbox")
+
+MPESA_ENABLED = all(
+    [
+        MPESA_SHORTCODE,
+        MPESA_PASSKEY,
+        MPESA_CONSUMER_KEY,
+        MPESA_CONSUMER_SECRET,
+        MPESA_CALLBACK_URL,
+    ]
+)

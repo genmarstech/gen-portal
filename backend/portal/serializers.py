@@ -250,3 +250,101 @@ class OnboardingSerializer(serializers.Serializer):
                 "Tell us a little more — a sentence or two about what is going wrong."
             )
         return problem
+
+
+class InvoiceDocumentSerializer(serializers.Serializer):
+    """
+    An invoice as a DOCUMENT — everything needed to render something a client
+    can print, file, and pay against.
+
+    ── WHY THIS IS NOT JUST ClientInvoiceSerializer WITH MORE FIELDS ───────────
+
+    A row in a list answers "what do I owe". A document answers "who is billing
+    me, for what, under what agreement, and how do I pay". The second needs the
+    biller's identity, the client's own name for their records, the order and
+    contract it arises from, and payment instructions — none of which belong in
+    a list.
+
+    ── EMPTY BILLING FIELDS ARE OMITTED, NEVER GUESSED ────────────────────────
+
+    See config/settings.py. An invoice carrying an invented KRA PIN or paybill
+    is not a cosmetic bug — it is a document somebody pays against, or fails to
+    file. Anything unconfigured is simply absent, and the page says plainly that
+    payment details will come from the named contact.
+    """
+
+    invoice = ClientInvoiceSerializer(read_only=True)
+    billed_to = serializers.SerializerMethodField()
+    biller = serializers.SerializerMethodField()
+    payment = serializers.SerializerMethodField()
+    order = serializers.SerializerMethodField()
+
+    def get_billed_to(self, data) -> dict:
+        """
+        The organisation, and nothing else.
+
+        `order.contact` is the GENMARS named contact (Charter 05 §I — our point
+        of contact for them), and putting it here made the document read
+        "To: Kilimani Dental, Edwin" — as though we were billing our own staff.
+
+        The temptation is to substitute the client's account owner instead.
+        That is also wrong: whoever signed up is not necessarily whoever pays,
+        and addressing an invoice to the wrong named person inside a company is
+        how it sits unpaid in somebody's inbox. An invoice is addressed to the
+        organisation, which is both correct and what their accounts department
+        expects.
+        """
+        return {"organisation": data["order"].organisation.name, "contact": ""}
+
+    def get_biller(self, data) -> dict:
+        from django.conf import settings
+
+        # Only what is configured. `or None` rather than "" so the client can
+        # test truthiness without caring which fields exist.
+        return {
+            "legal_name": settings.BILLING_LEGAL_NAME,
+            "email": settings.BILLING_EMAIL,
+            "kra_pin": settings.BILLING_KRA_PIN or None,
+            "postal_address": settings.BILLING_POSTAL_ADDRESS or None,
+        }
+
+    def get_payment(self, data) -> dict:
+        from django.conf import settings
+
+        invoice = data["invoice"]
+        paybill = settings.BILLING_MPESA_PAYBILL or None
+        account = None
+        if paybill:
+            # The invoice number in the account field is what makes a payment
+            # reconcilable without a phone call.
+            account = settings.BILLING_MPESA_ACCOUNT_HINT.replace(
+                "{number}", invoice.number
+            )
+
+        return {
+            "mpesa_paybill": paybill,
+            "mpesa_account": account,
+            "bank_details": settings.BILLING_BANK_DETAILS or None,
+            "terms": settings.BILLING_TERMS,
+            # False today. When M-Pesa credentials are configured this becomes
+            # true and the client may pay from the page. Until then NOTHING in
+            # the UI may suggest the capability exists — a button that only
+            # marked a row would leave the client believing they had paid.
+            "stk_available": settings.MPESA_ENABLED,
+        }
+
+    def get_order(self, data) -> dict:
+        order = data["order"]
+        contract = data["contract"]
+        return {
+            "reference": order.reference,
+            "title": order.title,
+            # The agreement this bill arises from. A client asking "what is this
+            # for" should not have to go and look for it.
+            "contract_reference": contract.reference if contract else None,
+            "contract_signed_on": (
+                contract.signed_on.isoformat()
+                if contract and contract.signed_on
+                else None
+            ),
+        }

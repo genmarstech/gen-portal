@@ -23,7 +23,7 @@ from __future__ import annotations
 from django.db.models import QuerySet
 
 from accounts.models import User
-from portal.models import Contract, Order
+from portal.models import Contract, Invoice, Order
 
 
 def organisation_ids_for(user: User) -> QuerySet:
@@ -57,6 +57,23 @@ def order_for(user: User, reference: str) -> Order | None:
     reference is real, which is an enumeration oracle over client names.
     """
     return orders_for(user).filter(reference=reference).first()
+
+
+def invoice_for(user: User, reference: str, number: str) -> Invoice | None:
+    """
+    One invoice, scoped to the user through its order.
+
+    Goes through `order_for` rather than querying Invoice directly. That is the
+    whole discipline of this module: an invoice number is guessable
+    (GM-INV-2026-0004), and a query that started from Invoice would hand one
+    client another client's billing document the first time somebody forgot a
+    filter. Starting from the order means the isolation is inherited and cannot
+    be forgotten here.
+    """
+    order = order_for(user, reference)
+    if order is None:
+        return None
+    return order.invoices.filter(number=number).first()
 
 
 def published_notes_for(order: Order) -> QuerySet:

@@ -18,8 +18,15 @@ from rest_framework.views import APIView
 from accounts import identity
 
 from .models import Enquiry
-from .selectors import export_payload, order_for, orders_for
+from .selectors import (
+    export_payload,
+    invoice_for,
+    live_contract_for,
+    order_for,
+    orders_for,
+)
 from .serializers import (
+    InvoiceDocumentSerializer,
     OnboardingSerializer,
     OrderDetailSerializer,
     OrderListSerializer,
@@ -145,3 +152,32 @@ class OnboardingView(APIView):
             )
 
         return Response({"next": "/dashboard"}, status=status.HTTP_201_CREATED)
+
+
+class InvoiceDocumentView(APIView):
+    """
+    One invoice, as a printable document.
+
+    404 for an invoice on someone else's order — the same answer as for one
+    that does not exist. Invoice numbers are sequential and therefore guessable,
+    so a 403 here would confirm which numbers are real, which is an enumeration
+    oracle over how much business Genmars is doing and for whom.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, reference: str, number: str):
+        invoice = invoice_for(request.user, reference, number)
+        if invoice is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        order = invoice.order
+        return Response(
+            InvoiceDocumentSerializer(
+                {
+                    "invoice": invoice,
+                    "order": order,
+                    "contract": live_contract_for(order),
+                }
+            ).data
+        )

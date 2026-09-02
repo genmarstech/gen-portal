@@ -392,3 +392,15 @@
     grid-column: 1 / -1;
   }
 }
+
+/* The invoice number is a link to the printable document. Underlined on hover
+   only — a row of permanently underlined references reads as noise. */
+a.iNumber {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+a.iNumber:hover {
+  border-bottom-color: var(--accent);
+}

@@ -207,7 +207,14 @@ export default function OrderPage() {
                   i.status === "void" ? styles.invoiceVoid : ""
                 }`}
               >
-                <span className={styles.iNumber}>{i.number}</span>
+                {/* Through to the printable document — what an accounts
+                    department actually needs. */}
+                <Link
+                  className={styles.iNumber}
+                  href={`/dashboard/${order.reference}/invoices/${i.number}`}
+                >
+                  {i.number}
+                </Link>
                 <span className={styles.iDescription}>{i.description}</span>
                 <span className={styles.iAmount}>{money(i.amount_kes)}</span>
                 <span
