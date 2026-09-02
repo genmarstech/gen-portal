@@ -432,6 +432,26 @@ Record each successful run:
 | 2026-09-02 | `portal-20260902-155126.dump` | Passed — 15 tables; 8 services, 2 contracts, 2 invoices, 1 M-Pesa payment, 4 enquiries all recovered | Restore-test extension |
 | 2026-09-02 | `portal-20260902-164927.dump` | Passed — 17 tables, now including the payment ledger. Taken after the invoicing deploy, per the rule below | Payments deploy |
 | 2026-09-02 | `portal-20260902-224623.dump` | Passed. Also the run that fixed permissions: all 17 dumps were mode 644 on a shared host and are now 600, directory 700 | Backup hardening |
+| 2026-09-02 | `portal-20260902-225850.dump.gpg` | **Off-box drill.** Pulled to a machine holding the private key, decrypted, and restored clean: 5 contracts, 3 invoices, 3 payments, 2 tickets, 4 orders, 5 users | First off-box restore |
+
+### The off-box drill
+
+The nightly restore test runs on the server against the plaintext archive and
+proves the dump/restore pipeline. It cannot prove the encrypted copies can be
+opened, because the server holds only the public half of the key — by design.
+
+That half is a human drill, roughly monthly, on the machine with the private
+key:
+
+```bash
+./scripts/pull-backups.sh                       # collect
+./scripts/restore-test.sh ~/genmars-backups/portal-<stamp>.dump.gpg
+```
+
+Do not skip it. `gpg` will encrypt happily to a key whose private half was lost
+months ago, and every copy since would be unreadable with nothing anywhere
+saying so. Losing the private key means losing every encrypted backup, with no
+recovery and nobody to appeal to.
 
 **Take a dump immediately after any deploy that adds tables.** The 2026-09-02
 failure above is the reason: for roughly nine hours the portal held contracts,
