@@ -28,7 +28,20 @@ set -uo pipefail
 
 UNIT="${1:-unknown unit}"
 ENV_FILE="/opt/gen-portal/backend/.env"
-TO="info@genmars.co.ke"
+
+# ── THE ALERT ADDRESS IS NOT THE PUBLIC ADDRESS ─────────────────────────────
+#
+# This used to mail info@genmars.co.ke, the address on the website. That address
+# had no mailbox behind it, so Zoho answered 550 and Resend suppressed it — and
+# then dropped every alert silently for a day and a half while still returning
+# 200. See accounts/mail_health.py for the full story.
+#
+# The lesson is not "create the mailbox", though that is also true. It is that
+# an operator alert should not be addressed to a client-facing inbox. That
+# address is published, so it attracts whatever the public sends it and its
+# deliverability is somebody else's problem to break; a real operator mailbox
+# is neither. They are different jobs and they now have different addresses.
+TO="${ALERT_EMAIL:-edwin@genmars.co.ke}"
 FROM="info@genmars.co.ke"
 
 if [ ! -r "$ENV_FILE" ]; then

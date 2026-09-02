@@ -358,14 +358,25 @@ EMAIL_TIMEOUT = env.int("EMAIL_TIMEOUT", default=10)
 #
 # ── WHAT ACTUALLY REACHES A HUMAN ───────────────────────────────────────────
 # Django's AdminEmailHandler mails ADMINS on any un-caught 500. That is the
-# floor Tier 1 asks for, and it is genuinely a human: info@genmars.co.ke is a
-# monitored mailbox, not an alias into a void.
+# floor Tier 1 asks for.
+#
+# It goes to an OPERATOR mailbox, not to the address on the website. This line
+# used to read info@genmars.co.ke, described in a comment as "a monitored
+# mailbox, not an alias into a void" — which was untrue: no mailbox existed
+# behind it, Zoho answered 550, Resend suppressed the address, and every alert
+# was dropped silently for a day and a half while the API kept returning 200.
+#
+# The published address attracts whatever the public sends it and its
+# deliverability is somebody else's to break. Alerting is a different job and
+# gets a different address, so a client-facing bounce can never take internal
+# monitoring down again. accounts/mail_health.py now watches for the failure
+# mode either way.
 #
 # It is rate-limited by Django itself only per-process, so a crash loop can
 # still send a burst. Accepted for now — the alternative is a queue we would
 # also have to monitor.
 
-ADMINS = [("Genmars Tech", env("ERROR_EMAIL", default="info@genmars.co.ke"))]
+ADMINS = [("Genmars Tech", env("ERROR_EMAIL", default="edwin@genmars.co.ke"))]
 SERVER_EMAIL = env("SERVER_EMAIL", default=DEFAULT_FROM_EMAIL)
 
 LOGGING = {
