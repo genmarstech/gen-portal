@@ -127,6 +127,10 @@ def queue_counts() -> dict[str, int]:
             status=Enquiry.Status.QUALIFYING
         ).count(),
         "active_orders": active.count(),
+        # Carried in the header on every screen, like awaiting_note: a blocker
+        # nobody is looking at is the failure mode, and the queue screen is
+        # where people spend their time rather than the delivery board.
+        "open_blockers": Blocker.objects.filter(cleared_at__isnull=True).count(),
         "awaiting_note": active.exclude(
             notes__published_at__isnull=False, notes__week_of__gte=cutoff
         ).count(),
