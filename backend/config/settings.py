@@ -228,6 +228,11 @@ REST_FRAMEWORK = {
         # Every code request sends an email. An unthrottled endpoint here is a
         # free way to use our domain to spam someone else's inbox.
         "auth_code": "6/hour",
+        # Registered systems reporting in. Generous, because a heartbeat every
+        # minute from a dozen systems is normal traffic — but bounded, because
+        # this is the one endpoint reachable with a token rather than a session,
+        # and a leaked key should not be able to fill the events table.
+        "system": "120/min",
         # Per-EMAIL, so rotating IPs does not buy an attacker more attempts at
         # one account, and nobody can be mail-bombed via the forgot form.
         "auth_email": "8/hour",

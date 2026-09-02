@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from . import views
+from . import system_api, views
 
 urlpatterns = [
     path("onboarding", views.OnboardingView.as_view(), name="onboarding"),
@@ -39,6 +39,14 @@ urlpatterns = [
     # Safaricom posts here. The token is part of the PATH because Daraja sends
     # no headers of ours — see MpesaCallbackView. Both spellings are routed so
     # a deployment that has not set a token still works.
+    # ── machine-facing, token-authenticated. See portal/system_api.py ──
+    path(
+        "systems/heartbeat",
+        system_api.HeartbeatView.as_view(),
+        name="system-heartbeat",
+    ),
+    path("systems/events", system_api.SystemEventView.as_view(), name="system-event"),
+
     path("mpesa/callback", views.MpesaCallbackView.as_view(), name="mpesa-callback"),
     path(
         "mpesa/callback/<str:token>",

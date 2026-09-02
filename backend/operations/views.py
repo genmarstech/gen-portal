@@ -34,13 +34,22 @@ from portal.models import (
     ProgressNote,
     Service,
     ServiceTier,
+    System,
+    SystemEvent,
+    SystemKey,
     Task,
 )
+
+from portal.system_api import issue_key
 
 from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
     ActivitySerializer,
+    SystemEventSerializer,
+    SystemKeySerializer,
+    SystemSerializer,
+    SystemWriteSerializer,
     OfferSerializer,
     OfferWriteSerializer,
     TaskSerializer,
@@ -1176,4 +1185,132 @@ class TaskDetailView(StaffView):
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(TaskSerializer(task).data)
+
+
+class SystemListView(StaffView):
+    """
+    Every system the company runs or oversees, and registering one.
+
+    IsStaff to read: knowing what the company runs is not privileged inside the
+    company, and a registry only a founder can see is a registry nobody checks.
+    Registering needs CanManageAccess, because adding a system is the act that
+    decides what we are accountable for watching.
+    """
+
+    def get(self, request):
+        systems = System.objects.select_related("owner", "organisation").all()
+        return Response({"systems": SystemSerializer(systems, many=True).data})
+
+    def post(self, request):
+        if not request.user.can_manage_access:
+            return Response(
+                {"detail": "Only a founder can register a system."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
+
+        form = SystemWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = dict(form.validated_data)
+
+        owner = get_object_or_404(User, pk=data.pop("owner"), is_staff=True)
+        organisation_id = data.pop("organisation")
+        organisation = (
+            get_object_or_404(Organisation, pk=organisation_id)
+            if organisation_id
+            else None
+        )
+
+        if System.objects.filter(slug=data["slug"]).exists():
+            return Response(
+                {"detail": "A system with that slug is already registered.",
+                 "field": "slug"},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+
+        system = System.objects.create(
+            owner=owner, organisation=organisation, **data
+        )
+        return Response(
+            SystemSerializer(system).data, status=http.HTTP_201_CREATED
+        )
+
+
+class SystemDetailView(StaffView):
+    """One system, its recent events, and its keys."""
+
+    def get(self, request, slug: str):
+        system = get_object_or_404(
+            System.objects.select_related("owner", "organisation"), slug=slug
+        )
+        return Response(
+            {
+                "system": SystemSerializer(system).data,
+                "events": SystemEventSerializer(
+                    system.events.all()[:100], many=True
+                ).data,
+                "keys": SystemKeySerializer(system.keys.all(), many=True).data,
+            }
+        )
+
+
+class SystemKeyView(StaffView):
+    """
+    Mint or revoke a reporting key.
+
+    ── THE TOKEN IS IN THIS RESPONSE AND NOWHERE ELSE, EVER ────────────────────
+
+    It is hashed on the way in and cannot be read back. The screen has to say
+    so, because a person who assumes they can find it later will not copy it.
+    """
+
+    permission_classes = [CanManageAccess]
+
+    def post(self, request, slug: str):
+        system = get_object_or_404(System, slug=slug)
+        key, token = issue_key(
+            system=system,
+            label=str(request.data.get("label", ""))[:120],
+            actor=request.user,
+        )
+        return Response(
+            {
+                "key": SystemKeySerializer(key).data,
+                "token": token,
+                "warning": (
+                    "This is the only time this token is shown. It is hashed "
+                    "and cannot be recovered — if it is lost, revoke it and "
+                    "issue another."
+                ),
+            },
+            status=http.HTTP_201_CREATED,
+        )
+
+    def delete(self, request, slug: str):
+        system = get_object_or_404(System, slug=slug)
+        key = get_object_or_404(
+            SystemKey, pk=request.data.get("id"), system=system
+        )
+        if key.revoked_at is None:
+            key.revoked_at = timezone.now()
+            key.save(update_fields=["revoked_at"])
+        return Response(SystemKeySerializer(key).data)
+
+
+class SystemEventFeedView(StaffView):
+    """Everything every registered system has reported, newest first."""
+
+    def get(self, request):
+        events = SystemEvent.objects.select_related("system").all()
+
+        level = request.query_params.get("level")
+        if level in SystemEvent.Level.values:
+            events = events.filter(level=level)
+
+        slug = request.query_params.get("system")
+        if slug:
+            events = events.filter(system__slug=slug)
+
+        return Response(
+            {"events": SystemEventSerializer(events[:200], many=True).data}
+        )
 

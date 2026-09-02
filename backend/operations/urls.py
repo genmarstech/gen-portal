@@ -65,6 +65,12 @@ urlpatterns = [
     path("ops/tasks", views.TaskListView.as_view(), name="ops-tasks"),
     path("ops/tasks/<int:pk>", views.TaskDetailView.as_view(), name="ops-task"),
 
+    # ---- the systems this portal is parent to ----
+    path("ops/systems", views.SystemListView.as_view(), name="ops-systems"),
+    path("ops/systems/events", views.SystemEventFeedView.as_view(), name="ops-system-events"),
+    path("ops/systems/<slug:slug>", views.SystemDetailView.as_view(), name="ops-system"),
+    path("ops/systems/<slug:slug>/keys", views.SystemKeyView.as_view(), name="ops-system-keys"),
+
     # ---- incidents ----
     path("ops/incidents", views.IncidentListView.as_view(), name="ops-incidents"),
     path("ops/incidents/<int:pk>", views.IncidentDetailView.as_view(), name="ops-incident"),

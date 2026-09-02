@@ -27,6 +27,9 @@ from portal.models import (
     ProgressNote,
     Service,
     ServiceTier,
+    System,
+    SystemEvent,
+    SystemKey,
     Task,
 )
 
@@ -773,4 +776,86 @@ class TaskStatusSerializer(serializers.Serializer):
     blocked_reason = serializers.CharField(
         required=False, allow_blank=True, default=""
     )
+
+
+class SystemSerializer(serializers.ModelSerializer):
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    criticality_label = serializers.CharField(
+        source="get_criticality_display", read_only=True
+    )
+    health_label = serializers.CharField(source="get_health_display", read_only=True)
+    owner_name = serializers.SerializerMethodField()
+    organisation_name = serializers.CharField(
+        source="organisation.name", read_only=True, default=None
+    )
+    is_watched = serializers.BooleanField(read_only=True)
+    heartbeat_stale = serializers.SerializerMethodField()
+    active_keys = serializers.SerializerMethodField()
+
+    class Meta:
+        model = System
+        fields = [
+            "id", "name", "slug", "kind", "kind_label",
+            "status", "status_label", "criticality", "criticality_label",
+            "purpose", "impact_if_down",
+            "owner", "owner_name", "organisation", "organisation_name",
+            "url", "health_url", "repository", "runbook",
+            "health", "health_label", "health_detail", "checked_at",
+            "heartbeat_at", "heartbeat_stale", "version",
+            "is_watched", "active_keys", "created_at",
+        ]
+        read_only_fields = fields
+
+    def get_owner_name(self, system: System) -> str:
+        return system.owner.full_name or system.owner.email
+
+    def get_heartbeat_stale(self, system: System) -> bool:
+        return system.heartbeat_is_stale()
+
+    def get_active_keys(self, system: System) -> int:
+        return system.keys.filter(revoked_at__isnull=True).count()
+
+
+class SystemWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=120)
+    slug = serializers.SlugField(max_length=120)
+    kind = serializers.ChoiceField(choices=System.Kind.choices)
+    criticality = serializers.ChoiceField(choices=System.Criticality.choices)
+    purpose = serializers.CharField(max_length=300)
+    impact_if_down = serializers.CharField(max_length=300)
+    owner = serializers.IntegerField()
+    organisation = serializers.IntegerField(
+        required=False, allow_null=True, default=None
+    )
+    url = serializers.CharField(required=False, allow_blank=True, default="")
+    health_url = serializers.CharField(required=False, allow_blank=True, default="")
+    repository = serializers.CharField(required=False, allow_blank=True, default="")
+    runbook = serializers.CharField(required=False, allow_blank=True, default="")
+    status = serializers.ChoiceField(
+        choices=System.Status.choices, required=False, default=System.Status.LIVE
+    )
+
+
+class SystemEventSerializer(serializers.ModelSerializer):
+    level_label = serializers.CharField(source="get_level_display", read_only=True)
+    system_slug = serializers.CharField(source="system.slug", read_only=True)
+    system_name = serializers.CharField(source="system.name", read_only=True)
+
+    class Meta:
+        model = SystemEvent
+        fields = [
+            "id", "system_slug", "system_name", "level", "level_label",
+            "message", "detail", "occurred_at", "received_at",
+        ]
+        read_only_fields = fields
+
+
+class SystemKeySerializer(serializers.ModelSerializer):
+    """The key's metadata. The token itself is not here and cannot be."""
+
+    class Meta:
+        model = SystemKey
+        fields = ["id", "label", "prefix", "created_at", "last_used_at", "revoked_at"]
+        read_only_fields = fields
 

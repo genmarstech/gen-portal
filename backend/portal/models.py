@@ -1673,3 +1673,265 @@ class Task(models.Model):
             return False
         return self.due_on < (today or timezone.localdate())
 
+
+class System(models.Model):
+    """
+    An application, tool or service that Genmars runs or oversees.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS PORTAL IS THE PARENT. THAT IS A CLAIM WITH OBLIGATIONS.
+
+    Calling something a control plane is easy; what makes it one is that every
+    system underneath it is REGISTERED here, with a named owner, a stated
+    criticality and somewhere its health is actually checked. A registry that
+    lists nine of eleven systems is worse than none, because it invites the
+    belief that the two missing ones do not exist.
+
+    So the fields that would be tempting to leave blank — owner, criticality,
+    what breaks if it stops — are the ones that are required.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THE PARENT WATCHES; IT DOES NOT REACH IN ────────────────────────────────
+
+    Registering a system here grants Genmars no ability to execute anything
+    inside it. There is deliberately no "run command" and no stored deployment
+    credential. What flows is INWARD: a child reports its health and its
+    events, and this reads them.
+
+    That direction is a security decision, not a missing feature. A parent that
+    could execute inside every child would make one compromised operations
+    account a compromise of every system the company touches — including
+    client-owned ones, which Charter 05 §V does not permit us to put at risk
+    for our own convenience.
+
+    ── A CLIENT-OWNED SYSTEM IS STILL THE CLIENT'S ─────────────────────────────
+
+    `organisation` marks systems we run for a client rather than for ourselves.
+    Charter 04 §V: client-owned software carries the client's brand, and the
+    same principle applies to their infrastructure. We monitor it because we
+    were asked to; that does not make it ours.
+    """
+
+    class Kind(models.TextChoices):
+        INTERNAL = "internal", "Internal tool"
+        CLIENT = "client", "Client system"
+        PRODUCT = "product", "Genmars product"
+        VENDOR = "vendor", "Third-party service"
+
+    class Status(models.TextChoices):
+        LIVE = "live", "Live"
+        BUILDING = "building", "Being built"
+        PAUSED = "paused", "Paused"
+        RETIRED = "retired", "Retired"
+
+    class Criticality(models.TextChoices):
+        # Deliberately mapped onto the incident severities the website
+        # publishes, so "what does breaking this cost" has one vocabulary.
+        CRITICAL = "critical", "Critical — an outage is a SEV-1"
+        IMPORTANT = "important", "Important — an outage is a SEV-2"
+        MINOR = "minor", "Minor — an outage is a SEV-3"
+
+    class Health(models.TextChoices):
+        UNKNOWN = "unknown", "Not checked"
+        UP = "up", "Up"
+        DOWN = "down", "Down"
+        # Answered, but not the way it should. Distinct from DOWN because a
+        # 500 and a refused connection are different problems.
+        DEGRADED = "degraded", "Degraded"
+
+    name = models.CharField(max_length=120)
+    slug = models.SlugField(max_length=120, unique=True)
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.LIVE
+    )
+    criticality = models.CharField(max_length=16, choices=Criticality.choices)
+
+    purpose = models.CharField(
+        max_length=300, help_text="What it does, in one line."
+    )
+    # Required on purpose. "What breaks if this stops" is the question that
+    # turns a list of names into something you can triage from at 2am.
+    impact_if_down = models.CharField(
+        max_length=300,
+        help_text="What stops working, and for whom, if this goes down.",
+    )
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="systems_owned",
+        limit_choices_to={"is_staff": True},
+        help_text="One person. A system owned by the team is owned by nobody.",
+    )
+    organisation = models.ForeignKey(
+        Organisation,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="systems",
+        help_text="Set where we run this FOR a client. It remains theirs.",
+    )
+
+    url = models.URLField(blank=True, help_text="Where a person goes to use it.")
+    health_url = models.URLField(
+        blank=True,
+        help_text=(
+            "An endpoint that answers 200 when the system is well. Must need "
+            "no authentication and expose nothing."
+        ),
+    )
+    repository = models.CharField(max_length=200, blank=True)
+    runbook = models.TextField(
+        blank=True, help_text="How to restart it, and what to check first."
+    )
+
+    # ---- health, as last observed ----
+    health = models.CharField(
+        max_length=16, choices=Health.choices, default=Health.UNKNOWN
+    )
+    health_detail = models.CharField(max_length=300, blank=True)
+    checked_at = models.DateTimeField(null=True, blank=True)
+    # Set by the child reporting in, rather than by us polling it. Both are
+    # useful: one proves we can reach it, the other proves it is running.
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+    version = models.CharField(
+        max_length=60, blank=True, help_text="Whatever the system reports of itself."
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["criticality", "name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+    @property
+    def is_watched(self) -> bool:
+        """We have some way of knowing whether it is alive."""
+        return bool(self.health_url) or self.heartbeat_at is not None
+
+    def heartbeat_is_stale(self, *, minutes: int = 30, now=None) -> bool:
+        """
+        It reported in once and has since gone quiet.
+
+        Distinct from never having reported: a system that has never sent a
+        heartbeat may simply not be instrumented, which is a gap in our
+        knowledge rather than evidence of a fault.
+        """
+        if self.heartbeat_at is None:
+            return False
+        moment = now or timezone.now()
+        return (moment - self.heartbeat_at) > timedelta(minutes=minutes)
+
+
+class SystemKey(models.Model):
+    """
+    A credential a registered system uses to report in.
+
+    ══════════════════════════════════════════════════════════════════════════
+    HASHED, NEVER STORED. SHOWN ONCE.
+
+    The token is put through the same password hashers as a user password —
+    Argon2 first — and only the hash is kept. Nobody, including us, can read it
+    back afterwards. That is why creation returns it exactly once and the
+    interface says so.
+
+    A token stored in plain text is a token that leaks with one database dump,
+    one backup left on a laptop, or one operations account. This system already
+    keeps client contracts and payment records; a plaintext credential table
+    beside them would be the softest thing in the building.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY THERE IS A PREFIX ───────────────────────────────────────────────────
+
+    A hash cannot be looked up. Without something searchable, authenticating a
+    request would mean hashing the presented token against EVERY key in the
+    table, which is slow and gets slower. The prefix is the first characters of
+    the token, stored in clear, and is only an index — it is far too short to
+    be useful on its own.
+
+    ── WHAT A KEY CAN DO ───────────────────────────────────────────────────────
+
+    Report health and post events about ITS OWN system. Nothing else. It cannot
+    read another system, cannot touch client data, and cannot act on the
+    portal. See portal/system_api.py.
+    """
+
+    system = models.ForeignKey(System, on_delete=models.CASCADE, related_name="keys")
+    label = models.CharField(
+        max_length=120, help_text="Where this key lives — 'production container'."
+    )
+
+    prefix = models.CharField(max_length=12, db_index=True)
+    hashed = models.CharField(max_length=255)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="system_keys_made",
+        limit_choices_to={"is_staff": True},
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    # Revoking keeps the row. "This key was revoked on the 4th" is a fact worth
+    # holding on to; deleting it makes an incident harder to reconstruct.
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.system.slug}/{self.label}"
+
+    @property
+    def is_active(self) -> bool:
+        return self.revoked_at is None
+
+
+class SystemEvent(models.Model):
+    """
+    Something a registered system reported about itself.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS UNTRUSTED INPUT AND IT IS NEVER A COMMAND.
+
+    Everything here arrived over the network from another application. It is
+    DATA: recorded, displayed, and acted on by a human who decides what to do.
+    Nothing in this codebase reads a SystemEvent and takes an action because of
+    what it says, and nothing should — an event that could trigger behaviour
+    turns every child system into a way to drive the parent.
+
+    Text is stored and rendered as text. It is never evaluated, never used to
+    build a query, and never treated as a path or a URL.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    class Level(models.TextChoices):
+        INFO = "info", "Info"
+        WARNING = "warning", "Warning"
+        ERROR = "error", "Error"
+
+    system = models.ForeignKey(System, on_delete=models.CASCADE, related_name="events")
+    level = models.CharField(max_length=16, choices=Level.choices, default=Level.INFO)
+    message = models.CharField(max_length=300)
+    detail = models.JSONField(default=dict, blank=True)
+
+    # When the child says it happened, versus when we received it. They differ
+    # when a system buffers events through an outage, which is exactly when the
+    # difference matters.
+    occurred_at = models.DateTimeField(null=True, blank=True)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-received_at", "-id"]
+        indexes = [
+            models.Index(fields=["system", "-received_at"], name="system_event_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.system.slug}: {self.message[:60]}"
+
