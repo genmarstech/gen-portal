@@ -77,6 +77,30 @@
   order: 3;
   /* Its own row, full width. */
   flex: 1 0 100%;
+
+  /*
+   * A fade at the right edge, so the row LOOKS scrollable.
+   *
+   * With six links the nav is about 384px against the 335px a 375px phone
+   * gives — it genuinely overflows, and a row that is cut cleanly at the edge
+   * reads as a row that ends there. The fade is the only cue that Account is
+   * still reachable.
+   *
+   * mask, not an overlay: an absolutely positioned gradient would sit over the
+   * links and eat taps on the last one.
+   */
+  -webkit-mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - 2rem),
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to right,
+    #000 0,
+    #000 calc(100% - 2rem),
+    transparent 100%
+  );
 }
 
 @media (min-width: 48rem) {
@@ -160,6 +184,9 @@
     overflow-x: visible;
     margin-inline: 0;
     padding-inline: 0;
+    /* Nothing is cut off here, so nothing should look faded. */
+    -webkit-mask-image: none;
+    mask-image: none;
   }
 }
 

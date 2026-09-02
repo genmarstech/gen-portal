@@ -102,6 +102,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Services
             </Link>
             <Link
+              href="/support"
+              className={`${styles.link} ${pathname.startsWith("/support") ? styles.active : ""}`}
+            >
+              Support
+            </Link>
+            <Link
               href="/account"
               className={`${styles.link} ${pathname === "/account" ? styles.active : ""}`}
             >

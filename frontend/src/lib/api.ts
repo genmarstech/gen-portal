@@ -221,6 +221,34 @@ export type ClientOffer = {
   decided_at: string | null;
 };
 
+export type TicketMessage = {
+  id: number;
+  author_label: string;
+  from_staff: boolean;
+  mine: boolean;
+  body: string;
+  created_at: string;
+};
+
+/**
+ * A support request.
+ *
+ * Deliberately carries no priority, no assignee and no response-time anything.
+ * Priority is Genmars' triage judgement and showing it invites an argument
+ * about the label rather than the problem; a visible target would be a
+ * commitment however it is worded (Charter 03 §IV).
+ */
+export type Ticket = {
+  reference: string;
+  subject: string;
+  status: "open" | "waiting" | "answered" | "resolved";
+  status_label: string;
+  order_reference: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  messages: TicketMessage[];
+};
+
 export type Notification = {
   id: number;
   kind: string;
@@ -388,6 +416,12 @@ export const portal = {
     post<{ unread: number }>("/notifications", id === undefined ? {} : { id }),
 
   catalogue: () => get<{ services: CatalogueService[] }>("/services"),
+
+  support: () => get<{ tickets: Ticket[] }>("/support"),
+  raiseTicket: (body: { subject: string; body: string; order?: string }) =>
+    post<Ticket>("/support", body),
+  replyToTicket: (reference: string, body: string) =>
+    post<Ticket>(`/support/${reference}/reply`, { body }),
 
   offers: () => get<{ offers: ClientOffer[] }>("/offers"),
   /** Accepting files an enquiry. It does not start work — a signed SOW does. */
