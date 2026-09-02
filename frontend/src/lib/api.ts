@@ -163,6 +163,14 @@ export type ClientContract = {
  * moment for display (see `money`) — never used in arithmetic, never sent
  * anywhere. This is a number somebody pays from a bank account.
  */
+export type ClientPayment = {
+  method: "mpesa" | "bank" | "cash" | "other";
+  method_label: string;
+  reference: string;
+  amount_kes: string;
+  paid_on: string;
+};
+
 export type ClientInvoice = {
   number: string;
   description: string;
@@ -176,6 +184,34 @@ export type ClientInvoice = {
   /** The reference we matched the payment against, so it can be checked. */
   payment_reference: string;
   void_reason: string;
+  /**
+   * What has arrived and what is left. An invoice can be settled by several
+   * payments — M-Pesa caps a single transfer — so a part-paid invoice shows a
+   * real balance rather than looking wholly unpaid.
+   *
+   * Optional because /orders/<ref> predates them and does not send them.
+   */
+  amount_paid?: string;
+  balance?: string;
+  payments?: ClientPayment[];
+  /** Null when the invoice was raised straight to the client, with no project. */
+  order_reference?: string | null;
+};
+
+export type Notification = {
+  id: number;
+  kind: string;
+  title: string;
+  body: string;
+  url: string;
+  created_at: string;
+  read: boolean;
+};
+
+export type CatalogueService = {
+  slug: string;
+  name: string;
+  summary: string;
 };
 
 /**
@@ -294,6 +330,23 @@ export const portal = {
       payment_reference: string;
       attempt: { status: string; result_desc: string; receipt: string } | null;
     }>(`/orders/${reference}/invoices/${number}/payment-status`),
+  /**
+   * Every invoice addressed to this client, including ones with no order.
+   *
+   * The nested /orders/<ref> route cannot see a direct invoice, which is how a
+   * client ends up holding a bill their portal says does not exist.
+   */
+  invoices: () => get<{ invoices: ClientInvoice[] }>("/invoices"),
+
+  notifications: () =>
+    get<{ notifications: Notification[]; unread: number }>("/notifications"),
+
+  /** Omit `id` to mark everything read. */
+  markRead: (id?: number) =>
+    post<{ unread: number }>("/notifications", id === undefined ? {} : { id }),
+
+  catalogue: () => get<{ services: CatalogueService[] }>("/services"),
+
   /** Charter 05 §VIII — a plain link, so the browser downloads it. */
   exportUrl: "/api/account/export",
 };

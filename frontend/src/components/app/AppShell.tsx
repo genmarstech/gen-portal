@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Wordmark } from "../Brand";
 import { LoadingMark } from "../LoadingMark";
 import { ThemeToggle } from "../ThemeToggle";
+import { Notifications } from "./Notifications";
 import { session, signOut } from "@/lib/api";
 import styles from "./AppShell.module.css";
 
@@ -83,6 +84,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               Work
             </Link>
             <Link
+              href="/invoices"
+              className={`${styles.link} ${pathname.startsWith("/invoices") ? styles.active : ""}`}
+            >
+              Invoices
+            </Link>
+            <Link
+              href="/services"
+              className={`${styles.link} ${pathname.startsWith("/services") ? styles.active : ""}`}
+            >
+              Services
+            </Link>
+            <Link
               href="/account"
               className={`${styles.link} ${pathname === "/account" ? styles.active : ""}`}
             >
@@ -91,6 +104,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
 
           <div className={styles.tools}>
+            <Notifications />
             {/* Hidden on phones — see .themeToggle in the stylesheet. The
                 control is on the Account page, which is one tap away. */}
             <span className={styles.themeToggle}>

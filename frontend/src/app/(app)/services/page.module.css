@@ -1,0 +1,106 @@
+.booting {
+  display: grid;
+  place-items: center;
+  padding: 80px 0;
+}
+
+.failed,
+.empty {
+  padding: 40px 0;
+  max-width: 54ch;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.head {
+  padding: 28px 0 22px;
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: clamp(22px, 4vw, 28px);
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+
+.lede {
+  margin: 0;
+  max-width: 58ch;
+  color: var(--ink-2);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+/*
+ * auto-fill rather than auto-fit: with one or two services auto-fit stretches
+ * a card to the full width of the page, which reads as a banner rather than as
+ * one item in a list.
+ */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  transition:
+    border-color 0.15s ease,
+    transform 0.15s ease;
+}
+
+.card:hover {
+  border-color: var(--ink-3);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .card:hover {
+    transform: translateY(-1px);
+  }
+}
+
+.name {
+  margin: 0;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.summary {
+  margin: 0;
+  flex: 1 1 auto;
+  color: var(--ink-2);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.order {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.order:hover {
+  text-decoration: underline;
+}
+
+.footnote {
+  padding: 26px 0 60px;
+  max-width: 56ch;
+  color: var(--ink-3);
+  font-size: 13px;
+  line-height: 1.6;
+}
