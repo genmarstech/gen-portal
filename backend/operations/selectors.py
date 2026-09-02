@@ -15,7 +15,16 @@ from __future__ import annotations
 from django.db.models import Count, Prefetch, QuerySet
 
 from accounts.models import Membership, Organisation
-from portal.models import Blocker, DeliveryGate, Enquiry, Milestone, Order, ProgressNote
+from portal.models import (
+    Blocker,
+    Contract,
+    DeliveryGate,
+    Enquiry,
+    Milestone,
+    Order,
+    ProgressNote,
+    Service,
+)
 
 
 def enquiries(*, status: str | None = None) -> QuerySet[Enquiry]:
@@ -57,7 +66,7 @@ def orders() -> QuerySet[Order]:
     thing you are looking for is almost always recent.
     """
     return (
-        Order.objects.select_related("organisation", "contact")
+        Order.objects.select_related("organisation", "contact", "service")
         .annotate(note_count=Count("notes", distinct=True))
         .order_by("-created_at")
     )
@@ -91,6 +100,12 @@ def order(reference: str) -> Order | None:
             Prefetch(
                 "gates",
                 queryset=DeliveryGate.objects.select_related("met_by").order_by("position"),
+            ),
+            Prefetch(
+                "contracts",
+                queryset=Contract.objects.select_related(
+                    "issued_by", "recorded_by"
+                ).order_by("-version"),
             ),
             Prefetch(
                 "blockers",
@@ -238,3 +253,10 @@ def organisations() -> QuerySet[Organisation]:
 
 def organisation(pk: int) -> Organisation | None:
     return organisations().filter(pk=pk).first()
+
+
+def services() -> QuerySet[Service]:
+    """The catalogue, retired offerings included — they are still referenced."""
+    return Service.objects.annotate(order_count=Count("orders", distinct=True)).order_by(
+        "-is_active", "name"
+    )

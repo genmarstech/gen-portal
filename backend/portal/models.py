@@ -63,6 +63,19 @@ class Order(models.Model):
         max_length=16, choices=Status.choices, default=Status.SCOPING
     )
 
+    service = models.ForeignKey(
+        "portal.Service",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="orders",
+        help_text=(
+            "What was sold. Optional: orders predate the catalogue, and some "
+            "work does not fit an offering. PROTECT rather than SET_NULL — "
+            "deleting a service would erase what was sold, so retire it instead."
+        ),
+    )
+
     # Charter 05 §I — "a named point of contact".
     contact = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -376,3 +389,185 @@ class Blocker(models.Model):
     def age_days(self) -> int:
         end = self.cleared_at or timezone.now()
         return (end - self.raised_at).days
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Services and contracts
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class Service(models.Model):
+    """
+    A reusable offering, with the wording we normally use for it.
+
+    ── WHAT THIS IS FOR ────────────────────────────────────────────────────────
+    Every order needs a scope and exclusions in writing before work begins
+    (Charter 05 §I). Written from scratch each time, the exclusions are the part
+    that gets thinned out under time pressure — and exclusions are precisely the
+    part that matters in month three.
+
+    So a service carries the wording we have already decided on, and converting
+    an enquiry pre-fills from it. It is a STARTING POINT, not a template that
+    ships as-is: the scope on the order is edited freely afterwards and the
+    contract snapshots the edited version, not this.
+
+    The four offers on genmars.co.ke (paid discovery, custom build, payments and
+    reconciliation, maintenance retainer) are the obvious first four. They are
+    NOT seeded from company.ts — that file holds marketing copy written to be
+    read by a prospect, and a scope clause has a different job.
+    """
+
+    name = models.CharField(max_length=120, unique=True)
+    slug = models.SlugField(max_length=120, unique=True)
+    summary = models.CharField(
+        max_length=300,
+        help_text="One line, for the picker. What this is, not why it is good.",
+    )
+
+    default_scope = models.TextField(
+        blank=True, help_text="Pre-fills an order's scope. Edited per client."
+    )
+    default_exclusions = models.TextField(
+        blank=True,
+        help_text=(
+            "Pre-fills an order's exclusions. The reason this model exists — "
+            "exclusions written from scratch under time pressure come out thin."
+        ),
+    )
+    default_deliverables = models.TextField(
+        blank=True,
+        help_text="One per line. What the client actually receives.",
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "Retired services stay in the table. Orders and contracts reference "
+            "them, and deleting one would rewrite the record of what was sold."
+        ),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+    @property
+    def deliverable_list(self) -> list[str]:
+        return [line.strip() for line in self.default_deliverables.splitlines() if line.strip()]
+
+
+class Contract(models.Model):
+    """
+    A statement of work: what was agreed, frozen at the moment it was issued.
+
+    ══════════════════════════════════════════════════════════════════════════
+    EVERY FIELD HERE IS A SNAPSHOT, AND THAT IS THE ENTIRE POINT.
+
+    The obvious implementation is a view that renders the order — scope,
+    exclusions, milestones — as a document. It is wrong, and quietly so: edit
+    the order's scope afterwards and the "contract" the client signed now says
+    something they never agreed to. A document that changes underneath the
+    person who signed it is not a contract, it is a web page.
+
+    So issuing COPIES the wording and the money as they stood, and nothing
+    after that touches them. Charter 05 §I promises a fixed scope and a fixed
+    price with exclusions stated in writing BEFORE work begins; this is the
+    object that makes "fixed" true rather than aspirational.
+    ══════════════════════════════════════════════════════════════════════════
+
+    Changing the deal means issuing a NEW version, which supersedes the old one.
+    Both stay. What was agreed in March is still readable in September, which is
+    the only reason anybody keeps contracts.
+    """
+
+    class Status(models.TextChoices):
+        DRAFT = "draft", "Draft"
+        ISSUED = "issued", "Issued"
+        SIGNED = "signed", "Signed"
+        SUPERSEDED = "superseded", "Superseded"
+        VOID = "void", "Void"
+
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="contracts")
+    version = models.PositiveIntegerField(default=1)
+
+    # ---- the snapshot ----
+    title = models.CharField(max_length=200)
+    scope = models.TextField()
+    exclusions = models.TextField(blank=True)
+    deliverables = models.TextField(
+        blank=True, help_text="One per line, as they stood when issued."
+    )
+    total_kes = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text=(
+            "Summed from the order's milestones at issue. A Decimal, never a "
+            "float — money through a float is money you cannot reconcile."
+        ),
+    )
+    payment_terms = models.TextField(
+        blank=True, help_text="Milestone names and amounts, as they stood."
+    )
+    target_date = models.DateField(null=True, blank=True)
+
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.DRAFT)
+
+    issued_at = models.DateTimeField(null=True, blank=True)
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="contracts_issued",
+        limit_choices_to={"is_staff": True},
+    )
+
+    # ---- signature ----
+    #
+    # RECORDED, NOT COLLECTED. Genmars does not run an e-signature product and
+    # must not imply one: this says a signature happened somewhere else — an
+    # email, a PDF, a meeting — and who recorded that. Charter 04 §IV forbids
+    # claiming a capability we do not have, and "signed in the portal" would be
+    # exactly that claim.
+    signed_on = models.DateField(null=True, blank=True)
+    signed_by_name = models.CharField(
+        max_length=200, blank=True, help_text="The person at the client who signed."
+    )
+    signature_note = models.TextField(
+        blank=True,
+        help_text="How it was signed and where the evidence is. Not a signature.",
+    )
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="contracts_recorded",
+        limit_choices_to={"is_staff": True},
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-version"]
+        unique_together = [("order", "version")]
+
+    def __str__(self) -> str:
+        return f"{self.order.reference} SOW v{self.version} ({self.get_status_display()})"
+
+    @property
+    def reference(self) -> str:
+        return f"{self.order.reference}-SOW-{self.version:02d}"
+
+    @property
+    def is_live(self) -> bool:
+        """Issued or signed — the version currently in force."""
+        return self.status in {self.Status.ISSUED, self.Status.SIGNED}
+
+    @property
+    def deliverable_list(self) -> list[str]:
+        return [line.strip() for line in self.deliverables.splitlines() if line.strip()]

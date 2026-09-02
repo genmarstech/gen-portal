@@ -11,7 +11,16 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from accounts.models import Membership, Organisation
-from portal.models import Blocker, DeliveryGate, Enquiry, Milestone, Order, ProgressNote
+from portal.models import (
+    Blocker,
+    Contract,
+    DeliveryGate,
+    Enquiry,
+    Milestone,
+    Order,
+    ProgressNote,
+    Service,
+)
 
 
 class PersonSerializer(serializers.Serializer):
@@ -145,6 +154,67 @@ class BlockerWriteSerializer(serializers.Serializer):
     waiting_on = serializers.ChoiceField(choices=Blocker.WaitingOn.choices)
 
 
+# ── services and contracts ───────────────────────────────────────────────────
+
+
+class ServiceSerializer(serializers.ModelSerializer):
+    deliverable_list = serializers.ListField(child=serializers.CharField(), read_only=True)
+    order_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Service
+        fields = [
+            "id", "name", "slug", "summary", "default_scope", "default_exclusions",
+            "default_deliverables", "deliverable_list", "is_active", "order_count",
+        ]
+
+
+class ServiceWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=120)
+    summary = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+    default_scope = serializers.CharField(required=False, allow_blank=True, default="")
+    default_exclusions = serializers.CharField(required=False, allow_blank=True, default="")
+    default_deliverables = serializers.CharField(required=False, allow_blank=True, default="")
+    is_active = serializers.BooleanField(required=False, default=True)
+
+
+class ContractSerializer(serializers.ModelSerializer):
+    reference = serializers.CharField(read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    issued_by = PersonSerializer(read_only=True)
+    recorded_by = PersonSerializer(read_only=True)
+    deliverable_list = serializers.ListField(child=serializers.CharField(), read_only=True)
+    # A STRING. Money through a float is money you cannot reconcile — and this
+    # is the number on a document somebody signed.
+    total_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+
+    class Meta:
+        model = Contract
+        fields = [
+            "id", "version", "reference", "title", "scope", "exclusions",
+            "deliverables", "deliverable_list", "total_kes", "payment_terms",
+            "target_date", "status", "status_label", "issued_at", "issued_by",
+            "signed_on", "signed_by_name", "signature_note", "recorded_by",
+            "created_at",
+        ]
+
+
+class IssueContractSerializer(serializers.Serializer):
+    deliverables = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class SignatureSerializer(serializers.Serializer):
+    signed_on = serializers.DateField()
+    signed_by_name = serializers.CharField(max_length=200)
+    note = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class VoidSerializer(serializers.Serializer):
+    reason = serializers.CharField()
+
+
 class OrderListSerializer(serializers.ModelSerializer):
     organisation = serializers.CharField(source="organisation.name")
     contact = PersonSerializer(read_only=True)
@@ -170,6 +240,8 @@ class OrderDetailSerializer(OrderListSerializer):
     milestones = MilestoneSerializer(many=True, read_only=True)
     gates = DeliveryGateSerializer(many=True, read_only=True)
     blockers = BlockerSerializer(many=True, read_only=True)
+    contracts = ContractSerializer(many=True, read_only=True)
+    service = ServiceSerializer(read_only=True)
     enquiry_id = serializers.IntegerField(
         source="from_enquiry.id", default=None, read_only=True
     )
@@ -182,6 +254,8 @@ class OrderDetailSerializer(OrderListSerializer):
             "milestones",
             "gates",
             "blockers",
+            "contracts",
+            "service",
             "enquiry_id",
         ]
 
@@ -207,6 +281,7 @@ class OrderWriteSerializer(serializers.ModelSerializer):
             "started_on",
             "target_date",
             "contact",
+            "service",
         ]
 
     def validate_contact(self, value):
@@ -225,6 +300,7 @@ class ConvertSerializer(serializers.Serializer):
     exclusions = serializers.CharField(required=False, allow_blank=True, default="")
     target_date = serializers.DateField(required=False, allow_null=True)
     contact = serializers.IntegerField(required=False, allow_null=True)
+    service = serializers.IntegerField(required=False, allow_null=True)
 
 
 class DecideSerializer(serializers.Serializer):

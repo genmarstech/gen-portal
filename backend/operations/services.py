@@ -12,12 +12,21 @@ from __future__ import annotations
 import logging
 from datetime import date
 
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
 from accounts import emails, identity
 from accounts.models import EmailCode, Membership, Organisation, User
-from portal.models import Blocker, DeliveryGate, Enquiry, Order, ProgressNote
+from portal.models import (
+    Blocker,
+    Contract,
+    DeliveryGate,
+    Enquiry,
+    Milestone,
+    Order,
+    ProgressNote,
+    Service,
+)
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +69,7 @@ def convert_enquiry(
     exclusions: str = "",
     contact: User | None = None,
     target_date: date | None = None,
+    service: Service | None = None,
 ) -> Order:
     """
     Turn a qualified enquiry into an order.
@@ -93,6 +103,14 @@ def convert_enquiry(
             "This enquiry was declined. Move it back to qualifying first if that "
             "has changed."
         )
+    # Pre-fill from the service before validating, so picking one is enough to
+    # satisfy the scope requirement. The wording is a STARTING POINT — it lands
+    # on the order and is edited there, and the contract snapshots the edited
+    # version rather than the catalogue.
+    if service is not None:
+        scope = scope.strip() or service.default_scope
+        exclusions = exclusions.strip() or service.default_exclusions
+
     if not scope.strip():
         raise OperationsError(
             "An order needs a scope. Charter 05 §I — fixed scope, in writing.",
@@ -123,6 +141,7 @@ def convert_enquiry(
                     status=Order.Status.SCOPING,
                     contact=lead,
                     target_date=target_date,
+                    service=service,
                 )
             break
         except IntegrityError as exc:  # pragma: no cover - needs a real race
@@ -485,3 +504,203 @@ def remove_membership(*, membership: Membership) -> None:
     which is what revoked access should look like.
     """
     membership.delete()
+
+
+# ── services catalogue ───────────────────────────────────────────────────────
+
+
+@transaction.atomic
+def upsert_service(
+    *,
+    service: Service | None = None,
+    name: str,
+    summary: str = "",
+    default_scope: str = "",
+    default_exclusions: str = "",
+    default_deliverables: str = "",
+    is_active: bool = True,
+) -> Service:
+    """
+    Create or edit an offering.
+
+    Editing changes the STARTING POINT for future orders and nothing else.
+    Orders already created keep the wording they were given, and contracts keep
+    their snapshot — so improving a service's exclusions cannot retroactively
+    change what a client agreed to.
+    """
+    from django.utils.text import slugify
+
+    name = (name or "").strip()
+    if not name:
+        raise OperationsError("Give the service a name.", field="name")
+
+    clash = Service.objects.filter(name__iexact=name)
+    if service:
+        clash = clash.exclude(pk=service.pk)
+    if clash.exists():
+        raise OperationsError(f"{name} already exists.", field="name")
+
+    if service is None:
+        service = Service(slug=slugify(name)[:120])
+
+    service.name = name
+    service.summary = (summary or "").strip()
+    service.default_scope = (default_scope or "").strip()
+    service.default_exclusions = (default_exclusions or "").strip()
+    service.default_deliverables = (default_deliverables or "").strip()
+    service.is_active = is_active
+    service.save()
+    return service
+
+
+# ── contracts ────────────────────────────────────────────────────────────────
+
+
+def _payment_terms(order: Order) -> tuple[str, object]:
+    """
+    The milestones as text, and their total.
+
+    Rendered to text at snapshot time rather than pointed at, because a
+    contract that references live milestone rows changes when somebody edits a
+    milestone — which is the thing a contract exists to prevent.
+    """
+    from decimal import Decimal
+
+    lines: list[str] = []
+    total = Decimal("0")
+    for m in order.milestones.order_by("position", "due_on"):
+        due = f", due {m.due_on.isoformat()}" if m.due_on else ""
+        lines.append(f"{m.name}: KES {m.amount_kes}{due}")
+        total += m.amount_kes
+    return "\n".join(lines), total
+
+
+@transaction.atomic
+def issue_contract(*, order: Order, actor: User, deliverables: str = "") -> Contract:
+    """
+    Freeze what has been agreed, as a new version.
+
+    ── WHAT ISSUING ACTUALLY DOES ──────────────────────────────────────────────
+    Copies the scope, exclusions, deliverables, milestone terms and total as
+    they stand RIGHT NOW into a row that nothing afterwards edits. Editing the
+    order later does not touch an issued contract, which is the whole point —
+    see the note on the model.
+
+    Any previous live version is superseded rather than deleted. What was agreed
+    in March stays readable in September; that is the only reason anyone keeps
+    contracts at all.
+
+    ── WHY SCOPE IS REQUIRED AND EXCLUSIONS ARE NOT ───────────────────────────
+    An order with no scope is not something anyone can agree to. Empty
+    exclusions are honest — "we have not yet said what is out" — and Charter 05
+    §I asks for them in writing before work BEGINS, which is a conversation this
+    document starts rather than one it has to have finished.
+    """
+    if not order.scope.strip():
+        raise OperationsError(
+            "This order has no scope. A contract needs something to agree to.",
+            field="scope",
+        )
+
+    Contract.objects.filter(
+        order=order, status__in=[Contract.Status.ISSUED, Contract.Status.SIGNED]
+    ).update(status=Contract.Status.SUPERSEDED)
+
+    terms, total = _payment_terms(order)
+    version = (
+        Contract.objects.filter(order=order).aggregate(models.Max("version"))[
+            "version__max"
+        ]
+        or 0
+    ) + 1
+
+    text = (deliverables or "").strip()
+    if not text and order.service:
+        text = order.service.default_deliverables
+
+    return Contract.objects.create(
+        order=order,
+        version=version,
+        title=order.title,
+        scope=order.scope,
+        exclusions=order.exclusions,
+        deliverables=text,
+        total_kes=total,
+        payment_terms=terms,
+        target_date=order.target_date,
+        status=Contract.Status.ISSUED,
+        issued_at=timezone.now(),
+        issued_by=actor,
+    )
+
+
+@transaction.atomic
+def record_signature(
+    *,
+    contract: Contract,
+    actor: User,
+    signed_on,
+    signed_by_name: str,
+    note: str = "",
+) -> Contract:
+    """
+    Record that the client signed — somewhere else.
+
+    ── THIS IS NOT AN E-SIGNATURE, AND MUST NOT LOOK LIKE ONE ─────────────────
+    Genmars runs no signing product. What happened is that somebody signed a
+    PDF, or replied "agreed" to an email, and a member of staff is writing that
+    down. Charter 04 §IV forbids claiming a capability we do not have, and a
+    field called "signature" on a screen a client never touched would be exactly
+    that claim.
+
+    So a name and a date are required — a record with neither is not evidence of
+    anything — and `recorded_by` names the person at Genmars who asserted it,
+    because that is the fact this row actually establishes.
+    """
+    if contract.status not in {Contract.Status.ISSUED, Contract.Status.SIGNED}:
+        raise OperationsError(
+            "Only an issued contract can be signed. Issue it first, or issue a "
+            "new version if this one was superseded."
+        )
+    if not signed_by_name.strip():
+        raise OperationsError("Who signed it?", field="signed_by_name")
+    if signed_on is None:
+        raise OperationsError("When was it signed?", field="signed_on")
+
+    contract.status = Contract.Status.SIGNED
+    contract.signed_on = signed_on
+    contract.signed_by_name = signed_by_name.strip()
+    contract.signature_note = (note or "").strip()
+    contract.recorded_by = actor
+    contract.save(
+        update_fields=[
+            "status",
+            "signed_on",
+            "signed_by_name",
+            "signature_note",
+            "recorded_by",
+        ]
+    )
+    return contract
+
+
+@transaction.atomic
+def void_contract(*, contract: Contract, reason: str) -> Contract:
+    """
+    Withdraw a contract that should not have been issued.
+
+    Voiding keeps the row. A contract that vanishes is a contract nobody can
+    prove was withdrawn rather than never sent, and the reason is required for
+    the same reason a decline needs one.
+    """
+    if not reason.strip():
+        raise OperationsError("Say why it is being voided.", field="reason")
+    if contract.status == Contract.Status.SIGNED:
+        raise OperationsError(
+            "This one is signed. A signed contract is ended by agreement, not "
+            "by voiding it here — issue a superseding version instead."
+        )
+    contract.status = Contract.Status.VOID
+    contract.signature_note = reason.strip()
+    contract.save(update_fields=["status", "signature_note"])
+    return contract

@@ -23,7 +23,7 @@ from __future__ import annotations
 from django.db.models import QuerySet
 
 from accounts.models import User
-from portal.models import Order
+from portal.models import Contract, Order
 
 
 def organisation_ids_for(user: User) -> QuerySet:
@@ -100,6 +100,25 @@ def export_payload(user: User) -> dict:
                 "exclusions": o.exclusions,
                 "status": o.get_status_display(),
                 "target_date": o.target_date.isoformat() if o.target_date else None,
+                # Charter 05 §VIII — we do not hold anything hostage, and the
+                # agreement itself is the single most important thing a client
+                # could want a copy of.
+                "contract": (
+                    {
+                        "reference": c.reference,
+                        "version": c.version,
+                        "scope": c.scope,
+                        "exclusions": c.exclusions,
+                        "deliverables": c.deliverable_list,
+                        "total_kes": str(c.total_kes),
+                        "payment_terms": c.payment_terms,
+                        "issued": c.issued_at.isoformat() if c.issued_at else None,
+                        "signed_on": c.signed_on.isoformat() if c.signed_on else None,
+                        "signed_by": c.signed_by_name,
+                    }
+                    if (c := live_contract_for(o))
+                    else None
+                ),
                 "progress_notes": [
                     {
                         "week_of": n.week_of.isoformat(),
@@ -121,3 +140,24 @@ def export_payload(user: User) -> dict:
             for o in orders_for(user)
         ],
     }
+
+
+def live_contract_for(order: Order) -> Contract | None:
+    """
+    The statement of work currently in force, for the client's own order.
+
+    Issued or signed only. A DRAFT is not something the client has been shown,
+    and a SUPERSEDED or VOID one is not what is in force — surfacing either
+    would tell a client a different deal applies than the one that does.
+
+    The newest live version wins. There should only ever be one, because
+    issuing supersedes the previous, but ordering by version rather than
+    trusting that is cheaper than the bug if it is ever untrue.
+    """
+    return (
+        order.contracts.filter(
+            status__in=[Contract.Status.ISSUED, Contract.Status.SIGNED]
+        )
+        .order_by("-version")
+        .first()
+    )

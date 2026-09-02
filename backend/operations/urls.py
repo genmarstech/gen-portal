@@ -37,4 +37,11 @@ urlpatterns = [
     path("ops/organisations", views.OrganisationListView.as_view(), name="ops-organisations"),
     path("ops/organisations/<int:pk>/members", views.OrganisationMembersView.as_view(), name="ops-org-members"),
     path("ops/memberships/<int:pk>", views.MembershipDetailView.as_view(), name="ops-membership"),
+
+    # ---- services and contracts ----
+    path("ops/services", views.ServiceListView.as_view(), name="ops-services"),
+    path("ops/services/<int:pk>", views.ServiceDetailView.as_view(), name="ops-service"),
+    path("ops/orders/<str:reference>/contracts", views.ContractListView.as_view(), name="ops-contracts"),
+    path("ops/orders/<str:reference>/contracts/<int:pk>/sign", views.ContractSignView.as_view(), name="ops-contract-sign"),
+    path("ops/orders/<str:reference>/contracts/<int:pk>/void", views.ContractVoidView.as_view(), name="ops-contract-void"),
 ]

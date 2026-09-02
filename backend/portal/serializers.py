@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import Milestone, Order, ProgressNote
+from .models import Contract, Milestone, Order, ProgressNote
 
 
 class ContactSerializer(serializers.Serializer):
@@ -59,12 +59,51 @@ class OrderListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ClientContractSerializer(serializers.ModelSerializer):
+    """
+    The statement of work, as the CLIENT sees it.
+
+    Deliberately narrower than the operations serializer. Omitted:
+
+      · `status` — the client only ever receives a live version, so the field
+        would carry no information and "issued" vs "signed" is answered by
+        whether signed_on is set.
+      · `recorded_by` and `signature_note` — who at Genmars wrote the signature
+        down, and where the evidence is filed, are our bookkeeping. The client
+        knows they signed; being shown our internal note about it is odd at
+        best.
+      · every earlier version — a superseded contract is not what is in force,
+        and showing the client three of them invites arguing from the wrong one.
+
+    What IS here is the whole of what was agreed: scope, exclusions,
+    deliverables, price and terms. Charter 05 §I — in writing, and the client
+    can read it back at any time.
+    """
+
+    reference = serializers.CharField(read_only=True)
+    deliverable_list = serializers.ListField(child=serializers.CharField(), read_only=True)
+    # A STRING. This is the number on a document they signed.
+    total_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+
+    class Meta:
+        model = Contract
+        fields = [
+            "reference", "version", "title", "scope", "exclusions",
+            "deliverables", "deliverable_list", "total_kes", "payment_terms",
+            "target_date", "issued_at", "signed_on", "signed_by_name",
+        ]
+        read_only_fields = fields
+
+
 class OrderDetailSerializer(serializers.ModelSerializer):
     status_label = serializers.CharField(source="get_status_display", read_only=True)
     contact = ContactSerializer(read_only=True)
     organisation = serializers.CharField(source="organisation.name", read_only=True)
     notes = serializers.SerializerMethodField()
     milestones = MilestoneSerializer(many=True, read_only=True)
+    contract = serializers.SerializerMethodField()
 
     class Meta:
         model = Order
@@ -85,8 +124,26 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "target_date",
             "notes",
             "milestones",
+            "contract",
         ]
         read_only_fields = fields
+
+    def get_contract(self, order: Order):
+        """
+        The statement of work in force, or null.
+
+        Null is an ordinary state, not an error: an order in scoping has not
+        been contracted yet, and Charter 02 §I is explicit that work begins
+        when a SOW is signed rather than when an order row exists. The client
+        seeing "no contract yet" on an order at scoping is the truth.
+
+        Scoped in selectors.py, like the notes, so "issued or signed only" is
+        stated once.
+        """
+        from .selectors import live_contract_for
+
+        contract = live_contract_for(order)
+        return ClientContractSerializer(contract).data if contract else None
 
     def get_notes(self, order: Order):
         """

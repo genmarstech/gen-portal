@@ -18,12 +18,26 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import Membership, Organisation, User
-from portal.models import Blocker, DeliveryGate, Milestone, Order, ProgressNote
+from portal.models import (
+    Blocker,
+    Contract,
+    DeliveryGate,
+    Milestone,
+    Order,
+    ProgressNote,
+    Service,
+)
 
 from . import selectors, services
 from .permissions import IsStaff
 from .serializers import (
     BlockerSerializer,
+    ContractSerializer,
+    IssueContractSerializer,
+    ServiceSerializer,
+    ServiceWriteSerializer,
+    SignatureSerializer,
+    VoidSerializer,
     InviteSerializer,
     MembershipSerializer,
     MembershipWriteSerializer,
@@ -126,6 +140,16 @@ class EnquiryConvertView(StaffView):
                     status=http.HTTP_400_BAD_REQUEST,
                 )
 
+        service = None
+        service_id = data.validated_data.get("service")
+        if service_id:
+            service = Service.objects.filter(pk=service_id).first()
+            if service is None:
+                return Response(
+                    {"detail": "No such service.", "field": "service"},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+
         try:
             order = services.convert_enquiry(
                 enquiry=enquiry,
@@ -135,6 +159,7 @@ class EnquiryConvertView(StaffView):
                 exclusions=data.validated_data["exclusions"],
                 contact=contact,
                 target_date=data.validated_data.get("target_date"),
+                service=service,
             )
         except services.OperationsError as exc:
             return _refuse(exc)
@@ -423,3 +448,82 @@ class MembershipDetailView(StaffView):
         membership = get_object_or_404(Membership, pk=pk)
         services.remove_membership(membership=membership)
         return Response(status=http.HTTP_204_NO_CONTENT)
+
+
+# ── services and contracts ───────────────────────────────────────────────────
+
+
+class ServiceListView(StaffView):
+    def get(self, request):
+        return Response({"services": ServiceSerializer(selectors.services(), many=True).data})
+
+    def post(self, request):
+        form = ServiceWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            service = services.upsert_service(**form.validated_data)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ServiceSerializer(service).data, status=http.HTTP_201_CREATED)
+
+
+class ServiceDetailView(StaffView):
+    def patch(self, request, pk: int):
+        service = get_object_or_404(Service, pk=pk)
+        form = ServiceWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            service = services.upsert_service(service=service, **form.validated_data)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ServiceSerializer(service).data)
+
+
+class ContractListView(StaffView):
+    """Issue a new version. There is no PUT — an issued contract is frozen."""
+
+    def post(self, request, reference: str):
+        order = get_object_or_404(Order, reference=reference)
+        form = IssueContractSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            contract = services.issue_contract(
+                order=order,
+                actor=request.user,
+                deliverables=form.validated_data["deliverables"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ContractSerializer(contract).data, status=http.HTTP_201_CREATED)
+
+
+class ContractSignView(StaffView):
+    def post(self, request, reference: str, pk: int):
+        contract = get_object_or_404(Contract, pk=pk, order__reference=reference)
+        form = SignatureSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            contract = services.record_signature(
+                contract=contract,
+                actor=request.user,
+                signed_on=form.validated_data["signed_on"],
+                signed_by_name=form.validated_data["signed_by_name"],
+                note=form.validated_data["note"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ContractSerializer(contract).data)
+
+
+class ContractVoidView(StaffView):
+    def post(self, request, reference: str, pk: int):
+        contract = get_object_or_404(Contract, pk=pk, order__reference=reference)
+        form = VoidSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            contract = services.void_contract(
+                contract=contract, reason=form.validated_data["reason"]
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ContractSerializer(contract).data)
