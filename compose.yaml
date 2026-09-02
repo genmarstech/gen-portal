@@ -188,6 +188,13 @@ services:
     image: ghcr.io/genmarstech/gen-portal-api:latest
     container_name: genmars-portal-api
 
+    volumes:
+      # Runbooks, read-only. They live on the HOST on purpose: a runbook
+      # readable only inside the portal is useless during the outage it
+      # was written for. Mounted rather than baked in so editing one and
+      # running `load_runbooks` needs no rebuild.
+      - ./docs/runbooks:/app/docs/runbooks:ro
+
     networks:
       - data
       - edge

@@ -286,3 +286,56 @@ def test_the_system_list_says_unassessed_rather_than_passing(client, system, own
     assert shown["security_assessed"] is False
     assert shown["security_tier"] is None
     assert shown["fails_tier_one"] is False
+
+
+# ── runbooks ─────────────────────────────────────────────────────────────────
+
+
+def test_the_runbook_files_load_into_the_registry(system):
+    """
+    The files are the source; the database copy is what the Systems screen
+    shows. A runbook readable only inside the portal is useless during the
+    outage it was written for.
+    """
+    call_command("load_runbooks", verbosity=0)
+
+    system.refresh_from_db()
+    assert system.runbook, "gen-portal has a runbook file and should have loaded it"
+    # The escalation section is appended to every one, so nobody has to know
+    # which file to open at 2am.
+    assert "WHO IS CALLED, AND IN WHAT ORDER" in system.runbook
+    assert "SEV-1" in system.runbook
+
+
+def test_a_system_with_no_runbook_file_is_left_alone_not_blanked(owner):
+    """
+    Loading is additive. A system nobody has written up keeps whatever it has
+    rather than being silently emptied by a command run for something else.
+    """
+    other = System.objects.create(
+        name="Something else", slug="something-else", kind=System.Kind.INTERNAL,
+        criticality=System.Criticality.MINOR, purpose="p", impact_if_down="i",
+        owner=owner, runbook="Typed straight into the screen by somebody.",
+    )
+    call_command("load_runbooks", verbosity=0)
+
+    other.refresh_from_db()
+    assert other.runbook == "Typed straight into the screen by somebody."
+
+
+def test_every_registered_slug_has_a_runbook_file():
+    """
+    A guard against the registry and the docs directory drifting. Registering a
+    system without writing one down is exactly the gap the Systems screen
+    complains about.
+    """
+    import pathlib
+
+    from operations.management.commands import load_runbooks
+
+    on_disk = {p.stem for p in load_runbooks.RUNBOOKS.glob("*.md")}
+    on_disk -= {"_incident-response", "README"}
+
+    assert "gen-portal" in on_disk
+    assert "internals-tm" in on_disk
+    assert "gen-website" in on_disk
