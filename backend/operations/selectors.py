@@ -20,6 +20,7 @@ from portal.models import (
     Contract,
     DeliveryGate,
     Enquiry,
+    Invoice,
     Milestone,
     Order,
     ProgressNote,
@@ -260,3 +261,108 @@ def services() -> QuerySet[Service]:
     return Service.objects.annotate(order_count=Count("orders", distinct=True)).order_by(
         "-is_active", "name"
     )
+
+
+def demand() -> list[dict]:
+    """
+    What is actually selling, per service.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THREE NUMBERS, BECAUSE ONE OF THEM ON ITS OWN MISLEADS.
+
+      · enquiries — how often it is ASKED for. High interest and nothing else
+        means the pitch works and something after it does not.
+      · orders    — how often that turned into agreed work. This is the
+        conversion, and it is the number that says the offering is real.
+      · invoiced  — what it has actually been billed for, voids excluded.
+
+    Ranking by enquiries alone would promote whatever is easiest to click on
+    the website. Ranking by money alone would bury a cheap service that half
+    the client base buys. Both are shown, and neither is presented as "the"
+    answer.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── ENQUIRIES WITH NO SERVICE ARE COUNTED, NOT DROPPED ──────────────────────
+
+    Someone can describe what they need in their own words instead of picking
+    from the catalogue, and that is an ordinary route rather than a gap. Those
+    land in an "unattributed" row. Hiding them would make the totals here
+    disagree with the queue, and a dashboard that disagrees with the list it
+    summarises stops being read.
+    """
+    from decimal import Decimal
+
+    from django.db.models import Sum
+
+    rows: dict[str | None, dict] = {}
+
+    def bucket(service: Service | None) -> dict:
+        key = service.slug if service else None
+        if key not in rows:
+            rows[key] = {
+                "slug": key or "",
+                "name": service.name if service else "Described in their own words",
+                "is_attributed": service is not None,
+                "enquiries": 0,
+                "orders": 0,
+                "declined": 0,
+                "invoiced_kes": Decimal("0.00"),
+                "paid_kes": Decimal("0.00"),
+                "tiers": {},
+            }
+        return rows[key]
+
+    enquiry_rows = Enquiry.objects.select_related("service", "converted_to")
+
+    for row in enquiry_rows:
+        entry = bucket(row.service)
+        entry["enquiries"] += 1
+
+        if row.status == Enquiry.Status.CONVERTED:
+            entry["orders"] += 1
+        elif row.status == Enquiry.Status.DECLINED:
+            entry["declined"] += 1
+
+        # The tier they picked, as they picked it. Blank is its own bucket
+        # rather than being folded into the first tier.
+        label = (row.tier or "").strip() or "No size chosen"
+        entry["tiers"][label] = entry["tiers"].get(label, 0) + 1
+
+        order = row.converted_to
+        if order is None:
+            continue
+
+        totals = order.invoices.exclude(status=Invoice.Status.VOID).aggregate(
+            billed=Sum("amount_kes"),
+        )
+        entry["invoiced_kes"] += totals["billed"] or Decimal("0.00")
+
+        paid = order.invoices.filter(status=Invoice.Status.PAID).aggregate(
+            settled=Sum("amount_kes"),
+        )
+        entry["paid_kes"] += paid["settled"] or Decimal("0.00")
+
+    out = []
+    for entry in rows.values():
+        # Strings, not Decimals. DRF's JSON encoder turns a Decimal into a
+        # float, and money through a float is money that cannot be reconciled —
+        # the same rule every serializer in this codebase already follows. The
+        # totals here end up in somebody's spreadsheet.
+        entry["invoiced_kes"] = f"{entry['invoiced_kes']:.2f}"
+        entry["paid_kes"] = f"{entry['paid_kes']:.2f}"
+
+        entry["tiers"] = [
+            {"tier": tier, "count": count}
+            for tier, count in sorted(
+                entry["tiers"].items(), key=lambda pair: (-pair[1], pair[0])
+            )
+        ]
+        out.append(entry)
+
+    # Most enquired first, then by money, so the busiest row is at the top and
+    # ties break on the more consequential number.
+    # Sorted on the Decimal before it was formatted, so "9.00" does not sort
+    # above "10.00" the way a string comparison would.
+    out.sort(key=lambda e: (-e["enquiries"], -Decimal(e["invoiced_kes"]), e["name"]))
+    return out
+

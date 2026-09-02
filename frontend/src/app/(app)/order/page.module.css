@@ -4,9 +4,53 @@
   padding: var(--sp-16);
 }
 
+/*
+ * ── THE TWO COLUMNS ─────────────────────────────────────────────────────────
+ *
+ * Questions on the left, what you are ordering on the right.
+ *
+ * The rail comes FIRST in the markup, and the grid moves it to column two on a
+ * wide screen. Doing it that way rather than with `order` means the tab
+ * sequence and a screen reader follow the same path a sighted user does — and
+ * on a narrow screen, where there is only one column, the choice stays above
+ * the questions, which is the order that matters: picking a size removes a
+ * question from the form, so choosing afterwards would mean answering
+ * something that was about to become unnecessary.
+ */
+.layout {
+  display: grid;
+  gap: var(--sp-5);
+  margin: var(--sp-8) 0 var(--sp-16);
+}
+
+@media (min-width: 62rem) {
+  .layoutWithRail {
+    /* minmax(0,…) not 1fr alone: a grid item's default min-width is auto, so a
+       long unbroken string in the form would push the column wider than its
+       share and squeeze the rail. */
+    grid-template-columns: minmax(0, 38rem) 22rem;
+    gap: var(--sp-6);
+    align-items: start;
+  }
+
+  .layoutWithRail .choice {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .layoutWithRail .panel {
+    grid-column: 1;
+    grid-row: 1;
+  }
+}
+
+.choice {
+  min-width: 0;
+}
+
 .panel {
   max-width: 38rem;
-  margin: var(--sp-8) 0 var(--sp-16);
+  min-width: 0;
   padding: clamp(var(--sp-5), 4vw, var(--sp-8));
   background: var(--bg-raised);
   border: 1px solid var(--rule);
@@ -119,7 +163,7 @@
 /* ---------- choosing a service and a size ---------- */
 
 .tiers {
-  margin: 0 0 var(--sp-6);
+  margin: 0;
   padding: 0;
   border: 0;
 }
@@ -166,9 +210,26 @@
 }
 
 /*
+ * In the rail there is only ever room for one across, and auto-fit would
+ * otherwise try for two at 22rem and produce 10rem cards with the price
+ * wrapping onto three lines.
+ */
+@media (min-width: 62rem) {
+  .layoutWithRail .tierGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/*
  * A button, not a div with a click handler. These are the primary control on
  * the page — they have to be reachable by keyboard and announce their pressed
  * state, and aria-pressed on a real button gets both for free.
+ */
+/*
+ * These used to sit inside the raised panel, so they were filled with the page
+ * ground to read as inset. Out in the rail they are ON the page ground, so
+ * they take the raised fill instead — otherwise they would be invisible
+ * rectangles with a border.
  */
 .tierCard {
   display: flex;
@@ -178,7 +239,7 @@
   text-align: left;
   font: inherit;
   color: var(--ink);
-  background: var(--bg);
+  background: var(--bg-raised);
   border: 1px solid var(--rule);
   border-radius: var(--radius);
   cursor: pointer;
@@ -198,9 +259,15 @@
 
 /* The chosen one has to be unmistakable — the whole point of the cards is that
    the client can see what they picked before they send. */
+/*
+ * The selected card has to be unmistakable at a glance from the form column —
+ * it is the answer to a question that is no longer being asked, so it has to
+ * carry that on its own. Tinted fill plus the accent border, not the border
+ * alone, which disappears at rail width.
+ */
 .tierCardOn {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-raised));
 }
 
 .tierName {
@@ -259,7 +326,7 @@
 }
 
 .changeService {
-  margin: 0 0 var(--sp-5);
+  margin: var(--sp-3) 0 0;
 }
 
 .linkButton {

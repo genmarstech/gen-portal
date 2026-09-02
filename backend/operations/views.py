@@ -849,3 +849,16 @@ class StaffNotificationView(StaffView):
         ).count()
         return Response({"unread": unread})
 
+
+class DemandView(StaffView):
+    """
+    Which services are selling, and which are only being asked about.
+
+    IsStaff, not CanCommit. This is a read of what the company is being asked
+    for; anyone doing the asking-and-answering needs to see it, and it exposes
+    no client detail — only counts and totals per service.
+    """
+
+    def get(self, request):
+        return Response({"demand": selectors.demand()})
+

@@ -382,9 +382,71 @@ function OrderForm({
     ],
   );
 
+  // Only rendered once there is something to put in it. If the catalogue could
+  // not be fetched the page falls back to a single column and the client
+  // describes what they need in words, which is how this worked before.
+  const hasChoice = catalogue !== null && catalogue.length > 0;
+
   return (
     <div className="wrap">
-      <div className={styles.panel}>
+      {/*
+        ── WHY THE CHOICE COMES FIRST IN THE MARKUP ──────────────────────────
+        On a wide screen the rail is placed in the second column by the grid,
+        so it reads on the right. On a narrow one it stays where it is in the
+        source: ABOVE the questions.
+
+        That is the order that matters. Picking a size removes a question from
+        the form below it, so being asked to choose after answering would mean
+        answering something that was about to become unnecessary. Placement is
+        done with grid columns rather than `order` so the tab sequence and a
+        screen reader follow the same sequence a sighted user does.
+      */}
+      <div className={`${styles.layout} ${hasChoice ? styles.layoutWithRail : ""}`}>
+        {hasChoice && (
+          <aside className={styles.choice} aria-label="What you are ordering">
+            {service ? (
+              <>
+                <TierCards
+                  service={service}
+                  selected={tier}
+                  onPick={(picked) =>
+                    onPick({ service: service.slug, tier: picked.slug })
+                  }
+                />
+                <p className={styles.changeService}>
+                  <button
+                    type="button"
+                    className={styles.linkButton}
+                    onClick={() => onPick({ service: "", tier: "" })}
+                  >
+                    Something else
+                  </button>
+                </p>
+              </>
+            ) : (
+              <fieldset className={styles.tiers}>
+                <legend className={styles.tiersLegend}>
+                  What is this about? Skip it if none of these fit &mdash;
+                  describe it in your own words instead.
+                </legend>
+                <div className={styles.serviceGrid}>
+                  {catalogue.map((option) => (
+                    <button
+                      key={option.slug}
+                      type="button"
+                      className={styles.serviceChip}
+                      onClick={() => onPick({ service: option.slug, tier: "" })}
+                    >
+                      {option.name}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            )}
+          </aside>
+        )}
+
+        <div className={styles.panel}>
         <p className={styles.eyebrow}>Ordering</p>
         <h1 className={styles.title}>{heading}</h1>
         <p className={styles.body}>
@@ -392,50 +454,6 @@ function OrderForm({
             ? "Two questions, and only the first really matters — the ones we would ask on a first call anyway. The size you picked answers the rest."
             : "A few questions — the ones we would ask on a first call anyway. Answering them here means the first reply you get is useful instead of a list of questions back."}
         </p>
-
-        {/* No service chosen: pick one here rather than being sent to the
-            public site to choose and come back. */}
-        {!service && catalogue && catalogue.length > 0 && (
-          <fieldset className={styles.tiers}>
-            <legend className={styles.tiersLegend}>
-              What is this about? Skip it if none of these fit &mdash; describe
-              it below instead.
-            </legend>
-            <div className={styles.serviceGrid}>
-              {catalogue.map((option) => (
-                <button
-                  key={option.slug}
-                  type="button"
-                  className={styles.serviceChip}
-                  onClick={() => onPick({ service: option.slug, tier: "" })}
-                >
-                  {option.name}
-                </button>
-              ))}
-            </div>
-          </fieldset>
-        )}
-
-        {service && (
-          <>
-            <TierCards
-              service={service}
-              selected={tier}
-              onPick={(picked) =>
-                onPick({ service: service.slug, tier: picked.slug })
-              }
-            />
-            <p className={styles.changeService}>
-              <button
-                type="button"
-                className={styles.linkButton}
-                onClick={() => onPick({ service: "", tier: "" })}
-              >
-                Something else
-              </button>
-            </p>
-          </>
-        )}
 
         <form onSubmit={submit} noValidate>
           <label className={styles.label}>
@@ -521,6 +539,7 @@ function OrderForm({
           This does not start any work and nothing is charged. Work begins once
           scope is agreed and a statement of work is signed.
         </p>
+        </div>
       </div>
     </div>
   );

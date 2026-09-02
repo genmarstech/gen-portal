@@ -52,6 +52,8 @@ urlpatterns = [
         name="ops-invoice-void",
     ),
 
+    path("ops/demand", views.DemandView.as_view(), name="ops-demand"),
+
     path("ops/enquiries", views.EnquiryListView.as_view(), name="ops-enquiries"),
     path("ops/enquiries/<int:pk>", views.EnquiryDetailView.as_view(), name="ops-enquiry"),
     path("ops/enquiries/<int:pk>/convert", views.EnquiryConvertView.as_view(), name="ops-convert"),
