@@ -25,6 +25,7 @@ from portal.models import (
     Order,
     PaymentRecord,
     ProgressNote,
+    SecurityCheck,
     Service,
     ServiceTier,
     System,
@@ -794,6 +795,12 @@ class SystemSerializer(serializers.ModelSerializer):
     is_watched = serializers.BooleanField(read_only=True)
     heartbeat_stale = serializers.SerializerMethodField()
     active_keys = serializers.SerializerMethodField()
+    # The highest tier where every published requirement is satisfied, and
+    # whether a LIVE system sits below the bar the website states for going
+    # live. Both computed — see System.security_tier_met.
+    security_tier = serializers.SerializerMethodField()
+    fails_tier_one = serializers.SerializerMethodField()
+    security_assessed = serializers.SerializerMethodField()
 
     class Meta:
         model = System
@@ -806,6 +813,7 @@ class SystemSerializer(serializers.ModelSerializer):
             "health", "health_label", "health_detail", "checked_at",
             "heartbeat_at", "heartbeat_stale", "version",
             "is_watched", "active_keys", "created_at",
+            "security_tier", "fails_tier_one", "security_assessed",
         ]
         read_only_fields = fields
 
@@ -817,6 +825,16 @@ class SystemSerializer(serializers.ModelSerializer):
 
     def get_active_keys(self, system: System) -> int:
         return system.keys.filter(revoked_at__isnull=True).count()
+
+    def get_security_tier(self, system: System) -> str | None:
+        return system.security_tier_met()
+
+    def get_fails_tier_one(self, system: System) -> bool:
+        return system.fails_tier_one()
+
+    def get_security_assessed(self, system: System) -> bool:
+        """Distinct from passing. Never assessed shows as unassessed, not green."""
+        return system.security_checks.exists()
 
 
 class SystemWriteSerializer(serializers.Serializer):
@@ -927,4 +945,29 @@ class TicketStateSerializer(serializers.Serializer):
         default=None,
     )
     assigned_to = serializers.IntegerField(required=False, allow_null=True, default=None)
+
+
+class SecurityCheckSerializer(serializers.ModelSerializer):
+    tier_label = serializers.CharField(source="get_tier_display", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    assessed_by_name = serializers.SerializerMethodField()
+    needs_a_note = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = SecurityCheck
+        fields = [
+            "id", "tier", "tier_label", "item", "position",
+            "status", "status_label", "note",
+            "assessed_by_name", "assessed_at", "needs_a_note",
+        ]
+        read_only_fields = fields
+
+    def get_assessed_by_name(self, check: SecurityCheck) -> str:
+        who = check.assessed_by
+        return (who.full_name or who.email) if who else ""
+
+
+class SecurityCheckWriteSerializer(serializers.Serializer):
+    status = serializers.ChoiceField(choices=SecurityCheck.Status.choices)
+    note = serializers.CharField(required=False, allow_blank=True, default="")
 

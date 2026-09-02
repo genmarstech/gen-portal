@@ -1814,6 +1814,53 @@ class System(models.Model):
         """We have some way of knowing whether it is alive."""
         return bool(self.health_url) or self.heartbeat_at is not None
 
+    def security_tier_met(self) -> str | None:
+        """
+        The highest tier where EVERY requirement is satisfied.
+
+        Sequential on purpose: Tier 2 without Tier 1 is not Tier 2, it is a
+        system with an audit log and no backups. Returning the highest tier
+        that individually passed would let a gap in the foundation be hidden
+        by work done further up.
+
+        None means Tier 1 is not met — which for a live client system is a
+        gate violation, since the published page states Tier 1 as the bar
+        before any client system goes live.
+        """
+        from portal.models import SecurityCheck  # local: same module at import
+
+        checks = list(self.security_checks.all())
+        if not checks:
+            return None
+
+        reached = None
+        for tier in (
+            SecurityCheck.Tier.ONE,
+            SecurityCheck.Tier.TWO,
+            SecurityCheck.Tier.THREE,
+        ):
+            at_tier = [c for c in checks if c.tier == tier]
+            if not at_tier or not all(c.is_satisfied for c in at_tier):
+                break
+            reached = tier
+        return reached
+
+    def fails_tier_one(self) -> bool:
+        """
+        Live, client-facing, and below the bar we publish for going live.
+
+        The one thing on this model that is a stated commitment rather than an
+        observation, so it is computed rather than left to somebody noticing.
+        """
+        if self.status != self.Status.LIVE:
+            return False
+        if not self.security_checks.exists():
+            # Never assessed. Not the same as failing, and not the same as
+            # passing — the caller decides how to show it, and the ops screen
+            # shows it as unassessed rather than green.
+            return False
+        return self.security_tier_met() is None
+
     def heartbeat_is_stale(self, *, minutes: int = 30, now=None) -> bool:
         """
         It reported in once and has since gone quiet.
@@ -2081,4 +2128,119 @@ class SupportMessage(models.Model):
 
     def __str__(self) -> str:
         return f"{self.ticket.reference}: {self.body[:50]}"
+
+
+class SecurityCheck(models.Model):
+    """
+    Whether one system meets one published security requirement.
+
+    ══════════════════════════════════════════════════════════════════════════
+    genmars.co.ke/approach CALLS THESE GATES, NOT A WISH LIST.
+
+    Fifteen requirements across three tiers, published to anyone who reads the
+    page, with Tier 1 stated as the bar "before any client system goes live".
+    Until now nothing recorded whether a single system met a single one of
+    them, which makes "gate" a description of an intention rather than of
+    anything that happens.
+
+    Charter 04 §IV: nothing untrue on a Genmars surface. A gate that nothing
+    checks is the same kind of claim as a post-mortem nobody writes.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── FOUR STATES, AND "PARTIAL" EARNS ITS PLACE ──────────────────────────────
+
+    Most of these are not binary in practice. "Personal data encrypted at rest"
+    is true of our off-box backups and not of the live database — recording
+    that as MET would be a lie and as NOT MET would be useless, because it
+    hides that most of the work is done and names none of it.
+
+    So PARTIAL exists, and it is the state that requires a note. A partial with
+    no explanation of what is missing is worse than a plain no: it looks like
+    progress and cannot be acted on.
+
+    ── NOT_APPLICABLE IS THE DANGEROUS ONE ─────────────────────────────────────
+
+    It is the state that makes a red board go green without anything changing.
+    It also requires a note, and the note has to say why the requirement does
+    not apply to THIS system — not that it is inconvenient.
+    """
+
+    class Tier(models.TextChoices):
+        # Wording and order copied from the published page. If these ever
+        # disagree with the website, the website is right and this is the bug.
+        ONE = "tier1", "Tier 1 — before any client system goes live"
+        TWO = "tier2", "Tier 2 — within 90 days of the first paying user"
+        THREE = "tier3", "Tier 3 — before making enterprise claims"
+
+    class Status(models.TextChoices):
+        NOT_MET = "not_met", "Not met"
+        PARTIAL = "partial", "Partly met"
+        MET = "met", "Met"
+        NOT_APPLICABLE = "n_a", "Does not apply"
+
+    system = models.ForeignKey(
+        System, on_delete=models.CASCADE, related_name="security_checks"
+    )
+    tier = models.CharField(max_length=8, choices=Tier.choices)
+    # The requirement in the website's own words, copied rather than referenced,
+    # so a check recorded today still says what was being assessed if the page
+    # is later reworded.
+    item = models.CharField(max_length=200)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    status = models.CharField(
+        max_length=12, choices=Status.choices, default=Status.NOT_MET
+    )
+    note = models.TextField(
+        blank=True,
+        help_text=(
+            "Evidence when met; what is missing when partial; why it does not "
+            "apply when marked so."
+        ),
+    )
+
+    assessed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="security_checks",
+        limit_choices_to={"is_staff": True},
+    )
+    assessed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["system", "tier", "position", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["system", "tier", "position"],
+                name="one_check_per_requirement_per_system",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.system.slug} — {self.item[:50]} ({self.get_status_display()})"
+
+    @property
+    def is_satisfied(self) -> bool:
+        """
+        Met, or genuinely not applicable.
+
+        Partial is deliberately NOT satisfied. A tier is a gate, and mostly
+        through a gate is on the wrong side of it.
+        """
+        return self.status in (self.Status.MET, self.Status.NOT_APPLICABLE)
+
+    @property
+    def needs_a_note(self) -> bool:
+        """
+        Partial and not-applicable are claims that require an explanation.
+
+        Met does not: the evidence is welcome but the requirement itself says
+        what was needed. Not-met does not either — the absence is the note.
+        """
+        return (
+            self.status in (self.Status.PARTIAL, self.Status.NOT_APPLICABLE)
+            and not self.note.strip()
+        )
 

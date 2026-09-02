@@ -36,6 +36,7 @@ from portal.models import (
     ServiceTier,
     System,
     SystemEvent,
+    SecurityCheck,
     SupportTicket,
     SystemKey,
     Task,
@@ -47,6 +48,8 @@ from . import selectors, services
 from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
 from .serializers import (
     ActivitySerializer,
+    SecurityCheckSerializer,
+    SecurityCheckWriteSerializer,
     TicketReplySerializer,
     TicketSerializer,
     TicketStateSerializer,
@@ -1253,6 +1256,67 @@ class SystemDetailView(StaffView):
                     system.events.all()[:100], many=True
                 ).data,
                 "keys": SystemKeySerializer(system.keys.all(), many=True).data,
+                "security": SecurityCheckSerializer(
+                    system.security_checks.all(), many=True
+                ).data,
+            }
+        )
+
+
+class SecurityCheckView(StaffView):
+    """
+    Record whether a system meets a published requirement.
+
+    CanCommit. These are the gates genmars.co.ke states before a client system
+    goes live, so moving one to "met" is a claim the company makes in public,
+    not a note to self.
+    """
+
+    permission_classes = [CanCommit]
+
+    def patch(self, request, slug: str, pk: int):
+        system = get_object_or_404(System, slug=slug)
+        check = get_object_or_404(SecurityCheck, pk=pk, system=system)
+
+        form = SecurityCheckWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        check.status = form.validated_data["status"]
+        check.note = form.validated_data["note"].strip()
+
+        # Partial and not-applicable are claims that need explaining: one says
+        # most of the work is done without saying what is missing, the other
+        # turns a red board green. Refused rather than accepted-and-flagged,
+        # because a flag on a saved row is something to ignore later.
+        if check.needs_a_note:
+            return Response(
+                {
+                    "detail": (
+                        "Say why. "
+                        + (
+                            "Marking this as not applicable removes it from a "
+                            "published gate, so the reason has to be on record."
+                            if check.status == SecurityCheck.Status.NOT_APPLICABLE
+                            else "Partly met without saying what is missing "
+                            "looks like progress and cannot be acted on."
+                        )
+                    ),
+                    "field": "note",
+                },
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+
+        check.assessed_by = request.user
+        check.assessed_at = timezone.now()
+        check.save(
+            update_fields=["status", "note", "assessed_by", "assessed_at"]
+        )
+
+        system.refresh_from_db()
+        return Response(
+            {
+                "check": SecurityCheckSerializer(check).data,
+                "system": SystemSerializer(system).data,
             }
         )
 

@@ -70,6 +70,11 @@ urlpatterns = [
     path("ops/systems/events", views.SystemEventFeedView.as_view(), name="ops-system-events"),
     path("ops/systems/<slug:slug>", views.SystemDetailView.as_view(), name="ops-system"),
     path("ops/systems/<slug:slug>/keys", views.SystemKeyView.as_view(), name="ops-system-keys"),
+    path(
+        "ops/systems/<slug:slug>/security/<int:pk>",
+        views.SecurityCheckView.as_view(),
+        name="ops-security-check",
+    ),
 
     # ---- support ----
     path("ops/support", views.TicketListView.as_view(), name="ops-tickets"),
