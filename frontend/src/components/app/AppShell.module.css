@@ -45,23 +45,60 @@
   padding-block: var(--sp-3);
 }
 
+/*
+ * ── WHY THIS WRAPS AGAIN ───────────────────────────────────────────────────
+ *
+ * It used to be nowrap, and the comment above it said everything fitted one
+ * row at 320px. That was measured with TWO nav links. There are now five, and
+ * at 375px the row needs about 500px — so the header was pushing the whole
+ * page sideways, which is the one thing a layout must never do.
+ *
+ * On narrow screens the nav drops to its own row (see .nav below) and the
+ * brand keeps the tools company on the first. Two rows, not the three the
+ * original note was avoiding: the signed-in address and the theme control are
+ * both already hidden here and both live on the Account page.
+ */
 .headerInner {
   display: flex;
   align-items: center;
-  gap: var(--sp-4);
-  /* Deliberately NOT wrapping: everything here is small enough to fit one row
-     at 320px, and wrapping is what made the header three rows tall. */
-  flex-wrap: nowrap;
+  gap: var(--sp-3) var(--sp-4);
+  flex-wrap: wrap;
 }
 
-@media (min-width: 40rem) {
+.brand {
+  order: 1;
+}
+
+.tools {
+  order: 2;
+}
+
+.nav {
+  order: 3;
+  /* Its own row, full width. */
+  flex: 1 0 100%;
+}
+
+@media (min-width: 48rem) {
   .headerInner {
+    flex-wrap: nowrap;
     gap: var(--sp-6);
+  }
+
+  /* One row again, in reading order: brand, nav, then the tools. */
+  .nav {
+    order: 2;
+    flex: none;
+  }
+
+  .tools {
+    order: 3;
   }
 }
 
 .brand {
   border: 0;
+  /* Pushes the tools to the far edge on both layouts. */
   margin-right: auto;
   color: var(--ink);
   flex: none;
@@ -88,11 +125,41 @@
 .nav {
   display: flex;
   gap: var(--sp-4);
+  /*
+   * Scrollable rather than wrapping to a third row. Five short labels fit
+   * 375px, but a longer one added later must push the last item off the edge
+   * where it can be swiped to — not off the page where it cannot be reached.
+   *
+   * The negative margin lets it bleed to the wrap's padding edge, so a
+   * scrolled item is cut at the screen edge instead of appearing to be cut by
+   * nothing.
+   */
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  margin-inline: calc(var(--sp-5) * -1);
+  padding-inline: var(--sp-5);
+}
+
+.nav::-webkit-scrollbar {
+  display: none;
+}
+
+.link {
+  white-space: nowrap;
 }
 
 @media (min-width: 40rem) {
   .nav {
     gap: var(--sp-5);
+  }
+}
+
+@media (min-width: 48rem) {
+  .nav {
+    overflow-x: visible;
+    margin-inline: 0;
+    padding-inline: 0;
   }
 }
 

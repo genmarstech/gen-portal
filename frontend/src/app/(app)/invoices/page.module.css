@@ -59,6 +59,10 @@
 }
 
 .card {
+  /* Grid children default to min-width:auto, which refuses to shrink below
+     their content — an unbroken invoice reference or bank code then widens
+     the card past the viewport and takes the page sideways with it. */
+  min-width: 0;
   padding: 16px 18px;
   background: var(--bg-raised);
   border: 1px solid var(--rule);
@@ -83,6 +87,7 @@
 }
 
 .number {
+  overflow-wrap: anywhere;
   font-size: 0.8125rem;
   font-weight: 650;
   letter-spacing: 0.02em;
@@ -118,6 +123,7 @@
 }
 
 .description {
+  overflow-wrap: anywhere;
   margin: 0 0 12px;
   color: var(--ink);
   font-size: 0.90625rem;
@@ -198,11 +204,13 @@
 }
 
 .paymentMeta {
+  overflow-wrap: anywhere;
   font-size: 0.78125rem;
   color: var(--ink-faint);
 }
 
 .voidReason {
+  overflow-wrap: anywhere;
   margin: 12px 0 0;
   padding-top: 12px;
   border-top: 1px solid var(--rule);

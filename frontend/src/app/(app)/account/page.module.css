@@ -8,10 +8,14 @@
 }
 
 .title {
+  overflow-wrap: anywhere;
   font-size: clamp(1.7rem, 1.4rem + 1.4vw, 2.2rem);
 }
 
 .email {
+  /* An address long enough to exceed a phone screen is ordinary,
+     and without this it takes the whole page sideways. */
+  overflow-wrap: anywhere;
   margin-top: var(--sp-2);
   font-family: var(--font-mono);
   font-size: 0.8125rem;
