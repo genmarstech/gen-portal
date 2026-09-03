@@ -21,6 +21,7 @@ from accounts import emails, identity
 from accounts.models import EmailCode, Membership, Organisation, User
 from portal import mpesa
 from portal.models import (
+    BillingProfile,
     Blocker,
     Contract,
     DeliveryGate,
@@ -2599,3 +2600,104 @@ def set_ticket_state(
         ticket.save(update_fields=fields)
     return ticket
 
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The company's own billing identity
+# ─────────────────────────────────────────────────────────────────────────────
+
+# What a founder may change here. Written out rather than derived from the
+# model so that adding a field to BillingProfile does not silently make it
+# editable over HTTP — a new field becomes writable when somebody puts it in
+# this list on purpose.
+BILLING_FIELDS = (
+    "legal_name",
+    "email",
+    "kra_pin",
+    "postal_address",
+    "mpesa_paybill",
+    "mpesa_account_hint",
+    "bank_details",
+    "terms",
+)
+
+
+def set_billing_details(*, actor: User, values: dict) -> BillingProfile:
+    """
+    Update the billing profile, and record who changed what.
+
+    ── WHY THIS IS A SERVICE AND NOT A ModelSerializer.save() ──────────────────
+
+    Same reason as `set_tier_price`, only more so. These values are printed on
+    documents clients pay against, and one of them — the paybill, or the bank
+    details — decides which account the money lands in. A change here needs an
+    author and a timestamp permanently attached, because "when did the paybill
+    become this number, and who typed it" is a question that only ever gets
+    asked in bad circumstances, and by then the form has long since forgotten.
+
+    ── THE LOG RECORDS FIELD NAMES, NOT VALUES ────────────────────────────────
+
+    `detail` carries which fields moved and nothing about what they moved to.
+    A paybill is not a secret — it is printed on every invoice — but the log is
+    the record used to INVESTIGATE a fraudulent change, and storing the new
+    account details in it adds a second place to read them from while adding
+    nothing to the investigation: the current values are one query away, and
+    the point of this entry is who and when.
+
+    ── NO-OP SAVES ARE NOT LOGGED ─────────────────────────────────────────────
+
+    Opening the form and pressing save changes nothing and writes nothing. A
+    log that fills with entries recording no change is one nobody reads, and
+    this is a log whose entire value is that a line in it means something.
+    """
+    paybill = str(values.get("mpesa_paybill", "") or "").strip()
+    if paybill and not paybill.isdigit():
+        # The one field worth checking, because it is the one that decides
+        # where the money goes. A paybill with a stray letter or space fails at
+        # the till with no explanation, and the client's reasonable conclusion
+        # is that Genmars sent them a broken invoice.
+        raise OperationsError(
+            "A paybill or till is digits only — no spaces or letters.",
+            field="mpesa_paybill",
+        )
+
+    hint = str(values.get("mpesa_account_hint", "") or "").strip()
+    if hint and "{number}" not in hint:
+        # Without it every client types the same account reference, and no
+        # payment can be matched to an invoice without a phone call — the exact
+        # manual reconciliation this field exists to remove.
+        raise OperationsError(
+            "Include {number} — it becomes the invoice number, which is how a "
+            "payment is matched to a bill.",
+            field="mpesa_account_hint",
+        )
+
+    profile = BillingProfile.load()
+
+    changed = []
+    for field in BILLING_FIELDS:
+        if field not in values:
+            continue
+        # Trimmed, because a trailing space on a paybill is invisible on the
+        # screen where it was typed and wrong on every invoice after it.
+        new = str(values[field] or "").strip()
+        if new != (getattr(profile, field) or ""):
+            setattr(profile, field, new)
+            changed.append(field)
+
+    if not changed:
+        return profile
+
+    profile.updated_by = actor
+    # updated_at is auto_now, so it is saved whether or not it is listed.
+    profile.save(update_fields=[*changed, "updated_by", "updated_at"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.BILLING_CHANGED,
+        subject="billing",
+        summary=f"Billing details changed: {', '.join(changed)}",
+        fields=changed,
+    )
+    return profile

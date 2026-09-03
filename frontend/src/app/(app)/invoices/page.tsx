@@ -180,17 +180,13 @@ function InvoiceCard({ invoice }: { invoice: ClientInvoice }) {
         </p>
       )}
 
-      {/* Only order-backed invoices have a document and a Pay button today —
-          both routes are nested under the order. Saying nothing about paying a
-          direct invoice is better than showing a button that 404s. */}
-      {invoice.order_reference && (
-        <Link
-          className={styles.open}
-          href={`/dashboard/${invoice.order_reference}/invoices/${invoice.number}`}
-        >
-          {invoice.status === "issued" ? "View and pay" : "View invoice"}
-        </Link>
-      )}
+      {/* EVERY invoice, not just order-backed ones. The document route is
+          addressed by number now, so a renewal or an afternoon's work opens
+          the same way a project bill does — previously those listed here with
+          nothing to open, which is a bill the client cannot read. */}
+      <Link className={styles.open} href={`/invoices/${invoice.number}`}>
+        {invoice.status === "issued" ? "View and pay" : "View invoice"}
+      </Link>
     </li>
   );
 }

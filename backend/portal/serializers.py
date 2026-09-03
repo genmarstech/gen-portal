@@ -400,38 +400,41 @@ class InvoiceDocumentSerializer(serializers.Serializer):
         organisation, which is both correct and what their accounts department
         expects.
         """
-        return {"organisation": data["order"].organisation.name, "contact": ""}
+        invoice = data["invoice"]
+        # From the INVOICE, not the order. A direct invoice — a renewal, an
+        # afternoon's work — has no order at all, and reading through one would
+        # crash on exactly the documents this page was extended to serve.
+        # `test_an_invoice_never_disagrees_with_its_order_about_the_client`
+        # proves the two cannot disagree where both exist.
+        return {"organisation": invoice.organisation.name, "contact": ""}
 
     def get_biller(self, data) -> dict:
-        from django.conf import settings
-
-        # Only what is configured. `or None` rather than "" so the client can
-        # test truthiness without caring which fields exist.
+        # From the billing profile, which falls back to the BILLING_* settings
+        # for anything left blank — see portal/models.py. Only what is
+        # configured: `or None` rather than "" so the client can test
+        # truthiness without caring which fields exist, and so an unset field
+        # is omitted from the document rather than rendered as an empty line.
+        profile = self.context["billing"]
         return {
-            "legal_name": settings.BILLING_LEGAL_NAME,
-            "email": settings.BILLING_EMAIL,
-            "kra_pin": settings.BILLING_KRA_PIN or None,
-            "postal_address": settings.BILLING_POSTAL_ADDRESS or None,
+            "legal_name": profile.resolve("legal_name"),
+            "email": profile.resolve("email"),
+            "kra_pin": profile.resolve("kra_pin") or None,
+            "postal_address": profile.resolve("postal_address") or None,
         }
 
     def get_payment(self, data) -> dict:
         from django.conf import settings
 
         invoice = data["invoice"]
-        paybill = settings.BILLING_MPESA_PAYBILL or None
-        account = None
-        if paybill:
-            # The invoice number in the account field is what makes a payment
-            # reconcilable without a phone call.
-            account = settings.BILLING_MPESA_ACCOUNT_HINT.replace(
-                "{number}", invoice.number
-            )
+        profile = self.context["billing"]
 
         return {
-            "mpesa_paybill": paybill,
-            "mpesa_account": account,
-            "bank_details": settings.BILLING_BANK_DETAILS or None,
-            "terms": settings.BILLING_TERMS,
+            "mpesa_paybill": profile.resolve("mpesa_paybill") or None,
+            # The invoice number in the account field is what makes a payment
+            # reconcilable without a phone call. None when there is no paybill.
+            "mpesa_account": profile.account_reference(invoice.number),
+            "bank_details": profile.resolve("bank_details") or None,
+            "terms": profile.resolve("terms"),
             # False today. When M-Pesa credentials are configured this becomes
             # true and the client may pay from the page. Until then NOTHING in
             # the UI may suggest the capability exists — a button that only
@@ -439,8 +442,19 @@ class InvoiceDocumentSerializer(serializers.Serializer):
             "stk_available": settings.MPESA_ENABLED,
         }
 
-    def get_order(self, data) -> dict:
+    def get_order(self, data) -> dict | None:
+        """
+        The project this bill arises from, or None when there is not one.
+
+        NULL RATHER THAN A FABRICATED SHELL. A direct invoice genuinely has no
+        order, and the honest representation of that is the absence. Returning
+        {"reference": "", "title": "Ad hoc"} would put a project on the
+        document that does not exist in the system, and the client would ask
+        us about it (Charter 04 §IV).
+        """
         order = data["order"]
+        if order is None:
+            return None
         contract = data["contract"]
         return {
             "reference": order.reference,

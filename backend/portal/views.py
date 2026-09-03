@@ -30,8 +30,9 @@ from . import mpesa
 from django.utils import timezone
 
 from . import selectors
-from .models import Enquiry, Notification, Offer, Service
+from .models import BillingProfile, Enquiry, Notification, Offer, Service
 from .selectors import (
+    client_invoice_for,
     export_payload,
     invoice_for,
     live_contract_for,
@@ -217,11 +218,37 @@ class OnboardingView(APIView):
         return Response({"next": "/dashboard"}, status=status.HTTP_201_CREATED)
 
 
+def _resolve_invoice(user, reference: str | None, number: str):
+    """
+    The invoice this request is about, or None.
+
+    TWO WAYS IN, ONE ANSWER, AND BOTH ARE SCOPED.
+
+    · `/invoices/<number>` — the canonical route. Scoped through the user's
+      organisations, which is the only way a DIRECT invoice can be reached at
+      all: a renewal or an afternoon's work has no order, so an order-nested
+      route cannot address it, and until this existed a client could be sent a
+      bill their own portal insisted did not exist.
+
+    · `/orders/<reference>/invoices/<number>` — kept, and kept STRICT. It still
+      requires the invoice to belong to that order rather than merely to the
+      same client, because a route that quietly ignores half its own path is
+      one nobody can reason about later.
+
+    Neither starts from Invoice. An invoice number is sequential and therefore
+    guessable, so a query beginning at Invoice would hand one client another's
+    billing document the first time somebody forgot a filter.
+    """
+    if reference:
+        return invoice_for(user, reference, number)
+    return client_invoice_for(user, number)
+
+
 class InvoiceDocumentView(APIView):
     """
     One invoice, as a printable document.
 
-    404 for an invoice on someone else's order — the same answer as for one
+    404 for an invoice on someone else's account — the same answer as for one
     that does not exist. Invoice numbers are sequential and therefore guessable,
     so a 403 here would confirm which numbers are real, which is an enumeration
     oracle over how much business Genmars is doing and for whom.
@@ -229,8 +256,8 @@ class InvoiceDocumentView(APIView):
 
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, reference: str, number: str):
-        invoice = invoice_for(request.user, reference, number)
+    def get(self, request, number: str, reference: str | None = None):
+        invoice = _resolve_invoice(request.user, reference, number)
         if invoice is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -239,9 +266,14 @@ class InvoiceDocumentView(APIView):
             InvoiceDocumentSerializer(
                 {
                     "invoice": invoice,
+                    # None for a direct invoice, and the serializer renders the
+                    # absence rather than inventing a project.
                     "order": order,
-                    "contract": live_contract_for(order),
-                }
+                    "contract": live_contract_for(order) if order else None,
+                },
+                # Read once per request, not once per field. The profile is a
+                # single row and the serializer touches it from two methods.
+                context={"billing": BillingProfile.load()},
             ).data
         )
 
@@ -259,8 +291,8 @@ class InvoicePayView(APIView):
     throttle_scope = "mpesa"
     throttle_classes = [MpesaThrottle]
 
-    def post(self, request, reference: str, number: str):
-        invoice = invoice_for(request.user, reference, number)
+    def post(self, request, number: str, reference: str | None = None):
+        invoice = _resolve_invoice(request.user, reference, number)
         if invoice is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 
@@ -311,8 +343,8 @@ class InvoicePaymentStatusView(APIView):
 
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, reference: str, number: str):
-        invoice = invoice_for(request.user, reference, number)
+    def get(self, request, number: str, reference: str | None = None):
+        invoice = _resolve_invoice(request.user, reference, number)
         if invoice is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
 

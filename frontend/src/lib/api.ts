@@ -340,12 +340,18 @@ export type InvoiceDocument = {
         otherwise while it is false — see settings.py. */
     stk_available: boolean;
   };
+  /**
+   * NULL for a direct invoice — a renewal, an afternoon's work, something
+   * billed to a past client with no project behind it. The absence is the
+   * honest representation and the page renders it as one, rather than showing
+   * a project that does not exist in the system.
+   */
   order: {
     reference: string;
     title: string;
     contract_reference: string | null;
     contract_signed_on: string | null;
-  };
+  } | null;
 };
 
 export type OrderDetail = OrderSummary & {
@@ -414,22 +420,29 @@ export const portal = {
       "/orders",
     ),
   order: (reference: string) => get<OrderDetail>(`/orders/${reference}`),
-  invoice: (reference: string, number: string) =>
-    get<InvoiceDocument>(`/orders/${reference}/invoices/${number}`),
+  /**
+   * One invoice as a document, addressed by number alone.
+   *
+   * FLAT, not nested under the order. Not every invoice has one — a renewal
+   * or an afternoon's work is billed straight to a past client — and those
+   * could not be addressed under /orders/<reference>/ at all, which is how a
+   * client ended up with a bill their own portal could not open.
+   */
+  invoice: (number: string) => get<InvoiceDocument>(`/invoices/${number}`),
   /** Starts an M-Pesa prompt. 202 means the prompt was SENT, never that it
       was paid — only the callback decides that, so the page polls. */
-  payInvoice: (reference: string, number: string, phone: string) =>
+  payInvoice: (number: string, phone: string) =>
     post<{ status: string; phone_tail: string; detail: string }>(
-      `/orders/${reference}/invoices/${number}/pay`,
+      `/invoices/${number}/pay`,
       { phone },
     ),
-  paymentStatus: (reference: string, number: string) =>
+  paymentStatus: (number: string) =>
     get<{
       invoice_status: "issued" | "paid" | "void";
       paid_on: string | null;
       payment_reference: string;
       attempt: { status: string; result_desc: string; receipt: string } | null;
-    }>(`/orders/${reference}/invoices/${number}/payment-status`),
+    }>(`/invoices/${number}/payment-status`),
   /**
    * Every invoice addressed to this client, including ones with no order.
    *

@@ -101,3 +101,20 @@ class CanManageAccess(IsStaff):
 
     def has_permission(self, request, view) -> bool:
         return super().has_permission(request, view) and request.user.can_manage_access
+
+
+class CanConfigureBilling(IsStaff):
+    """
+    Edit the company's own billing identity.
+
+    FOUNDER ONLY. Separate from CanCommit, which is about binding the company
+    to a price: this is about which account the money arrives in. Changing the
+    paybill or the bank details silently redirects every invoice issued after
+    it, from a document that otherwise looks entirely correct, and the first
+    sign of trouble is a client insisting they paid.
+    """
+
+    message = "Only a founder can change the company's billing details."
+
+    def has_permission(self, request, view) -> bool:
+        return super().has_permission(request, view) and request.user.can_configure_billing

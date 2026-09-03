@@ -1135,3 +1135,295 @@ def test_a_tier_slug_may_repeat_across_services(client, client_user):
         )
 
     assert ServiceTier.objects.filter(slug="enterprise").count() == 2
+
+
+# ── every invoice is a document the client can open ──────────────────────────
+#
+# The document route used to be nested under the order, which meant a DIRECT
+# invoice — a renewal, an afternoon's work — could be listed on the client's
+# invoices page and then had nowhere to open. They were sent a bill their own
+# portal could not show them.
+
+
+def test_a_client_opens_a_direct_invoice_as_a_document(client, signed, staff, client_user):
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Domain renewal paid on their behalf",
+        amount_kes=Decimal("2400.00"),
+    )
+
+    client.force_login(client_user)
+    response = client.get(reverse("invoice-document-flat", args=[invoice.number]))
+
+    assert response.status_code == 200, response.content
+    body = response.json()
+    assert body["invoice"]["number"] == invoice.number
+    # The organisation comes off the INVOICE. Reading it through the order —
+    # which is how this worked before — is an AttributeError on exactly the
+    # documents this route was added to serve.
+    assert body["billed_to"]["organisation"] == signed.organisation.name
+    # Null, not a fabricated shell. There is no project, and saying so is the
+    # honest representation (Charter 04 §IV).
+    assert body["order"] is None
+
+
+def test_an_order_backed_invoice_still_carries_its_order(client, signed, staff, client_user):
+    invoice = services.issue_invoice(
+        order=signed, actor=staff, milestone=signed.milestones.first()
+    )
+
+    client.force_login(client_user)
+    response = client.get(reverse("invoice-document-flat", args=[invoice.number]))
+
+    assert response.status_code == 200, response.content
+    assert response.json()["order"]["reference"] == signed.reference
+
+
+def test_the_flat_document_route_is_scoped_to_the_client(client, signed, staff):
+    """
+    404, not 403. Invoice numbers are sequential and guessable, so a 403 would
+    confirm which ones are real — an enumeration oracle over how much business
+    Genmars is doing and for whom.
+    """
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Ad hoc", amount_kes=Decimal("5000.00"),
+    )
+
+    other_org = Organisation.objects.create(name="Somebody Else Ltd")
+    outsider = User.objects.create_user(
+        email="outsider@example.com", password=PASSWORD, full_name="Outsider",
+        email_verified_at=timezone.now(),
+    )
+    Membership.objects.create(user=outsider, organisation=other_org)
+
+    client.force_login(outsider)
+    for name in ("invoice-document-flat", "invoice-payment-status-flat"):
+        response = client.get(reverse(name, args=[invoice.number]))
+        assert response.status_code == 404, f"{name} -> {response.status_code}"
+
+    response = client.post(
+        reverse("invoice-pay-flat", args=[invoice.number]),
+        {"phone": "254700000000"}, content_type="application/json",
+    )
+    assert response.status_code == 404
+
+
+def test_the_flat_document_route_needs_a_signed_in_account(client, signed, staff):
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Ad hoc", amount_kes=Decimal("5000.00"),
+    )
+    response = client.get(reverse("invoice-document-flat", args=[invoice.number]))
+    assert response.status_code in (401, 403)
+
+
+def test_the_nested_document_route_stays_strict_about_its_order(
+    client, signed, staff, client_user
+):
+    """
+    A route that quietly ignores half its own path is one nobody can reason
+    about later. The invoice below belongs to this client but not to the order
+    in the URL, and that is still a 404.
+    """
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Ad hoc", amount_kes=Decimal("5000.00"),
+    )
+
+    client.force_login(client_user)
+    response = client.get(
+        reverse("invoice-document", args=[signed.reference, invoice.number])
+    )
+    assert response.status_code == 404
+
+
+# ── the company's own billing identity ───────────────────────────────────────
+#
+# These values are printed on documents clients pay against, and one of them
+# decides which account the money lands in. So the tests here are about who
+# may change them, what gets recorded when they do, and what an invoice says
+# while they are still blank.
+
+
+@pytest.fixture
+def founder() -> User:
+    return User.objects.create_user(
+        email="founder@genmars.co.ke", password=PASSWORD, full_name="The Founder",
+        is_staff=True, staff_role=User.StaffRole.FOUNDER,
+        email_verified_at=timezone.now(),
+    )
+
+
+def test_any_staff_account_may_read_the_billing_profile(client, staff):
+    """
+    Raising an invoice without being able to see what it will say about how to
+    pay is how a bill goes out with no payment details on it.
+    """
+    client.force_login(staff)
+    response = client.get(reverse("ops-billing-profile"))
+
+    assert response.status_code == 200, response.content
+    body = response.json()
+    assert body["stored"]["kra_pin"] == ""
+    # A commercial account may look, and must not be offered a Save button
+    # that would 403 — a control that exists and refuses reads as a bug.
+    assert body["may_edit"] is False
+
+
+def test_only_a_founder_may_change_the_billing_details(client, staff, client_user):
+    from portal.models import BillingProfile
+
+    payload = {"mpesa_paybill": "247247"}
+
+    client.force_login(staff)
+    assert client.put(
+        reverse("ops-billing-profile"), payload, content_type="application/json"
+    ).status_code == 403
+
+    client.force_login(client_user)
+    assert client.put(
+        reverse("ops-billing-profile"), payload, content_type="application/json"
+    ).status_code == 403
+
+    # And nothing was written by either attempt.
+    assert BillingProfile.load().mpesa_paybill == ""
+
+
+def test_a_founder_sets_the_billing_details_and_the_change_is_attributed(client, founder):
+    from portal.models import ActivityLog
+
+    client.force_login(founder)
+    response = client.put(
+        reverse("ops-billing-profile"),
+        {
+            "kra_pin": "P051234567X",
+            "mpesa_paybill": "247247",
+            "mpesa_account_hint": "GEN{number}",
+        },
+        content_type="application/json",
+    )
+
+    assert response.status_code == 200, response.content
+    body = response.json()
+    assert body["stored"]["kra_pin"] == "P051234567X"
+    assert body["updated_by"] == "The Founder"
+
+    entry = ActivityLog.objects.get(action=ActivityLog.Action.BILLING_CHANGED)
+    assert entry.actor == founder
+    assert set(entry.detail["fields"]) == {
+        "kra_pin", "mpesa_paybill", "mpesa_account_hint",
+    }
+    # Field NAMES, never values. The log is what a fraudulent change is
+    # investigated with; storing the new account details in it adds a second
+    # place to read them from and nothing to the investigation.
+    assert "247247" not in str(entry.detail)
+    assert "247247" not in entry.summary
+
+
+def test_saving_the_form_unchanged_records_nothing(client, founder):
+    from portal.models import ActivityLog
+
+    client.force_login(founder)
+    payload = {"kra_pin": "P051234567X"}
+    client.put(reverse("ops-billing-profile"), payload, content_type="application/json")
+    client.put(reverse("ops-billing-profile"), payload, content_type="application/json")
+
+    # A log that fills with entries recording no change is one nobody reads.
+    assert ActivityLog.objects.filter(
+        action=ActivityLog.Action.BILLING_CHANGED
+    ).count() == 1
+
+
+def test_a_paybill_must_be_digits_and_an_account_hint_must_carry_the_number(client, founder):
+    client.force_login(founder)
+
+    response = client.put(
+        reverse("ops-billing-profile"),
+        {"mpesa_paybill": "247 247"},
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+    assert "digits" in str(response.json()).lower()
+
+    response = client.put(
+        reverse("ops-billing-profile"),
+        {"mpesa_account_hint": "GENMARS"},
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+    # Without {number} every client types the same reference and no payment can
+    # be matched to a bill without a phone call.
+    assert "{number}" in str(response.json())
+
+
+def test_there_is_only_ever_one_billing_profile(founder):
+    from portal.models import BillingProfile
+
+    BillingProfile.objects.create(legal_name="First")
+    BillingProfile.objects.create(legal_name="Second")
+
+    assert BillingProfile.objects.count() == 1
+    assert BillingProfile.load().legal_name == "Second"
+
+
+def test_the_invoice_document_prints_the_profile_over_the_setting(
+    client, signed, staff, client_user, founder, settings
+):
+    """
+    The BILLING_* settings stay a valid way to set a value; they simply stop
+    being the only one. A typed value wins, and a blank field falls back
+    rather than blanking the document.
+    """
+    settings.BILLING_LEGAL_NAME = "Genmars Tech Limited"
+    settings.BILLING_MPESA_PAYBILL = ""
+
+    client.force_login(founder)
+    client.put(
+        reverse("ops-billing-profile"),
+        {"mpesa_paybill": "247247", "mpesa_account_hint": "GEN{number}"},
+        content_type="application/json",
+    )
+
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Domain renewal", amount_kes=Decimal("2400.00"),
+    )
+
+    client.force_login(client_user)
+    body = client.get(
+        reverse("invoice-document-flat", args=[invoice.number])
+    ).json()
+
+    assert body["payment"]["mpesa_paybill"] == "247247"
+    # The invoice number in the account field is what makes a payment
+    # reconcilable without a phone call.
+    assert body["payment"]["mpesa_account"] == f"GEN{invoice.number}"
+    # Not set on the profile, so the configured default still prints.
+    assert body["biller"]["legal_name"] == "Genmars Tech Limited"
+
+
+def test_an_unset_billing_field_is_omitted_rather_than_guessed(
+    client, signed, staff, client_user, settings
+):
+    """
+    Charter 04 §IV. A document with no payment details says so plainly and
+    points at the named contact, which is survivable. One carrying a
+    plausible-looking wrong paybill is not — it gets paid, elsewhere.
+    """
+    settings.BILLING_KRA_PIN = ""
+    settings.BILLING_MPESA_PAYBILL = ""
+    settings.BILLING_BANK_DETAILS = ""
+
+    invoice = services.issue_direct_invoice(
+        organisation=signed.organisation, actor=staff,
+        description="Ad hoc", amount_kes=Decimal("5000.00"),
+    )
+
+    client.force_login(client_user)
+    body = client.get(reverse("invoice-document-flat", args=[invoice.number])).json()
+
+    assert body["biller"]["kra_pin"] is None
+    assert body["payment"]["mpesa_paybill"] is None
+    assert body["payment"]["mpesa_account"] is None
+    assert body["payment"]["bank_details"] is None

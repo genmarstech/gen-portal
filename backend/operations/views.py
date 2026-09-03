@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from accounts.mail_health import mail_health
 from accounts.models import Membership, Organisation, User
 from portal.models import (
+    BillingProfile,
     ActivityLog,
     Blocker,
     Contract,
@@ -45,8 +46,15 @@ from portal.models import (
 from portal.system_api import issue_key
 
 from . import selectors, services
-from .permissions import CanCommit, CanManageAccess, CanQualify, IsStaff
+from .permissions import (
+    CanCommit,
+    CanConfigureBilling,
+    CanManageAccess,
+    CanQualify,
+    IsStaff,
+)
 from .serializers import (
+    BillingProfileSerializer,
     ActivitySerializer,
     SecurityCheckSerializer,
     SecurityCheckWriteSerializer,
@@ -1450,3 +1458,72 @@ class TicketStateView(StaffView):
             return _refuse(exc)
         return Response(TicketSerializer(ticket).data)
 
+
+
+
+class BillingProfileView(StaffView):
+    """
+    The company's own billing identity — what every invoice prints.
+
+    ── READ IS STAFF, WRITE IS FOUNDER ────────────────────────────────────────
+
+    Anyone in operations may READ this, and should: raising an invoice without
+    being able to see what it will say about how to pay is how a bill goes out
+    with no payment details on it.
+
+    Writing is founder-only (CanConfigureBilling), and not because it is
+    commercially sensitive — it is printed on every invoice. It is because
+    changing the paybill or the bank details redirects the money from a
+    document that still looks entirely correct, which is the highest-value
+    write in this system and the one whose author must be recorded.
+    """
+
+    def get(self, request):
+        return Response(self._body(BillingProfile.load()))
+
+    def put(self, request):
+        # Checked here rather than on the class so GET stays open to staff.
+        # Two views over one row would be the alternative, and then one of them
+        # eventually gets the wrong permission.
+        permission = CanConfigureBilling()
+        if not permission.has_permission(request, self):
+            return Response({"detail": permission.message}, status=http.HTTP_403_FORBIDDEN)
+
+        form = BillingProfileSerializer(data=request.data, partial=True)
+        form.is_valid(raise_exception=True)
+        try:
+            profile = services.set_billing_details(
+                actor=request.user, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(self._body(profile))
+
+    def _body(self, profile: BillingProfile) -> dict:
+        return {
+            # Exactly what is stored, so the form never presents a fallback as
+            # a typed value and then saves it as one.
+            "stored": {field: getattr(profile, field) for field in services.BILLING_FIELDS},
+            # What an invoice would print today, fallback applied. This is the
+            # answer to "is it actually set", which is not the same question.
+            "effective": {
+                field: profile.resolve(field) for field in services.BILLING_FIELDS
+            },
+            "updated_at": profile.updated_at,
+            "updated_by": (
+                profile.updated_by.full_name or profile.updated_by.email
+                if profile.updated_by
+                else None
+            ),
+            "may_edit": bool(request_user_may_edit(self.request)),
+        }
+
+
+def request_user_may_edit(request) -> bool:
+    """Whether this staff account may write the billing profile.
+
+    Sent to the client so the form can be read-only for a non-founder rather
+    than offering a Save button that 403s — a control that exists and refuses
+    reads as a bug, where an absent one reads as a rule.
+    """
+    return CanConfigureBilling().has_permission(request, None)

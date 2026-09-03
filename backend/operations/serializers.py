@@ -971,3 +971,42 @@ class SecurityCheckWriteSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=SecurityCheck.Status.choices)
     note = serializers.CharField(required=False, allow_blank=True, default="")
 
+
+
+class BillingProfileSerializer(serializers.Serializer):
+    """
+    The company's own billing identity, as the settings form sees it.
+
+    ── STORED AND EFFECTIVE ARE BOTH SENT ─────────────────────────────────────
+
+    `stored` is exactly what is in the database, so the form shows blanks as
+    blanks and never puts a fallback value into a field somebody is about to
+    save — which would silently copy a setting into the database and make an
+    env var look like a typed one.
+
+    `effective` is what an invoice would actually print today, after the
+    BILLING_* fallback. The form shows it beside each empty field, so "this is
+    blank but invoices still say Genmars Tech Limited" is visible rather than
+    something the founder discovers by issuing one.
+    """
+
+    legal_name = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    kra_pin = serializers.CharField(max_length=20, required=False, allow_blank=True)
+    postal_address = serializers.CharField(
+        max_length=300, required=False, allow_blank=True
+    )
+    mpesa_paybill = serializers.CharField(
+        max_length=20, required=False, allow_blank=True
+    )
+    mpesa_account_hint = serializers.CharField(
+        max_length=60, required=False, allow_blank=True
+    )
+    bank_details = serializers.CharField(required=False, allow_blank=True)
+    terms = serializers.CharField(required=False, allow_blank=True)
+
+    # Shape only — lengths and types. What a paybill has to LOOK like, and why
+    # an account hint must carry {number}, live in services.set_billing_details
+    # with the rest of the rules, so the refusal comes back as {detail, field}
+    # like every other operations refusal rather than as DRF's field-keyed
+    # shape that this app's error handling does not read.

@@ -211,7 +211,7 @@ export default function OrderPage() {
                     department actually needs. */}
                 <Link
                   className={styles.iNumber}
-                  href={`/dashboard/${order.reference}/invoices/${i.number}`}
+                  href={`/invoices/${i.number}`}
                 >
                   {i.number}
                 </Link>

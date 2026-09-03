@@ -12,6 +12,30 @@ urlpatterns = [
     path("enquiries", views.EnquiryCreateView.as_view(), name="enquiry-create"),
     path("dashboard", views.DashboardView.as_view(), name="dashboard"),
     path("invoices", views.InvoiceListView.as_view(), name="invoice-list"),
+    # ── one invoice, by number ──────────────────────────────────────────────
+    #
+    # The canonical route, and flat on purpose. Not every invoice has an order
+    # behind it — a renewal, an afternoon's work, something billed to a past
+    # client — and those cannot be addressed under /orders/<reference>/ at all.
+    # Nesting them there was why a client could be sent a bill their own portal
+    # insisted did not exist.
+    #
+    # The nested routes below are kept and still strict; see _resolve_invoice.
+    path(
+        "invoices/<str:number>",
+        views.InvoiceDocumentView.as_view(),
+        name="invoice-document-flat",
+    ),
+    path(
+        "invoices/<str:number>/pay",
+        views.InvoicePayView.as_view(),
+        name="invoice-pay-flat",
+    ),
+    path(
+        "invoices/<str:number>/payment-status",
+        views.InvoicePaymentStatusView.as_view(),
+        name="invoice-payment-status-flat",
+    ),
     path("support", views.SupportView.as_view(), name="support"),
     path(
         "support/<str:reference>/reply",

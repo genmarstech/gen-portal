@@ -162,6 +162,19 @@ class User(AbstractBaseUser, PermissionsMixin):
         return self.is_staff and self.staff_role == self.StaffRole.FOUNDER
 
     @property
+    def can_configure_billing(self) -> bool:
+        """Change the company's own billing identity — legal name, KRA PIN,
+        paybill, bank details — as it appears on every future invoice.
+
+        FOUNDER ONLY, and for a different reason from the others. This is not
+        a question of who may commit the company; it is that changing the bank
+        details on outgoing invoices is the single highest-value write in this
+        system. An attacker who reaches it does not need to touch the money —
+        clients pay it to them, correctly, from a document that looks right.
+        """
+        return self.is_staff and self.staff_role == self.StaffRole.FOUNDER
+
+    @property
     def is_locked(self) -> bool:
         return self.locked_until is not None and self.locked_until > timezone.now()
 

@@ -1392,6 +1392,12 @@ class ActivityLog(models.Model):
         INCIDENT_RAISED = "incident.raised", "Incident raised"
         INCIDENT_CLOSED = "incident.closed", "Incident closed"
 
+        # Which FIELDS changed, never their values. A paybill or a bank
+        # account in the log is not a secret, but it is the record used to
+        # investigate a fraudulent change, and a log that stores the new
+        # details is one more place they can be read from.
+        BILLING_CHANGED = "billing.changed", "Billing details changed"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2244,3 +2250,150 @@ class SecurityCheck(models.Model):
             and not self.note.strip()
         )
 
+
+
+class BillingProfile(models.Model):
+    """
+    Who Genmars is, on a document somebody pays against.
+
+    ══════════════════════════════════════════════════════════════════════════
+    A SINGLE ROW. There is one company, so there is one of these.
+
+    Enforced by `pk = 1` on save rather than by a `singleton` boolean somebody
+    could set twice. A second billing identity is not a feature request, it is
+    a bug: two rows here means two different paybills can appear on invoices
+    depending on which one a query happened to return first, and nobody would
+    notice until a client paid the wrong one.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY THIS IS A MODEL AND NOT JUST THE ENV VARS ──────────────────────────
+
+    These arrived as BILLING_* settings, which was right while nobody had the
+    values: a setting with no value is obviously unset. But they are business
+    facts, not deployment facts. A KRA PIN does not change per environment, it
+    is not a secret, and asking the founder to edit a .env on a server and
+    restart gunicorn to correct a typo in a postal address is how a wrong
+    address stays on invoices for a month.
+
+    So this holds them, and `resolve()` below falls back to the settings for
+    any field left blank. Nothing breaks on the way through, and the env vars
+    remain a valid way to set a value — they simply stop being the only one.
+
+    ── BLANK STILL MEANS OMITTED, NEVER GUESSED ───────────────────────────────
+
+    Unchanged from the settings, and it is the point of the whole arrangement:
+    an invoice shows what it has been told and no more. A document with no
+    payment details says so plainly and points at the named contact, which is
+    survivable. One carrying a plausible-looking wrong paybill is not, because
+    it is paid, and the money goes somewhere else (Charter 04 §IV).
+
+    ── WHO MAY EDIT IT ────────────────────────────────────────────────────────
+
+    Founder only — see operations/permissions.py. Changing the bank details on
+    every future invoice is the single highest-value write in this system, and
+    `updated_by` records who made it, because a payment-detail change nobody
+    can attribute is indistinguishable from a compromise.
+    """
+
+    legal_name = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="The registered name, as it should appear on an invoice.",
+    )
+    email = models.EmailField(
+        blank=True,
+        help_text="Where billing questions go. Shown on every invoice.",
+    )
+    kra_pin = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Required on a Kenyan tax invoice. Omitted from the document until set.",
+    )
+    postal_address = models.CharField(max_length=300, blank=True)
+
+    mpesa_paybill = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Paybill or till number.",
+    )
+    # {number} is replaced with the invoice number. Putting the invoice number
+    # in the account field is what makes a payment reconcilable without a
+    # phone call, so the placeholder is the default rather than a suggestion.
+    mpesa_account_hint = models.CharField(
+        max_length=60,
+        blank=True,
+        help_text="What the client types in the account field. {number} becomes the invoice number.",
+    )
+    # One free-text field rather than five, because bank details vary in shape
+    # and a rigid schema would force a wrong one.
+    bank_details = models.TextField(
+        blank=True,
+        help_text="Bank, branch, account name and number, as they should be typed.",
+    )
+    terms = models.TextField(blank=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        limit_choices_to={"is_staff": True},
+    )
+
+    class Meta:
+        verbose_name = "billing profile"
+        verbose_name_plural = "billing profile"
+
+    def __str__(self) -> str:
+        return self.legal_name or "Billing profile (unset)"
+
+    def save(self, *args, **kwargs):
+        # The singleton, enforced where it cannot be forgotten. Not in a
+        # serializer, not in a view: any code path that saves one of these
+        # saves the one that exists.
+        self.pk = 1
+        # `objects.create()` asks for force_insert, which on the second call
+        # would raise UNIQUE rather than update the row — an IntegrityError
+        # from a model whose whole promise is that there is only one of it.
+        # Dropped so that every write to this table is an upsert of row 1.
+        kwargs.pop("force_insert", None)
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "BillingProfile":
+        """
+        The profile, creating an empty one the first time.
+
+        Never returns None. A caller that had to handle "no profile yet"
+        separately from "profile with blank fields" would have two code paths
+        for the same situation, and the rarer one would be the one with the bug.
+        """
+        profile, _ = cls.objects.get_or_create(pk=1)
+        return profile
+
+    def resolve(self, field: str) -> str:
+        """
+        This profile's value for `field`, or the configured default.
+
+        Falls back to `settings.BILLING_<FIELD>` when the stored value is
+        blank, so the env vars keep working and a half-filled profile is not
+        worse than an empty one.
+        """
+        stored = (getattr(self, field, "") or "").strip()
+        if stored:
+            return stored
+        return (getattr(settings, f"BILLING_{field.upper()}", "") or "").strip()
+
+    def account_reference(self, invoice_number: str) -> str | None:
+        """
+        What to type in the M-Pesa account field for this invoice.
+
+        None when there is no paybill: an account reference for a paybill that
+        does not exist is an instruction to pay nowhere.
+        """
+        if not self.resolve("mpesa_paybill"):
+            return None
+        hint = self.resolve("mpesa_account_hint") or "{number}"
+        return hint.replace("{number}", invoice_number)

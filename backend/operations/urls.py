@@ -29,6 +29,14 @@ urlpatterns = [
         views.AnyInvoiceVoidView.as_view(),
         name="ops-invoice-void-flat",
     ),
+    # The company's own billing identity. Read by any staff account, written
+    # only by a founder — see BillingProfileView.
+    path(
+        "ops/billing-profile",
+        views.BillingProfileView.as_view(),
+        name="ops-billing-profile",
+    ),
+
     path(
         "ops/notifications",
         views.StaffNotificationView.as_view(),

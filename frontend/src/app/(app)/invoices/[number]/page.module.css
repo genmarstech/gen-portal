@@ -231,7 +231,16 @@
 }
 
 .printHint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
   margin-bottom: var(--sp-12);
+}
+
+.printNote {
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
 }
 
 .printButton {
