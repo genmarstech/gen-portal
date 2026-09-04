@@ -433,6 +433,7 @@ Record each successful run:
 | 2026-09-02 | `portal-20260902-164927.dump` | Passed — 17 tables, now including the payment ledger. Taken after the invoicing deploy, per the rule below | Payments deploy |
 | 2026-09-02 | `portal-20260902-224623.dump` | Passed. Also the run that fixed permissions: all 17 dumps were mode 644 on a shared host and are now 600, directory 700 | Backup hardening |
 | 2026-09-02 | `portal-20260902-225850.dump.gpg` | **Off-box drill.** Pulled to a machine holding the private key, decrypted, and restored clean: 5 contracts, 3 invoices, 3 payments, 2 tickets, 4 orders, 5 users | First off-box restore |
+| 2026-09-04 | `portal-20260904-072037.dump` | Dump taken immediately after the workroom deploy, per the rule below. 40 tables, now including `portal_billingprofile`, `portal_decision` and `portal_shift`. Verified by `pg_restore --list`; **not yet restore-tested**, and there is no encrypted copy of it until the timer runs — see the note under this table | Workroom deploy |
 
 ### The off-box drill
 
@@ -452,6 +453,21 @@ Do not skip it. `gpg` will encrypt happily to a key whose private half was lost
 months ago, and every copy since would be unreadable with nothing anywhere
 saying so. Losing the private key means losing every encrypted backup, with no
 recovery and nobody to appeal to.
+
+> **A dump taken by hand is not an encrypted dump.** `scripts/backup.sh` reads
+> `BACKUP_RECIPIENT` from the environment, and the systemd unit supplies it via
+> `EnvironmentFile=/opt/gen-portal/.env`. Run the script directly from a shell
+> and that variable is absent: you get a correct plaintext dump, a loud warning,
+> and **no off-box copy**. Prefer the unit, which does both:
+>
+> ```bash
+> sudo systemctl start genmars-portal-backup.service
+> ```
+>
+> Recorded on 2026-09-04, when a hand-run during a deploy produced exactly that
+> warning and briefly read as the encryption being broken. It was not — the
+> nightly timer's copies were present and current. The lesson is that the
+> warning is about *how the script was invoked*, not about the configuration.
 
 **Take a dump immediately after any deploy that adds tables.** The 2026-09-02
 failure above is the reason: for roughly nine hours the portal held contracts,
