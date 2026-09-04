@@ -40,6 +40,7 @@ from .selectors import (
     orders_for,
 )
 from .serializers import (
+    ClientHostingSerializer,
     OfferDocumentSerializer,
     ClientBlockerSerializer,
     ClientInvoiceSerializer,
@@ -810,6 +811,22 @@ class DashboardView(APIView):
             {
                 "waiting_on_you": ClientBlockerSerializer(blockers, many=True).data,
                 "systems": ClientSystemSerializer(systems, many=True).data,
+                # ── what is still running ────────────────────────────────────
+                #
+                # Once past work started being recorded here, a client's order
+                # list became things finished years ago mixed with things still
+                # live, in one undifferentiated column — and "is this retainer
+                # still running" was answerable only by reading every row.
+                "ongoing": OrderListSerializer(
+                    selectors.ongoing_work_for(request.user), many=True
+                ).data,
+                # Charter 05 §VIII. A promise that we do not hold domains
+                # hostage is worth little if the client cannot see which of
+                # their accounts is in our name — see ClientHostingSerializer
+                # for what this deliberately leaves out.
+                "hosting": ClientHostingSerializer(
+                    selectors.hosting_for_client(request.user), many=True
+                ).data,
             }
         )
 

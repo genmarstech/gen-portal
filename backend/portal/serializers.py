@@ -18,6 +18,7 @@ from django.utils import timezone
 from .models import (
     Blocker,
     Contract,
+    HostingArrangement,
     Invoice,
     Milestone,
     Notification,
@@ -70,9 +71,18 @@ class MilestoneSerializer(serializers.ModelSerializer):
 class OrderListSerializer(serializers.ModelSerializer):
     status_label = serializers.CharField(source="get_status_display", read_only=True)
 
+    # The shape of the work, so a client can tell an ongoing retainer from a
+    # project that finished. Without it their list is things delivered years
+    # ago and things still live in one undifferentiated column.
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+
     class Meta:
         model = Order
-        fields = ["reference", "title", "status", "status_label", "target_date"]
+        fields = [
+            "reference", "title", "status", "status_label",
+            "kind", "kind_label", "started_on", "completed_on",
+            "target_date",
+        ]
         read_only_fields = fields
 
 
@@ -767,3 +777,71 @@ class OfferDocumentSerializer(serializers.Serializer):
             "standing_terms": profile.resolve("terms") or None,
             "next_step": offer.next_step.strip() or None,
         }
+
+
+class ClientHostingSerializer(serializers.ModelSerializer):
+    """
+    A domain, mailbox or hosting plan we run for this client, as they see it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    WHAT IS HERE, AND THE TWO FIELDS THAT ARE DELIBERATELY NOT.
+
+    `account_holder` is the reason this serializer exists. Charter 05 §VIII
+    says we do not hold domains or accounts hostage, and a client who cannot
+    see which of their accounts is in our name has to take that on trust. This
+    is the promise being kept rather than asserted, and it is exactly the fact
+    people discover at the worst possible moment — when they want to move, or
+    when something has expired and we are unreachable.
+
+    `renews_on` is here for the same reason. A renewal date they can see is a
+    renewal they can chase us about.
+
+    NOT HERE, and neither is an oversight:
+
+      · `annual_cost_kes` — what the domain costs US. That is our margin, and
+        publishing it turns every renewal into a negotiation about markup
+        rather than about the service. What they pay is theirs to see; what we
+        pay is not theirs to price.
+
+      · `notes` — internal working notes, in the same category as the contact
+        log. Written honestly because nobody outside Genmars reads them, and
+        they stop being written honestly the week that changes.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    holder_label = serializers.CharField(
+        source="get_account_holder_display", read_only=True
+    )
+    annual_charge_kes = serializers.DecimalField(
+        max_digits=10, decimal_places=2, coerce_to_string=True, read_only=True
+    )
+    days_until_renewal = serializers.SerializerMethodField()
+    in_our_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HostingArrangement
+        fields = [
+            "kind",
+            "kind_label",
+            "identifier",
+            "provider",
+            "account_holder",
+            "holder_label",
+            "in_our_name",
+            "renews_on",
+            "days_until_renewal",
+            "auto_renew",
+            "annual_charge_kes",
+        ]
+        read_only_fields = fields
+
+    def get_days_until_renewal(self, arrangement) -> int | None:
+        return arrangement.days_until_renewal()
+
+    def get_in_our_name(self, arrangement) -> bool:
+        """
+        The Charter 05 §VIII fact as a boolean, so the page can lead with it
+        rather than make the reader decode a label.
+        """
+        return arrangement.account_holder == HostingArrangement.Holder.GENMARS

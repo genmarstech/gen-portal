@@ -180,3 +180,59 @@
   font-size: 0.75rem;
   color: var(--ink-faint);
 }
+
+/* ---------- still running ---------- */
+
+.running,
+.hosting {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-block: var(--sp-3);
+  border-top: 1px solid var(--rule);
+}
+
+.running:first-child,
+.hosting:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.runningMeta,
+.hostingMeta {
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.hostingName {
+  font-size: 0.9375rem;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Whose name the account is in gets its own line and its own weight — it is
+ * the Charter 05 §VIII fact, not a detail about a registrar. The case where
+ * WE hold it is the one that carries a consequence for the reader, so that is
+ * the one that is emphasised.
+ */
+.heldByUs {
+  margin-top: 0.3rem;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-radius: var(--radius);
+}
+
+.heldByYou {
+  margin-top: 0.2rem;
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+.renews {
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}

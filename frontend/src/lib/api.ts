@@ -111,6 +111,12 @@ export type OrderSummary = {
   title: string;
   status: string;
   status_label: string;
+  /** A project finishes; a retainer does not. Without this a client's list is
+      work delivered years ago mixed with work still live, in one column. */
+  kind: "project" | "retainer" | "updates" | "hosting";
+  kind_label: string;
+  started_on: string | null;
+  completed_on: string | null;
   target_date: string | null;
 };
 
@@ -378,6 +384,32 @@ export type InvoiceDocument = {
   } | null;
 };
 
+/**
+ * Something Genmars runs or renews on the client's behalf.
+ *
+ * `in_our_name` is the field this exists for. Charter 05 §VIII — a domain
+ * registered to Genmars is one the client cannot take with them without asking
+ * us, and a promise not to hold anything hostage is worth little if they
+ * cannot see which accounts that applies to.
+ *
+ * There is no cost figure here and there must not be one: what they pay is
+ * theirs to see, what it costs us is not theirs to price.
+ */
+export type YourHosting = {
+  kind: string;
+  kind_label: string;
+  identifier: string;
+  provider: string;
+  account_holder: "client" | "genmars";
+  holder_label: string;
+  in_our_name: boolean;
+  renews_on: string | null;
+  /** Negative once it has lapsed. */
+  days_until_renewal: number | null;
+  auto_renew: boolean;
+  annual_charge_kes: string | null;
+};
+
 export type OrderDetail = OrderSummary & {
   organisation: string;
   scope: string;
@@ -495,7 +527,14 @@ export const portal = {
   catalogue: () => get<{ services: CatalogueService[] }>("/services"),
 
   dashboard: () =>
-    get<{ waiting_on_you: WaitingOnYou[]; systems: YourSystem[] }>("/dashboard"),
+    get<{
+      waiting_on_you: WaitingOnYou[];
+      systems: YourSystem[];
+      /** Work still running, separated from everything already delivered. */
+      ongoing: OrderSummary[];
+      /** Domains, mailboxes and hosting Genmars runs or renews for them. */
+      hosting: YourHosting[];
+    }>("/dashboard"),
 
   support: () => get<{ tickets: Ticket[] }>("/support"),
   raiseTicket: (body: { subject: string; body: string; order?: string }) =>

@@ -26,6 +26,7 @@ from accounts.models import User
 from portal.models import (
     Blocker,
     Contract,
+    HostingArrangement,
     Offer,
     Invoice,
     Order,
@@ -325,6 +326,59 @@ def waiting_on_client(user: User) -> QuerySet[Blocker]:
         )
         .select_related("order")
         .order_by("raised_at")
+    )
+
+
+def ongoing_work_for(user: User) -> QuerySet[Order]:
+    """
+    Work that is still running: retainers, upkeep, and open projects.
+
+    ══════════════════════════════════════════════════════════════════════════
+    A CLIENT SHOULD NOT HAVE TO ASK WHAT THEY ARE STILL PAYING FOR.
+
+    Once past work started being recorded here, a client's order list became a
+    mixture of things finished years ago and things still live, in one
+    undifferentiated column. The commonest question a client has about a
+    retainer — "is this still running, and what does it cover" — was answerable
+    only by reading every row and inferring.
+
+    An arrangement somebody is paying for and cannot easily see is the shape of
+    a bad supplier relationship, whether or not anybody intended it.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    return orders_for(user).filter(
+        status__in=[Order.Status.SCOPING, Order.Status.ACTIVE, Order.Status.REVIEW]
+    )
+
+
+def hosting_for_client(user: User) -> QuerySet[HostingArrangement]:
+    """
+    Domains, hosting and mailboxes Genmars runs or renews for this client.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CHARTER 05 §VIII — "WE DO NOT HOLD DATA, DOMAINS, OR ACCOUNTS HOSTAGE."
+
+    That promise is worth very little if the client cannot see which of their
+    accounts we hold. A domain registered in Genmars' name is one they cannot
+    take with them without asking us, and until now the only place that fact
+    existed was an operations screen they have no access to.
+
+    Showing it is the promise being kept rather than asserted. It is also the
+    thing most likely to be discovered at the worst moment — when they want to
+    leave, or when we are unreachable and something has expired.
+    ══════════════════════════════════════════════════════════════════════════
+
+    Retired arrangements are excluded: this answers "what is running now". The
+    record of one we used to hold stays in operations, where the question is
+    historical rather than practical.
+    """
+    return (
+        HostingArrangement.objects.filter(
+            organisation_id__in=organisation_ids_for(user),
+            retired_at__isnull=True,
+        )
+        .select_related("system")
+        .order_by("renews_on", "identifier")
     )
 
 
