@@ -1408,6 +1408,16 @@ class ActivityLog(models.Model):
         DECISION_SUPERSEDED = "decision.superseded", "Decision superseded"
         DECISION_REVERSED = "decision.reversed", "Decision reversed"
 
+        # The client record. A conversation is logged because the log IS the
+        # record; the others are logged because they change what we believe
+        # about a client — including who holds their domain.
+        CONTACT_LOGGED = "contact.logged", "Conversation recorded"
+        FOLLOW_UP_CLEARED = "contact.followed_up", "Follow-up cleared"
+        CLIENT_PROFILE_CHANGED = "client.profile_changed", "Client details changed"
+        HOSTING_RECORDED = "hosting.recorded", "Hosting arrangement recorded"
+        HOSTING_CHANGED = "hosting.changed", "Hosting arrangement changed"
+        HOSTING_RETIRED = "hosting.retired", "Hosting arrangement retired"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2635,3 +2645,381 @@ class Decision(models.Model):
     @property
     def is_in_force(self) -> bool:
         return self.status == self.Status.DECIDED
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# THE CLIENT RECORD — who they are, what we run for them, and what was said
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Organisation (accounts/models.py) is IDENTITY: a name, and the thing
+# memberships hang off. It stays that way. Everything below is the commercial
+# and operational relationship, and it lives here because putting a client's
+# phone number and renewal dates in the identity app would make `accounts`
+# the place where everything about a client accumulates — which is how the
+# module that authentication depends on becomes the one nobody can change
+# safely.
+
+
+class ClientProfile(models.Model):
+    """
+    Who this client actually is, beyond a row in an organisations table.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE FILE THAT LIVES IN SOMEBODY'S PHONE TODAY.
+
+    Right now the spa's owner's number, the fact that she prefers WhatsApp to
+    email, and what her business does are in one person's head and one
+    person's contacts app. That is fine until that person is on a plane, and
+    it is the ordinary way a three-person company loses continuity: nothing
+    dramatic happens, somebody simply cannot answer a question they should
+    have been able to.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── NOT A CRM, AND IT MUST NOT GROW INTO ONE ────────────────────────────────
+
+    No pipeline stages, no lead scoring, no last-touched-by, no next-action
+    dates on the client itself. Those belong to work and are already modelled:
+    an Enquiry is a request, an Order is work, a ContactLogEntry is a
+    conversation. What is here is only the part that is true about the client
+    regardless of what is happening this week.
+    """
+
+    class Channel(models.TextChoices):
+        """
+        How this person actually wants to be reached.
+
+        WhatsApp first, and deliberately: it is how most small Kenyan
+        businesses communicate, and emailing a client who reads WhatsApp is a
+        message that technically was sent. Charter 05 §I is about what the
+        client was actually TOLD, and a channel they do not read does not tell
+        them anything.
+        """
+
+        WHATSAPP = "whatsapp", "WhatsApp"
+        CALL = "call", "Phone call"
+        EMAIL = "email", "Email"
+        SMS = "sms", "SMS"
+        IN_PERSON = "in_person", "In person"
+
+    organisation = models.OneToOneField(
+        Organisation, on_delete=models.CASCADE, related_name="profile"
+    )
+
+    what_they_do = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="One line. 'A day spa in Kilimani', not a mission statement.",
+    )
+    website = models.URLField(blank=True)
+
+    # The person, not the company. Small businesses are one person who decides,
+    # and "the client approved it" is worth nothing without their name on it.
+    contact_name = models.CharField(max_length=200, blank=True)
+    contact_role = models.CharField(max_length=120, blank=True)
+    contact_phone = models.CharField(
+        max_length=40,
+        blank=True,
+        help_text="As you would dial it. +254… — the country code is not optional.",
+    )
+    contact_email = models.EmailField(blank=True)
+
+    preferred_channel = models.CharField(
+        max_length=16, choices=Channel.choices, blank=True
+    )
+
+    client_since = models.DateField(
+        null=True, blank=True, help_text="When we started working with them."
+    )
+
+    notes = models.TextField(
+        blank=True,
+        help_text=(
+            "Standing context: how they like to work, what has gone wrong "
+            "before, who else needs to be in the room. NOT a diary — a "
+            "conversation goes in the contact log."
+        ),
+    )
+
+    # ── Charter 04 §V, recorded where the fact belongs ──────────────────────
+    #
+    # "Client-owned software carries the client's brand; Genmars is credited
+    # only with WRITTEN PERMISSION." Until now that permission has been a
+    # boolean in gen-website/src/lib/company.ts, which is a build-time constant
+    # in a different repository — so the record of a promise a client made
+    # lived in a file nobody would think to look in.
+    #
+    # The website still reads its own constant, because it is a static export
+    # and cannot query this. This is the RECORD; that constant is a copy of it,
+    # and `permission_note` is where the evidence is named.
+    may_be_named = models.BooleanField(
+        default=False,
+        help_text="Have they agreed IN WRITING that we may name them publicly?",
+    )
+    permission_note = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text="Where the written permission is — the file in 07-executed/, the date of the email.",
+    )
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self) -> str:
+        return f"Profile for {self.organisation.name}"
+
+
+class HostingArrangement(models.Model):
+    """
+    Something we run, hold or renew on a client's behalf.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS EXISTS FOR ONE DATE: `renews_on`.
+
+    A domain lapses quietly. Nothing fails, no alert fires, and then one
+    morning a client's site is a registrar parking page and their email stops
+    — and to them it is indistinguishable from us having broken something.
+    Recovering a lapsed .co.ke is slow, sometimes expensive, and occasionally
+    impossible if somebody else takes it.
+
+    Every other field here is context for that one. The renewal count is
+    carried on the operations queue for the same reason the weekly-note count
+    is: a date nobody is looking at is the failure mode.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── `account_holder` IS A CHARTER FIELD, NOT ADMIN ──────────────────────────
+
+    Charter 05 §VIII: "We do not hold data, domains, or accounts hostage under
+    any circumstance." A domain registered in Genmars' name is one a client
+    cannot take with them without asking us, and the moment that is convenient
+    for us is the moment it stops being their asset.
+
+    So it is recorded explicitly, per arrangement, and shown on the client's
+    page. Holding one is sometimes the practical answer — a client with no
+    card, or no interest — but it must be a decision somebody made and can see,
+    not a default nobody noticed.
+    """
+
+    class Kind(models.TextChoices):
+        DOMAIN = "domain", "Domain name"
+        HOSTING = "hosting", "Hosting"
+        EMAIL = "email", "Email"
+        CERTIFICATE = "certificate", "TLS certificate"
+        OTHER = "other", "Other"
+
+    class Holder(models.TextChoices):
+        CLIENT = "client", "The client"
+        GENMARS = "genmars", "Genmars"
+
+    organisation = models.ForeignKey(
+        Organisation, on_delete=models.CASCADE, related_name="hosting"
+    )
+    # Optional link to the thing we monitor. Kept nullable because plenty of
+    # arrangements have no System behind them — a domain we renew for a client
+    # whose site somebody else built is still ours to not forget.
+    system = models.ForeignKey(
+        "System",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hosting",
+    )
+
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    identifier = models.CharField(
+        max_length=200,
+        help_text="The domain, the plan, the mailbox. 'clipsserenityspa.co.ke'.",
+    )
+    provider = models.CharField(
+        max_length=120, blank=True, help_text="Registrar or host. Truehost, Hetzner, Zoho."
+    )
+
+    account_holder = models.CharField(
+        max_length=16,
+        choices=Holder.choices,
+        default=Holder.CLIENT,
+        help_text="Whose name the account is in. See this model's docstring — Charter 05 §VIII.",
+    )
+
+    renews_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="The date it lapses if nobody acts. The reason this model exists.",
+    )
+    auto_renew = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether the provider will take payment automatically. False does "
+            "NOT mean it will lapse — it means a person has to act, which is "
+            "exactly what gets forgotten."
+        ),
+    )
+
+    # What it costs us and what they pay. Both, because the pair is the only
+    # way to see an arrangement that is quietly costing us money.
+    annual_cost_kes = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    annual_charge_kes = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+
+    notes = models.TextField(blank=True)
+    retired_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when we stop running it. Never deleted — the history is the record.",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["renews_on", "identifier"]
+        indexes = [
+            models.Index(fields=["renews_on"], name="hosting_renewal_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.identifier} ({self.get_kind_display()})"
+
+    @property
+    def is_live(self) -> bool:
+        return self.retired_at is None
+
+    def days_until_renewal(self, today: date | None = None) -> int | None:
+        if self.renews_on is None or not self.is_live:
+            return None
+        return (self.renews_on - (today or timezone.localdate())).days
+
+
+class ContactLogEntry(models.Model):
+    """
+    A conversation with a client, written down.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE GAP THIS FILLS: EVERYTHING THAT IS NOT A TICKET.
+
+    SupportTicket already records a client asking for help THROUGH THE PORTAL.
+    But the way work actually arrives here is a WhatsApp message on a Saturday,
+    or a call where the owner says "can we add online booking" — and there was
+    nowhere for that to go. It stayed in one person's phone, and the company's
+    record of its own client relationships was a chat history on a device.
+
+    That fails in a specific, expensive way. Somebody agrees to something on a
+    call, nobody writes it down, and three weeks later the client and Genmars
+    remember it differently. Neither is lying. There is simply no record, and
+    the client is the one who paid.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── `follow_up` IS THE PART THAT EARNS ITS PLACE ────────────────────────────
+
+    "I'll send you a quote on Thursday" is the single most common promise made
+    in this company and the single most common one dropped — not through
+    neglect, but because it lived only in the memory of whoever said it. An
+    uncleared follow-up past its date is carried on the operations queue where
+    the weekly-note count is, for the same reason.
+
+    ── INTERNAL. THE CLIENT NEVER SEES THIS ────────────────────────────────────
+
+    Deliberately, and not because there is anything to hide. A log that the
+    client reads is a log people write carefully, and a log people write
+    carefully stops being written. "Owner sounded fed up with the old booking
+    system" is exactly the kind of note that is worth having and would never be
+    typed into something she can open.
+
+    What the client is TOLD is a ProgressNote, which is published, dated and
+    written for them. Two records, two audiences, and neither pretending to be
+    the other — same split as SupportMessage.internal.
+    """
+
+    class Channel(models.TextChoices):
+        WHATSAPP = "whatsapp", "WhatsApp"
+        CALL = "call", "Phone call"
+        EMAIL = "email", "Email"
+        SMS = "sms", "SMS"
+        MEETING = "meeting", "Meeting"
+        OTHER = "other", "Other"
+
+    class Direction(models.TextChoices):
+        INBOUND = "inbound", "They contacted us"
+        OUTBOUND = "outbound", "We contacted them"
+
+    organisation = models.ForeignKey(
+        Organisation, on_delete=models.CASCADE, related_name="contact_log"
+    )
+    # What it was about, when that is a specific thing we already track.
+    order = models.ForeignKey(
+        "Order",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contact_log",
+    )
+
+    channel = models.CharField(max_length=16, choices=Channel.choices)
+    direction = models.CharField(max_length=16, choices=Direction.choices)
+
+    # Editable, and defaulting to now rather than being auto_now_add. A call
+    # gets written up afterwards — often the next morning — and a log that
+    # stamped everything with the moment somebody found time to type it would
+    # put Friday's conversation on Monday and make the order of events wrong.
+    happened_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    # Free text on purpose. The person you spoke to usually has no account here
+    # and may never have one; requiring a User would mean the commonest case
+    # cannot be recorded at all.
+    with_whom = models.CharField(
+        max_length=200, blank=True, help_text="Who at the client. A name, not an account."
+    )
+
+    summary = models.CharField(max_length=300, help_text="One line. What it was about.")
+    detail = models.TextField(blank=True, help_text="What was actually said.")
+
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="contact_log",
+        limit_choices_to={"is_staff": True},
+    )
+    # Survives the account being deactivated, for the ActivityLog reason.
+    recorded_by_label = models.CharField(max_length=200, blank=True)
+
+    # ── what we owe them as a result ────────────────────────────────────────
+    follow_up = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text="What WE said we would do. Blank when the answer is nothing.",
+    )
+    follow_up_by = models.DateField(null=True, blank=True)
+    cleared_at = models.DateTimeField(null=True, blank=True)
+    cleared_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="follow_ups_cleared",
+        limit_choices_to={"is_staff": True},
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-happened_at", "-id"]
+        indexes = [
+            models.Index(fields=["organisation", "-happened_at"], name="contact_org_idx"),
+            models.Index(fields=["follow_up_by", "cleared_at"], name="contact_followup_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.happened_at:%Y-%m-%d} {self.organisation_id} {self.summary[:40]}"
+
+    @property
+    def is_owed(self) -> bool:
+        """A promise made and not yet kept."""
+        return bool(self.follow_up) and self.cleared_at is None
+
+    def is_overdue(self, today: date | None = None) -> bool:
+        if not self.is_owed or self.follow_up_by is None:
+            return False
+        return self.follow_up_by < (today or timezone.localdate())

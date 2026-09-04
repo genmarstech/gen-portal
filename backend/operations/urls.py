@@ -120,6 +120,12 @@ urlpatterns = [
 
     # ---- client accounts ----
     path("ops/organisations", views.OrganisationListView.as_view(), name="ops-organisations"),
+    # The client record: who they are, what we run for them, what was said.
+    path("ops/clients/<int:pk>", views.ClientRecordView.as_view(), name="ops-client"),
+    path("ops/clients/<int:pk>/hosting", views.ClientHostingView.as_view(), name="ops-client-hosting"),
+    path("ops/clients/<int:pk>/contact", views.ContactLogView.as_view(), name="ops-client-contact"),
+    path("ops/hosting/<int:pk>", views.HostingDetailView.as_view(), name="ops-hosting"),
+    path("ops/follow-ups", views.FollowUpView.as_view(), name="ops-follow-ups"),
     path("ops/organisations/<int:pk>/members", views.OrganisationMembersView.as_view(), name="ops-org-members"),
     path("ops/memberships/<int:pk>", views.MembershipDetailView.as_view(), name="ops-membership"),
 

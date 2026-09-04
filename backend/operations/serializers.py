@@ -14,9 +14,12 @@ from accounts.models import Membership, Organisation, User
 from portal.models import (
     ActivityLog,
     Blocker,
+    ClientProfile,
+    ContactLogEntry,
     Contract,
     Decision,
     DeliveryGate,
+    HostingArrangement,
     Enquiry,
     Incident,
     Invoice,
@@ -1151,3 +1154,157 @@ class DecisionActionSerializer(serializers.Serializer):
     options = serializers.CharField(required=False, allow_blank=True)
     consequences = serializers.CharField(required=False, allow_blank=True)
     revisit_when = serializers.CharField(max_length=300, required=False, allow_blank=True)
+
+
+# ── the client record ────────────────────────────────────────────────────────
+
+
+class ClientProfileSerializer(serializers.ModelSerializer):
+    channel_label = serializers.CharField(
+        source="get_preferred_channel_display", read_only=True
+    )
+
+    class Meta:
+        model = ClientProfile
+        fields = [
+            "what_they_do",
+            "website",
+            "contact_name",
+            "contact_role",
+            "contact_phone",
+            "contact_email",
+            "preferred_channel",
+            "channel_label",
+            "client_since",
+            "notes",
+            "may_be_named",
+            "permission_note",
+            "updated_at",
+        ]
+
+
+class ClientProfileWriteSerializer(serializers.Serializer):
+    """
+    Shape only. The rule that turning on `may_be_named` requires the evidence
+    to be named lives in services.set_client_profile, with the rest of the
+    refusals that come back as {detail, field}.
+    """
+
+    what_they_do = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    website = serializers.URLField(required=False, allow_blank=True)
+    contact_name = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    contact_role = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    contact_phone = serializers.CharField(max_length=40, required=False, allow_blank=True)
+    contact_email = serializers.EmailField(required=False, allow_blank=True)
+    preferred_channel = serializers.ChoiceField(
+        choices=ClientProfile.Channel.choices, required=False, allow_blank=True
+    )
+    client_since = serializers.DateField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+    may_be_named = serializers.BooleanField(required=False)
+    permission_note = serializers.CharField(
+        max_length=300, required=False, allow_blank=True
+    )
+
+
+class HostingSerializer(serializers.ModelSerializer):
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
+    holder_label = serializers.CharField(source="get_account_holder_display", read_only=True)
+    system_slug = serializers.CharField(source="system.slug", read_only=True, default=None)
+    days_until_renewal = serializers.SerializerMethodField()
+    is_live = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = HostingArrangement
+        fields = [
+            "id",
+            "kind",
+            "kind_label",
+            "identifier",
+            "provider",
+            "account_holder",
+            "holder_label",
+            "renews_on",
+            "days_until_renewal",
+            "auto_renew",
+            "annual_cost_kes",
+            "annual_charge_kes",
+            "notes",
+            "system_slug",
+            "is_live",
+            "retired_at",
+        ]
+
+    def get_days_until_renewal(self, arrangement: HostingArrangement) -> int | None:
+        return arrangement.days_until_renewal()
+
+
+class HostingWriteSerializer(serializers.Serializer):
+    kind = serializers.ChoiceField(choices=HostingArrangement.Kind.choices)
+    identifier = serializers.CharField(max_length=200, allow_blank=True)
+    provider = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    account_holder = serializers.ChoiceField(
+        choices=HostingArrangement.Holder.choices, required=False
+    )
+    renews_on = serializers.DateField(required=False, allow_null=True)
+    auto_renew = serializers.BooleanField(required=False, default=False)
+    annual_cost_kes = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True
+    )
+    annual_charge_kes = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True
+    )
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class ContactLogSerializer(serializers.ModelSerializer):
+    channel_label = serializers.CharField(source="get_channel_display", read_only=True)
+    direction_label = serializers.CharField(source="get_direction_display", read_only=True)
+    recorded_by = serializers.CharField(source="recorded_by_label", read_only=True)
+    order_reference = serializers.CharField(
+        source="order.reference", read_only=True, default=None
+    )
+    organisation_name = serializers.CharField(
+        source="organisation.name", read_only=True
+    )
+    organisation_id = serializers.IntegerField(read_only=True)
+    is_owed = serializers.BooleanField(read_only=True)
+    is_overdue = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ContactLogEntry
+        fields = [
+            "id",
+            "organisation_id",
+            "organisation_name",
+            "channel",
+            "channel_label",
+            "direction",
+            "direction_label",
+            "happened_at",
+            "with_whom",
+            "summary",
+            "detail",
+            "recorded_by",
+            "order_reference",
+            "follow_up",
+            "follow_up_by",
+            "cleared_at",
+            "is_owed",
+            "is_overdue",
+        ]
+
+    def get_is_overdue(self, entry: ContactLogEntry) -> bool:
+        return entry.is_overdue()
+
+
+class ContactLogWriteSerializer(serializers.Serializer):
+    channel = serializers.ChoiceField(choices=ContactLogEntry.Channel.choices)
+    direction = serializers.ChoiceField(choices=ContactLogEntry.Direction.choices)
+    summary = serializers.CharField(max_length=300, allow_blank=True)
+    detail = serializers.CharField(required=False, allow_blank=True, default="")
+    with_whom = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    happened_at = serializers.DateTimeField(required=False, allow_null=True)
+    order = serializers.CharField(required=False, allow_blank=True, default="")
+    follow_up = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
+    follow_up_by = serializers.DateField(required=False, allow_null=True)

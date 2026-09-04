@@ -21,8 +21,11 @@ from accounts.models import Membership, Organisation, User
 from portal.models import (
     ActivityLog,
     Blocker,
+    ClientProfile,
+    ContactLogEntry,
     Contract,
     Decision,
+    HostingArrangement,
     DeliveryGate,
     Enquiry,
     Invoice,
@@ -156,6 +159,24 @@ def queue_counts() -> dict[str, int]:
         "open_blockers": Blocker.objects.filter(cleared_at__isnull=True).count(),
         "awaiting_note": active.exclude(
             notes__published_at__isnull=False, notes__week_of__gte=cutoff
+        ).count(),
+        # A promise made on a call and not yet kept, past the date it was
+        # promised for. Carried here for the same reason as awaiting_note:
+        # "I'll send you a quote Thursday" is the commonest thing this company
+        # says and the commonest thing it drops, and it drops because it lived
+        # only in the memory of whoever said it.
+        "follow_ups_due": ContactLogEntry.objects.filter(
+            cleared_at__isnull=True,
+            follow_up__gt="",
+            follow_up_by__lte=timezone.localdate(),
+        ).count(),
+        # A domain lapses silently and the client cannot tell it apart from us
+        # having broken something. Thirty days is enough warning to recover a
+        # .co.ke without paying a redemption fee.
+        "renewals_due": HostingArrangement.objects.filter(
+            retired_at__isnull=True,
+            renews_on__isnull=False,
+            renews_on__lte=timezone.localdate() + timedelta(days=30),
         ).count(),
     }
 
@@ -574,3 +595,95 @@ def decisions(*, status: str | None = None, q: str | None = None) -> QuerySet[De
 
 def decision(pk: int) -> Decision | None:
     return decisions().filter(pk=pk).first()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The client record
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def client_profile(organisation: Organisation) -> ClientProfile:
+    """
+    The profile, creating an empty one on first read.
+
+    get_or_create rather than a nullable relation, so every screen and every
+    serializer downstream can assume it exists. The alternative is a null check
+    in each of them, and the one that gets forgotten is a 500 on a client page.
+    """
+    profile, _ = ClientProfile.objects.get_or_create(organisation=organisation)
+    return profile
+
+
+def hosting_for(organisation: Organisation, *, include_retired: bool = False):
+    qs = HostingArrangement.objects.filter(organisation=organisation).select_related(
+        "system"
+    )
+    if not include_retired:
+        qs = qs.filter(retired_at__isnull=True)
+    return qs
+
+
+def renewals_due(*, within_days: int = 30, today: date | None = None):
+    """
+    Everything lapsing soon, across every client, soonest first.
+
+    Includes arrangements already PAST their date. An expired domain is not
+    less urgent than one expiring on Friday — it is the emergency — and a
+    window that only looked forward would drop it off the list on the morning
+    it actually mattered.
+    """
+    today = today or timezone.localdate()
+    return (
+        HostingArrangement.objects.filter(
+            retired_at__isnull=True,
+            renews_on__isnull=False,
+            renews_on__lte=today + timedelta(days=within_days),
+        )
+        .select_related("organisation", "system")
+        .order_by("renews_on")
+    )
+
+
+def contact_log_for(organisation: Organisation) -> QuerySet[ContactLogEntry]:
+    return (
+        ContactLogEntry.objects.filter(organisation=organisation)
+        .select_related("recorded_by", "order")
+        .order_by("-happened_at", "-id")
+    )
+
+
+def follow_ups_owed(*, overdue_only: bool = False, today: date | None = None):
+    """
+    Promises made and not yet kept, oldest first.
+
+    Ordered ASCENDING like the enquiry queue and for the same reason: the one
+    that has been waiting longest is the one most at risk of being forgotten,
+    and putting the newest on top grows a tail nobody reads.
+    """
+    qs = ContactLogEntry.objects.filter(
+        cleared_at__isnull=True, follow_up__gt=""
+    ).select_related("organisation", "recorded_by")
+    if overdue_only:
+        qs = qs.filter(follow_up_by__lte=(today or timezone.localdate()))
+    return qs.order_by("follow_up_by", "happened_at")
+
+
+def client_record(organisation: Organisation) -> dict:
+    """
+    Everything about one client on one screen.
+
+    Assembled here rather than by the view so that the client page and any
+    future export answer from the same place — the shape of "what we know
+    about this client" should not depend on which endpoint asked.
+    """
+    return {
+        "organisation": organisation,
+        "profile": client_profile(organisation),
+        "hosting": list(hosting_for(organisation, include_retired=True)),
+        "contact_log": list(contact_log_for(organisation)[:50]),
+        "orders": list(
+            Order.objects.filter(organisation=organisation)
+            .select_related("contact")
+            .order_by("-created_at")
+        ),
+    }

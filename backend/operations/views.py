@@ -26,8 +26,11 @@ from portal.models import (
     BillingProfile,
     ActivityLog,
     Blocker,
+    ClientProfile,
+    ContactLogEntry,
     Contract,
     Decision,
+    HostingArrangement,
     DeliveryGate,
     Incident,
     Invoice,
@@ -59,8 +62,14 @@ from .permissions import (
 from .serializers import (
     BillingProfileSerializer,
     ActivitySerializer,
+    ClientProfileSerializer,
+    ClientProfileWriteSerializer,
     ClockSerializer,
+    ContactLogSerializer,
+    ContactLogWriteSerializer,
     DecisionActionSerializer,
+    HostingSerializer,
+    HostingWriteSerializer,
     DecisionSerializer,
     DecisionWriteSerializer,
     ShiftSerializer,
@@ -1726,3 +1735,184 @@ class DecisionDetailView(StaffView):
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(DecisionSerializer(entry).data)
+
+
+# ── the client record ────────────────────────────────────────────────────────
+
+
+class ClientRecordView(StaffView):
+    """
+    Everything we know about one client, on one screen.
+
+    Their details, what we run for them, every conversation, and their work.
+    Assembled by `selectors.client_record` so that this and any future export
+    answer from the same place.
+    """
+
+    def get(self, request, pk: int):
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        record = selectors.client_record(organisation)
+        return Response(
+            {
+                "id": organisation.id,
+                "name": organisation.name,
+                "created_at": organisation.created_at,
+                "profile": ClientProfileSerializer(record["profile"]).data,
+                "hosting": HostingSerializer(record["hosting"], many=True).data,
+                "contact_log": ContactLogSerializer(record["contact_log"], many=True).data,
+                "orders": [
+                    {
+                        "reference": o.reference,
+                        "title": o.title,
+                        "status": o.get_status_display(),
+                        "target_date": o.target_date,
+                    }
+                    for o in record["orders"]
+                ],
+                "channels": [
+                    {"value": v, "label": l} for v, l in ClientProfile.Channel.choices
+                ],
+                "contact_channels": [
+                    {"value": v, "label": l} for v, l in ContactLogEntry.Channel.choices
+                ],
+                "hosting_kinds": [
+                    {"value": v, "label": l} for v, l in HostingArrangement.Kind.choices
+                ],
+            }
+        )
+
+    def patch(self, request, pk: int):
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        form = ClientProfileWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            profile = services.set_client_profile(
+                organisation=organisation, actor=request.user, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ClientProfileSerializer(profile).data)
+
+
+class ClientHostingView(StaffView):
+    """What we run, hold or renew for this client."""
+
+    def post(self, request, pk: int):
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        form = HostingWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            arrangement = services.record_hosting(
+                organisation=organisation, actor=request.user, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(HostingSerializer(arrangement).data, status=http.HTTP_201_CREATED)
+
+
+class HostingDetailView(StaffView):
+    def patch(self, request, pk: int):
+        arrangement = get_object_or_404(HostingArrangement, pk=pk)
+        form = HostingWriteSerializer(data=request.data, partial=True)
+        form.is_valid(raise_exception=True)
+        try:
+            arrangement = services.update_hosting(
+                arrangement=arrangement, actor=request.user, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(HostingSerializer(arrangement).data)
+
+    def delete(self, request, pk: int):
+        """Retire it. The row stays — see services.retire_hosting."""
+        arrangement = get_object_or_404(HostingArrangement, pk=pk)
+        try:
+            arrangement = services.retire_hosting(
+                arrangement=arrangement,
+                actor=request.user,
+                reason=str(request.data.get("reason", "") or ""),
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(HostingSerializer(arrangement).data)
+
+
+class ContactLogView(StaffView):
+    """Record a conversation with this client."""
+
+    def post(self, request, pk: int):
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        form = ContactLogWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = dict(form.validated_data)
+
+        order = None
+        reference = (data.pop("order", "") or "").strip()
+        if reference:
+            order = selectors.order(reference)
+            if order is None:
+                return Response(
+                    {"detail": "No such order.", "field": "order"},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            entry = services.log_contact(
+                organisation=organisation, actor=request.user, order=order, **data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ContactLogSerializer(entry).data, status=http.HTTP_201_CREATED)
+
+
+class FollowUpView(StaffView):
+    """
+    Promises made and not yet kept, across every client.
+
+    Its own endpoint rather than a filter on the client page, because the
+    question "what did we say we would do" is asked about the company, not
+    about one client — and the one you have forgotten is by definition the
+    client page you are not looking at.
+    """
+
+    def get(self, request):
+        overdue = request.query_params.get("overdue") == "1"
+        owed = selectors.follow_ups_owed(overdue_only=overdue)
+        return Response(
+            {
+                "follow_ups": ContactLogSerializer(owed, many=True).data,
+                "renewals": HostingSerializer(
+                    selectors.renewals_due(within_days=60), many=True
+                ).data,
+                "renewal_clients": {
+                    str(h.id): h.organisation.name
+                    for h in selectors.renewals_due(within_days=60)
+                },
+            }
+        )
+
+    def patch(self, request):
+        entry = get_object_or_404(
+            ContactLogEntry, pk=request.data.get("id") or 0
+        )
+        try:
+            entry = services.clear_follow_up(
+                entry=entry,
+                actor=request.user,
+                note=str(request.data.get("note", "") or ""),
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ContactLogSerializer(entry).data)

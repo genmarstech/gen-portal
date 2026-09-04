@@ -88,6 +88,12 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-blocker", args=[reference, 1]),
         # client accounts
         reverse("ops-organisations"),
+        # the client record
+        reverse("ops-client", args=[1]),
+        reverse("ops-client-hosting", args=[1]),
+        reverse("ops-client-contact", args=[1]),
+        reverse("ops-hosting", args=[1]),
+        reverse("ops-follow-ups"),
         reverse("ops-org-members", args=[1]),
         reverse("ops-membership", args=[1]),
         # services and contracts
@@ -174,6 +180,8 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
         "ops-delivery", "ops-delivery-backfill", "ops-gate", "ops-blockers",
         "ops-blocker",
         "ops-organisations", "ops-org-members", "ops-membership",
+        "ops-client", "ops-client-hosting", "ops-client-contact", "ops-hosting",
+        "ops-follow-ups",
         "ops-services", "ops-service", "ops-contracts", "ops-contract-sign",
         "ops-contract-void",
         "ops-staff-member",

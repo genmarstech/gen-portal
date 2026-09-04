@@ -23,9 +23,12 @@ from portal import mpesa
 from portal.models import (
     BillingProfile,
     Blocker,
+    ClientProfile,
+    ContactLogEntry,
     Contract,
     Decision,
     DeliveryGate,
+    HostingArrangement,
     ActivityLog,
     Enquiry,
     Incident,
@@ -3032,5 +3035,317 @@ def reverse_decision(*, entry: Decision, actor: User, reason: str) -> Decision:
         action=ActivityLog.Action.DECISION_REVERSED,
         subject=entry.reference,
         summary=f"{entry.reference} reversed: {reason[:180]}",
+    )
+    return entry
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The client record
+# ═════════════════════════════════════════════════════════════════════════════
+
+PROFILE_FIELDS = (
+    "what_they_do",
+    "website",
+    "contact_name",
+    "contact_role",
+    "contact_phone",
+    "contact_email",
+    "preferred_channel",
+    "client_since",
+    "notes",
+    "may_be_named",
+    "permission_note",
+)
+
+
+@transaction.atomic
+def set_client_profile(*, organisation: Organisation, actor: User, values: dict) -> ClientProfile:
+    """
+    Update who a client is.
+
+    ── WHY `may_be_named` IS SINGLED OUT IN THE LOG ────────────────────────────
+
+    Charter 04 §V lets us name a client only with WRITTEN permission, and
+    Charter 04 §IV forbids publishing a claim we cannot evidence. Flipping this
+    flag is therefore not an edit to a contact card — it is the assertion that
+    a specific person agreed to something, and `/work/` on the marketing site
+    is gated on exactly that assertion.
+
+    So turning it ON demands the evidence be named. A tick with nothing behind
+    it is how a client ends up on a public page having never said yes.
+    """
+    profile = ClientProfile.objects.select_for_update().get_or_create(
+        organisation=organisation
+    )[0]
+
+    turning_on = bool(values.get("may_be_named")) and not profile.may_be_named
+    note = str(values.get("permission_note", profile.permission_note) or "").strip()
+    if turning_on and not note:
+        raise OperationsError(
+            "Say where the written permission is — the file, or the date of the "
+            "email. Charter 04 §V allows naming a client only with written "
+            "permission, and a tick with nothing behind it is how somebody ends "
+            "up on a public page having never agreed to it.",
+            field="permission_note",
+        )
+
+    changed = []
+    for field in PROFILE_FIELDS:
+        if field not in values:
+            continue
+        new = values[field]
+        if isinstance(new, str):
+            new = new.strip()
+        if new != getattr(profile, field):
+            setattr(profile, field, new)
+            changed.append(field)
+
+    if not changed:
+        return profile
+
+    profile.save(update_fields=[*changed, "updated_at"])
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CLIENT_PROFILE_CHANGED,
+        subject=organisation.name,
+        organisation=organisation,
+        summary=f"Client details changed: {', '.join(changed)}",
+        fields=changed,
+    )
+    if "may_be_named" in changed:
+        # Its own line, because "we may now name this client publicly" is a
+        # different fact from "somebody edited a phone number", and the log is
+        # where a question about a published page gets answered.
+        record(
+            actor=actor,
+            action=ActivityLog.Action.CLIENT_PROFILE_CHANGED,
+            subject=organisation.name,
+            organisation=organisation,
+            summary=(
+                f"{organisation.name} may {'now' if profile.may_be_named else 'NO LONGER'} "
+                f"be named publicly"
+                + (f" — {profile.permission_note}" if profile.may_be_named else "")
+            ),
+        )
+    return profile
+
+
+HOSTING_FIELDS = (
+    "kind",
+    "identifier",
+    "provider",
+    "account_holder",
+    "renews_on",
+    "auto_renew",
+    "annual_cost_kes",
+    "annual_charge_kes",
+    "notes",
+    "system",
+)
+
+
+@transaction.atomic
+def record_hosting(
+    *, organisation: Organisation, actor: User, values: dict
+) -> HostingArrangement:
+    """Write down something we run or renew for a client."""
+    identifier = str(values.get("identifier", "") or "").strip()
+    if not identifier:
+        raise OperationsError(
+            "What is it? The domain, the plan, the mailbox.", field="identifier"
+        )
+
+    arrangement = HostingArrangement.objects.create(
+        organisation=organisation,
+        kind=values.get("kind") or HostingArrangement.Kind.OTHER,
+        identifier=identifier[:200],
+        provider=str(values.get("provider", "") or "").strip()[:120],
+        account_holder=values.get("account_holder")
+        or HostingArrangement.Holder.CLIENT,
+        renews_on=values.get("renews_on"),
+        auto_renew=bool(values.get("auto_renew", False)),
+        annual_cost_kes=values.get("annual_cost_kes"),
+        annual_charge_kes=values.get("annual_charge_kes"),
+        notes=str(values.get("notes", "") or "").strip(),
+        system=values.get("system"),
+    )
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.HOSTING_RECORDED,
+        subject=identifier,
+        organisation=organisation,
+        summary=(
+            f"{arrangement.get_kind_display()} recorded for {organisation.name}: "
+            f"{identifier}"
+            + (f", renews {arrangement.renews_on}" if arrangement.renews_on else "")
+        ),
+        account_holder=arrangement.account_holder,
+    )
+    return arrangement
+
+
+@transaction.atomic
+def update_hosting(
+    *, arrangement: HostingArrangement, actor: User, values: dict
+) -> HostingArrangement:
+    changed = []
+    for field in HOSTING_FIELDS:
+        if field not in values:
+            continue
+        new = values[field]
+        if isinstance(new, str):
+            new = new.strip()
+        if new != getattr(arrangement, field):
+            setattr(arrangement, field, new)
+            changed.append(field)
+
+    if not changed:
+        return arrangement
+
+    arrangement.save(update_fields=[*changed, "updated_at"])
+    record(
+        actor=actor,
+        action=ActivityLog.Action.HOSTING_CHANGED,
+        subject=arrangement.identifier,
+        organisation=arrangement.organisation,
+        summary=f"{arrangement.identifier} updated: {', '.join(changed)}",
+        fields=changed,
+    )
+    return arrangement
+
+
+@transaction.atomic
+def retire_hosting(
+    *, arrangement: HostingArrangement, actor: User, reason: str = ""
+) -> HostingArrangement:
+    """
+    Stop running it. The row stays.
+
+    Deleting would remove the evidence that we ever held a client's domain,
+    which is the one question worth being able to answer years later.
+    """
+    if arrangement.retired_at is not None:
+        raise OperationsError(f"{arrangement.identifier} is already retired.")
+
+    arrangement.retired_at = timezone.now()
+    arrangement.save(update_fields=["retired_at", "updated_at"])
+    record(
+        actor=actor,
+        action=ActivityLog.Action.HOSTING_RETIRED,
+        subject=arrangement.identifier,
+        organisation=arrangement.organisation,
+        summary=f"{arrangement.identifier} retired"
+        + (f": {reason.strip()}" if reason.strip() else ""),
+    )
+    return arrangement
+
+
+@transaction.atomic
+def log_contact(
+    *,
+    organisation: Organisation,
+    actor: User,
+    channel: str,
+    direction: str,
+    summary: str,
+    detail: str = "",
+    with_whom: str = "",
+    happened_at=None,
+    order: Order | None = None,
+    follow_up: str = "",
+    follow_up_by: date | None = None,
+) -> ContactLogEntry:
+    """
+    Write down a conversation.
+
+    ── A FOLLOW-UP WITH NO DATE IS A WISH ──────────────────────────────────────
+
+    If we said we would do something, the date is required. Not to be strict:
+    an undated follow-up cannot appear on any queue, cannot be overdue, and
+    therefore behaves exactly like not having written it down at all — while
+    looking like it was handled. That is worse than the blank field, because it
+    buys the feeling of having recorded it.
+    """
+    summary = (summary or "").strip()
+    if not summary:
+        raise OperationsError(
+            "What was it about? One line.", field="summary"
+        )
+    if channel not in ContactLogEntry.Channel.values:
+        raise OperationsError("How did you speak to them?", field="channel")
+    if direction not in ContactLogEntry.Direction.values:
+        raise OperationsError("Who contacted whom?", field="direction")
+
+    follow_up = (follow_up or "").strip()
+    if follow_up and follow_up_by is None:
+        raise OperationsError(
+            "By when? An undated follow-up never reaches a queue and never goes "
+            "overdue, so it behaves exactly like not writing it down — while "
+            "feeling like you did.",
+            field="follow_up_by",
+        )
+
+    happened_at = happened_at or timezone.now()
+    if happened_at > timezone.now() + timedelta(minutes=5):
+        raise OperationsError(
+            "That is in the future. A conversation is recorded after it happens.",
+            field="happened_at",
+        )
+    if order is not None and order.organisation_id != organisation.id:
+        # Would file one client's conversation under another client's project.
+        raise OperationsError("That order belongs to a different client.", field="order")
+
+    entry = ContactLogEntry.objects.create(
+        organisation=organisation,
+        order=order,
+        channel=channel,
+        direction=direction,
+        happened_at=happened_at,
+        with_whom=(with_whom or "").strip()[:200],
+        summary=summary[:300],
+        detail=(detail or "").strip(),
+        recorded_by=actor,
+        recorded_by_label=actor.full_name or actor.email,
+        follow_up=follow_up[:300],
+        follow_up_by=follow_up_by,
+    )
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CONTACT_LOGGED,
+        subject=organisation.name,
+        organisation=organisation,
+        summary=f"{entry.get_channel_display()} with {organisation.name}: {summary[:180]}",
+        follow_up=bool(follow_up),
+    )
+    return entry
+
+
+@transaction.atomic
+def clear_follow_up(*, entry: ContactLogEntry, actor: User, note: str = "") -> ContactLogEntry:
+    """
+    Mark a promise kept.
+
+    Does not edit the entry it clears. The original text of what was promised
+    stays exactly as it was written — a log that rewrote the promise when it
+    was fulfilled could never answer whether what we did was what we said.
+    """
+    if not entry.follow_up:
+        raise OperationsError("There is nothing owed on that entry.")
+    if entry.cleared_at is not None:
+        raise OperationsError("That follow-up is already cleared.")
+
+    entry.cleared_at = timezone.now()
+    entry.cleared_by = actor
+    entry.save(update_fields=["cleared_at", "cleared_by"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.FOLLOW_UP_CLEARED,
+        subject=entry.organisation.name,
+        organisation=entry.organisation,
+        summary=f"Follow-up done for {entry.organisation.name}: {entry.follow_up[:160]}"
+        + (f" — {note.strip()[:100]}" if note.strip() else ""),
     )
     return entry
