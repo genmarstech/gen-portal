@@ -200,7 +200,14 @@ class OverviewView(StaffView):
         return Response(
             {
                 "counts": selectors.queue_counts(),
-                "me": {"full_name": request.user.full_name, "email": request.user.email},
+                "me": {
+                    "full_name": request.user.full_name,
+                    "email": request.user.email,
+                    # For hiding controls only — every write is checked again.
+                    # A founder can close work on anybody's board, so the tick
+                    # has to know that before it decides to render.
+                    "can_manage_access": request.user.can_manage_access,
+                },
                 # Whether our outbound mail is actually being delivered. It
                 # rides on the overview because this is the one screen everyone
                 # here loads, and the failure it reports is one that cannot be
@@ -2551,4 +2558,14 @@ class SearchView(StaffView):
 
     def get(self, request):
         q = request.query_params.get("q", "")
-        return Response({"query": q.strip(), "results": search.search(q)})
+        kind = request.query_params.get("kind") or None
+        return Response(
+            {
+                "query": q.strip(),
+                "results": search.search(q, kind=kind),
+                # Every kind that matched, with its count — computed WITHOUT
+                # the filter, so selecting one does not make the others read as
+                # zero and take away the way back.
+                "kinds": search.counts(q),
+            }
+        )

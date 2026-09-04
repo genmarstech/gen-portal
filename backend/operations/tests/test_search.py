@@ -20,7 +20,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from accounts.models import Membership, Organisation, User
-from operations import services
+from operations import search as search_module, services
 from portal.models import ContactLogEntry, HostingArrangement, Invoice, Order
 
 pytestmark = pytest.mark.django_db
@@ -239,3 +239,104 @@ def test_a_client_account_cannot_search(client, spa):
     Membership.objects.create(user=outsider, organisation=spa)
     client.force_login(outsider)
     assert client.get(reverse("ops-search"), {"q": "serenity"}).status_code == 403
+
+
+# ── filters ──────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def a_bit_of_everything(staff, spa):
+    Order.objects.create(
+        organisation=spa, reference="GM-2026-0042", title="Booking system",
+        contact=staff, scope="Build it.",
+    )
+    ContactLogEntry.objects.create(
+        organisation=spa, channel="call", direction="inbound",
+        summary="Booking call with the owner",
+    )
+    HostingArrangement.objects.create(
+        organisation=spa, kind="domain", identifier="booking.example.co.ke",
+    )
+    return spa
+
+
+def test_the_filter_row_lists_only_kinds_that_matched(client, staff, a_bit_of_everything):
+    """
+    A filter for something with no results is a control that does nothing, and
+    a row of them is a row you learn to ignore.
+    """
+    client.force_login(staff)
+    body = client.get(reverse("ops-search"), {"q": "booking"}).json()
+    kinds = {row["kind"]: row["count"] for row in body["kinds"]}
+
+    assert kinds["Order"] == 1
+    assert kinds["Conversation"] == 1
+    assert kinds["Hosting"] == 1
+    assert "Invoice" not in kinds
+
+
+def test_the_filter_row_keeps_a_fixed_order(client, staff, a_bit_of_everything):
+    """
+    A row that reorders itself between searches is one you have to read every
+    time rather than aim at.
+    """
+    client.force_login(staff)
+    body = client.get(reverse("ops-search"), {"q": "booking"}).json()
+    order = [row["kind"] for row in body["kinds"]]
+    assert order == sorted(order, key=lambda k: search_module.KINDS.index(k))
+
+
+def test_picking_a_filter_narrows_the_results(client, staff, a_bit_of_everything):
+    client.force_login(staff)
+    body = client.get(
+        reverse("ops-search"), {"q": "booking", "kind": "Order"}
+    ).json()
+
+    assert {hit["kind"] for hit in body["results"]} == {"Order"}
+
+
+def test_the_counts_survive_a_filter_being_applied(client, staff, a_bit_of_everything):
+    """
+    ═══════════════════════════════════════════════════════════════════════════
+    Otherwise picking "Order" makes every other filter read as zero, and the
+    way back disappears.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+    client.force_login(staff)
+    body = client.get(
+        reverse("ops-search"), {"q": "booking", "kind": "Order"}
+    ).json()
+
+    kinds = {row["kind"]: row["count"] for row in body["kinds"]}
+    assert kinds["Conversation"] == 1
+    assert kinds["Hosting"] == 1
+
+
+def test_an_unknown_filter_returns_nothing_rather_than_everything(
+    client, staff, a_bit_of_everything
+):
+    """Failing open on a filter shows more than was asked for, which reads as
+    the filter being broken."""
+    client.force_login(staff)
+    body = client.get(
+        reverse("ops-search"), {"q": "booking", "kind": "Nonsense"}
+    ).json()
+    assert body["results"] == []
+
+
+def test_the_counts_never_promise_more_than_the_list_shows(client, staff, spa):
+    """
+    Per-type results are capped. A count of 40 above a list of 5 is a promise
+    the list does not keep, and somebody spends a while looking for the rest.
+    """
+    for n in range(20):
+        ContactLogEntry.objects.create(
+            organisation=spa, channel="call", direction="inbound",
+            summary=f"Booking call number {n}",
+        )
+    client.force_login(staff)
+    body = client.get(reverse("ops-search"), {"q": "booking"}).json()
+
+    counted = next(r["count"] for r in body["kinds"] if r["kind"] == "Conversation")
+    shown = len([h for h in body["results"] if h["kind"] == "Conversation"])
+    assert counted == shown

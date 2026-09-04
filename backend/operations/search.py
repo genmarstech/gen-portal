@@ -59,6 +59,29 @@ from portal.models import (
 MIN_QUERY = 2
 PER_TYPE = 5
 
+# ── the filters, in the order they appear ────────────────────────────────────
+#
+# A FIXED ORDER, not one derived from how many of each turned up. A filter row
+# that reorders itself between searches is one you have to read every time
+# rather than aim at — and aiming is the whole point of a filter you use twice
+# a day.
+#
+# Roughly: who, then what was agreed, then what was said, then what we run.
+KINDS = (
+    "Client",
+    "Order",
+    "Invoice",
+    "Quote",
+    "Contract",
+    "Support",
+    "Conversation",
+    "Task",
+    "Decision",
+    "System",
+    "Hosting",
+    "Colleague",
+)
+
 
 @dataclass
 class Hit:
@@ -87,7 +110,7 @@ def _matches_reference(value: str, q: str) -> bool:
     return bool(value) and q.lower() in value.lower()
 
 
-def search(q: str) -> list[dict]:
+def search(q: str, kind: str | None = None) -> list[dict]:
     """
     Everything matching, best first.
 
@@ -315,4 +338,31 @@ def search(q: str) -> list[dict]:
     # stable between keystrokes — a list that reshuffles as you type is one you
     # cannot click.
     hits.sort(key=lambda hit: (not hit.exact, hit.kind, hit.label.lower()))
+    if kind:
+        hits = [hit for hit in hits if hit.kind == kind]
     return [hit.as_dict() for hit in hits]
+
+
+def counts(q: str) -> list[dict]:
+    """
+    How many of each kind matched, for the filter row.
+
+    ── COMPUTED FROM THE UNFILTERED RESULTS, ALWAYS ────────────────────────────
+
+    The row has to show every kind's count even while one of them is selected,
+    or picking "Order" makes the other filters read as zero and the way back
+    disappears. So this is deliberately not aware of the current filter.
+
+    ── AND IT COUNTS WHAT IS SHOWN, NOT WHAT EXISTS ────────────────────────────
+
+    Per-type results are capped at PER_TYPE. A count of 40 above a list of 5 is
+    a promise the list does not keep, and somebody would spend a while looking
+    for the other 35.
+    """
+    found = search(q)
+    tally = {name: 0 for name in KINDS}
+    for hit in found:
+        tally[hit["kind"]] = tally.get(hit["kind"], 0) + 1
+    return [
+        {"kind": name, "count": tally[name]} for name in KINDS if tally.get(name)
+    ]

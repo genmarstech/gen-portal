@@ -2585,7 +2585,38 @@ def assign_task(
 def set_task_status(
     *, task: Task, actor: User, status: str, blocked_reason: str = ""
 ) -> Task:
-    """Move it along. Blocked needs a reason — a blocked task without one is stalled."""
+    """
+    Move it along.
+
+    ══════════════════════════════════════════════════════════════════════════
+    YOUR BOARD, YOUR STATUS.
+
+    This used to be open to every staff account, which meant anybody could mark
+    anybody else's work done. That is worse than being able to assign it: a
+    task marked done disappears from the board, and the person actually
+    responsible for it is not told — so the work stops being tracked while
+    still being theirs, and the first anybody knows is a client asking why it
+    never happened.
+
+    It is also the one field where somebody else genuinely cannot know the
+    answer. Whether a piece of work is finished is a fact only the person doing
+    it holds.
+
+    A FOUNDER CAN MOVE ANYTHING, because somebody has to be able to close a
+    task belonging to a person who has left, or who is on a plane. That is an
+    override rather than the normal path, and the log records who pressed it.
+    ══════════════════════════════════════════════════════════════════════════
+
+    Blocked needs a reason — a blocked task without one is stalled.
+    """
+    if task.assignee_id != actor.id and not actor.can_manage_access:
+        raise OperationsError(
+            f"This is {task.assignee.full_name or task.assignee.email}'s to move. "
+            "Marking somebody else's work done takes it off the board without "
+            "telling them, and they are the only person who knows whether it is "
+            "finished."
+        )
+
     if status not in Task.Status.values:
         raise OperationsError("That is not a status we use.", field="status")
 
@@ -2601,11 +2632,21 @@ def set_task_status(
     task.save(update_fields=["status", "blocked_reason", "done_at"])
 
     if status == Task.Status.DONE:
+        who = actor.full_name or actor.email
+        # Names the owner too when somebody else closed it. "Completed by the
+        # founder" against work that was Asha's is a materially different fact
+        # from Asha completing it, and the log is where that gets untangled.
+        on_behalf = (
+            ""
+            if task.assignee_id == actor.id
+            else f" (on {task.assignee.full_name or task.assignee.email}'s board)"
+        )
         record(
             actor=actor,
             action=ActivityLog.Action.TASK_DONE,
             subject=task.order.reference if task.order_id else "",
-            summary=f"{task.title} completed by {actor.full_name or actor.email}",
+            organisation=task.organisation,
+            summary=f"{task.title} completed by {who}{on_behalf}",
         )
 
     return task

@@ -465,3 +465,85 @@ def test_assigning_to_somebody_else_can_be_asked_for(client, founder):
         content_type="application/json",
     )
     assert again.status_code == 403
+
+
+# ── who may say a piece of work is finished ──────────────────────────────────
+
+
+def test_you_move_your_own_work(client, founder):
+    from portal.models import Task
+
+    engineer = _staff("engineer@genmars.co.ke", User.StaffRole.DELIVERY)
+    task = Task.objects.create(
+        title="Fix the slow query", assignee=engineer, assigned_by=founder
+    )
+
+    client.force_login(engineer)
+    response = client.patch(
+        reverse("ops-task", args=[task.pk]),
+        {"status": "done"},
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    task.refresh_from_db()
+    assert task.status == Task.Status.DONE
+
+
+def test_nobody_marks_somebody_elses_work_done(client, founder):
+    """
+    ═══════════════════════════════════════════════════════════════════════════
+    WORSE THAN BEING ABLE TO ASSIGN IT.
+
+    A task marked done disappears from the board, and the person actually
+    responsible is not told — so the work stops being tracked while still being
+    theirs, and the first anybody knows is a client asking why it never
+    happened. It is also the one field somebody else genuinely cannot know the
+    answer to.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+    from portal.models import Task
+
+    engineer = _staff("engineer@genmars.co.ke", User.StaffRole.DELIVERY)
+    colleague = _staff("colleague@genmars.co.ke", User.StaffRole.COMMERCIAL)
+    task = Task.objects.create(
+        title="Fix the slow query", assignee=engineer, assigned_by=founder
+    )
+
+    client.force_login(colleague)
+    response = client.patch(
+        reverse("ops-task", args=[task.pk]),
+        {"status": "done"},
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+    assert "to move" in response.json()["detail"]
+    assert "engineer" in response.json()["detail"]
+
+    task.refresh_from_db()
+    assert task.status != Task.Status.DONE
+
+
+def test_a_founder_can_close_anybodys_work(client, founder):
+    """
+    Somebody has to be able to close a task belonging to a person who has left,
+    or who is on a plane. An override rather than the normal path.
+    """
+    from portal.models import ActivityLog, Task
+
+    engineer = _staff("engineer@genmars.co.ke", User.StaffRole.DELIVERY)
+    task = Task.objects.create(
+        title="Fix the slow query", assignee=engineer, assigned_by=founder
+    )
+
+    client.force_login(founder)
+    assert client.patch(
+        reverse("ops-task", args=[task.pk]),
+        {"status": "done"},
+        content_type="application/json",
+    ).status_code == 200
+
+    # And the log says whose board it was. "Completed by the founder" against
+    # work that was Asha's is a different fact from Asha completing it.
+    entry = ActivityLog.objects.filter(action=ActivityLog.Action.TASK_DONE).first()
+    assert "engineer" in entry.summary
+    assert "on" in entry.summary and "board" in entry.summary
