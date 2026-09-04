@@ -54,7 +54,7 @@ from portal.models import (
 
 from portal.system_api import issue_key
 
-from . import approvals, selectors, services
+from . import approvals, search, selectors, services
 from .permissions import (
     CanCommit,
     CanConfigureBilling,
@@ -2538,3 +2538,17 @@ class ConversationPickerView(StaffView):
                 ]
             }
         )
+
+
+class SearchView(StaffView):
+    """
+    One box over everything the company holds. See operations/search.py.
+
+    Staff-only like the rest of this app, and deliberately without a
+    client-facing counterpart: it reaches the contact log, which is written
+    honestly because nobody outside Genmars reads it.
+    """
+
+    def get(self, request):
+        q = request.query_params.get("q", "")
+        return Response({"query": q.strip(), "results": search.search(q)})

@@ -13,6 +13,8 @@ from . import views
 
 urlpatterns = [
     path("ops/overview", views.OverviewView.as_view(), name="ops-overview"),
+    # One box over everything — see operations/search.py for the ranking.
+    path("ops/search", views.SearchView.as_view(), name="ops-search"),
     path("ops/staff", views.StaffDirectoryView.as_view(), name="ops-staff"),
     path("ops/staff/<int:pk>", views.StaffDetailView.as_view(), name="ops-staff-member"),
 

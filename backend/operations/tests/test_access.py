@@ -70,6 +70,7 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
     """Every route this app publishes, built from the URLconf itself."""
     return [
         reverse("ops-overview"),
+        reverse("ops-search"),
         reverse("ops-staff"),
         reverse("ops-enquiries"),
         reverse("ops-enquiry", args=[enquiry.pk]),
@@ -181,7 +182,7 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
 
     named = {p.name for p in ops_urls.urlpatterns}
     covered = {
-        "ops-overview", "ops-staff", "ops-enquiries", "ops-enquiry", "ops-convert",
+        "ops-overview", "ops-search", "ops-staff", "ops-enquiries", "ops-enquiry", "ops-convert",
         "ops-orders", "ops-order", "ops-order-notes", "ops-note-publish",
         "ops-order-milestones", "ops-milestone",
         "ops-delivery", "ops-delivery-backfill", "ops-gate", "ops-blockers",
