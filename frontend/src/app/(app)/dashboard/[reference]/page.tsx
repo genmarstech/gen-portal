@@ -142,6 +142,13 @@ export default function OrderPage() {
               Anything not in the scope above is a change request: we price it
               and you approve it before it is built.
             </p>
+            {/*
+              This page has always TOLD them that. Until now it gave them
+              nowhere to do it, so the sentence read as a rule rather than as
+              an invitation — and a change request arrived as a loose support
+              message, or as a phone call nobody wrote down.
+            */}
+            <ChangeRequest order={order} />
           </div>
         </div>
       </section>
@@ -150,9 +157,16 @@ export default function OrderPage() {
       <section className={styles.section}>
         <h2 className={styles.h2}>Progress</h2>
         {order.notes.length === 0 ? (
+          /*
+            The weekly promise is Charter 05 §III and it is real — but only for
+            work being done now. Repeating it against an engagement recorded
+            after it finished would promise updates about something already
+            delivered, which is a promise we would then not keep.
+          */
           <p className={styles.none}>
-            No progress notes have been published yet. You will get a written
-            update every week this engagement is active.
+            {order.recorded_retrospectively
+              ? "This work was recorded from our own records after it was done, so it has no weekly notes."
+              : "No progress notes have been published yet. You will get a written update every week this engagement is active."}
           </p>
         ) : (
           <ol className={styles.notes}>
@@ -302,4 +316,118 @@ function money(amountKes: string): string {
   const n = Number(amountKes);
   if (!Number.isFinite(n)) return `KES ${amountKes}`;
   return `KES ${n.toLocaleString("en-KE", { maximumFractionDigits: 0 })}`;
+}
+
+
+/**
+ * Ask for a change to THIS piece of work.
+ *
+ * ── WHY IT IS HERE AND NOT ON THE SUPPORT PAGE ──────────────────────────────
+ *
+ * A change request is about a specific scope, and the scope is on this page.
+ * Sending somebody to a general support form means they describe the work
+ * again from memory, and we get a message that has to be matched back to an
+ * order by hand — which is how a request for a change to one project gets
+ * quoted against another.
+ *
+ * It files a support request with this order attached, so the conversation
+ * lives against the work rather than beside it.
+ *
+ * ── IT PROMISES NOTHING ABOUT TIMING ────────────────────────────────────────
+ *
+ * Charter 03 §IV: no response time is claimed anywhere, because none has been
+ * tested. What it says instead is what actually happens next — we price it and
+ * they approve it before anything is built.
+ */
+function ChangeRequest({ order }: { order: OrderDetail }) {
+  const [open, setOpen] = useState(false);
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (sent) {
+    return (
+      <p className={styles.changeDone} role="status">
+        Sent, as {sent}. It is filed against this work, and we will come back to
+        you with a price before anything is built.
+      </p>
+    );
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className={styles.changeBtn} onClick={() => setOpen(true)}>
+        Ask for a change to this work
+      </button>
+    );
+  }
+
+  return (
+    <form
+      className={styles.changeForm}
+      onSubmit={async (event) => {
+        event.preventDefault();
+        setBusy(true);
+        setError(null);
+        try {
+          const ticket = await portal.raiseTicket({
+            subject,
+            body,
+            order: order.reference,
+          });
+          setSent(ticket.reference);
+        } catch (err) {
+          setError(
+            err instanceof ApiError ? err.message : "That did not send. Try again.",
+          );
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <label className={styles.changeField}>
+        <span className={styles.changeLabel}>What would you like changed?</span>
+        <input
+          className={styles.changeInput}
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          placeholder="Add card payments to the booking form"
+          required
+        />
+      </label>
+
+      <label className={styles.changeField}>
+        <span className={styles.changeLabel}>Tell us a bit more</span>
+        <textarea
+          className={styles.changeInput}
+          rows={4}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          placeholder="What it needs to do, and what is prompting it."
+          required
+        />
+      </label>
+
+      {error ? (
+        <p className={styles.changeError} role="alert">
+          {error}
+        </p>
+      ) : null}
+
+      <div className={styles.changeActions}>
+        <button type="submit" className={styles.changeBtn} disabled={busy}>
+          {busy ? "Sending…" : "Send it"}
+        </button>
+        <button
+          type="button"
+          className={styles.changeCancel}
+          onClick={() => setOpen(false)}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
 }

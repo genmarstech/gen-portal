@@ -2465,6 +2465,9 @@ def assign_task(
     title: str,
     detail: str = "",
     order: Order | None = None,
+    organisation: Organisation | None = None,
+    ticket: SupportTicket | None = None,
+    decision: Decision | None = None,
     due_on: date | None = None,
     priority: str = Task.Priority.NORMAL,
 ) -> Task:
@@ -2501,12 +2504,37 @@ def assign_task(
     if priority not in Task.Priority.values:
         raise OperationsError("That is not a priority we use.", field="priority")
 
+    # The client is inferred from whatever the task is attached to, so that
+    # "what is outstanding for this client" finds work filed against their
+    # order or their ticket without anybody having had to set it twice.
+    if organisation is None:
+        if order is not None:
+            organisation = order.organisation
+        elif ticket is not None:
+            organisation = ticket.organisation
+
+    # And the pieces must agree. A task pointing at one client's order and
+    # another client's ticket is a row that appears under both and is right
+    # about neither.
+    for label, related in (("order", order), ("ticket", ticket)):
+        if (
+            related is not None
+            and organisation is not None
+            and related.organisation_id != organisation.id
+        ):
+            raise OperationsError(
+                f"That {label} belongs to a different client.", field=label
+            )
+
     task = Task.objects.create(
         title=title,
         detail=detail.strip(),
         assignee=assignee,
         assigned_by=actor,
         order=order,
+        organisation=organisation,
+        ticket=ticket,
+        decision=decision,
         due_on=due_on,
         priority=priority,
     )
@@ -2524,7 +2552,16 @@ def assign_task(
     record(
         actor=actor,
         action=ActivityLog.Action.TASK_ASSIGNED,
-        subject=order.reference if order else "",
+        subject=(
+            order.reference
+            if order
+            else ticket.reference
+            if ticket
+            else decision.reference
+            if decision
+            else ""
+        ),
+        organisation=organisation,
         summary=f"{task.title} assigned to {assignee.full_name or assignee.email}",
         assignee=assignee.email,
         due_on=str(due_on) if due_on else None,
@@ -3594,6 +3631,10 @@ def create_order(
     service: Service | None = None,
     from_contact: ContactLogEntry | None = None,
     tell_client: bool = True,
+    kind: str = Order.Kind.PROJECT,
+    started_on: date | None = None,
+    completed_on: date | None = None,
+    status: str | None = None,
 ) -> Order:
     """
     Open an order for a client we already have, with no enquiry behind it.
@@ -3641,6 +3682,36 @@ def create_order(
     if from_contact is not None and from_contact.organisation_id != organisation.id:
         raise OperationsError("That conversation belongs to a different client.")
 
+    if kind not in Order.Kind.values:
+        raise OperationsError("That is not a kind of work.", field="kind")
+
+    # ── work that happened before it was written down ───────────────────────
+    #
+    # Recognised by a start date in the past rather than by a checkbox: a
+    # checkbox is a thing somebody forgets to tick, and the date is already
+    # required to describe the work honestly. See Order.recorded_retrospectively
+    # for what the flag then stops from happening.
+    today = timezone.localdate()
+    retrospective = bool(started_on and started_on < today) or bool(completed_on)
+
+    if completed_on and started_on and completed_on < started_on:
+        raise OperationsError(
+            "It cannot have finished before it started.", field="completed_on"
+        )
+    if completed_on and completed_on > today:
+        raise OperationsError(
+            "That is in the future. A completion date is recorded after the fact.",
+            field="completed_on",
+        )
+
+    if status is not None and status not in Order.Status.values:
+        raise OperationsError("That is not an order status.", field="status")
+    if status is None:
+        # Past work that finished is DELIVERED, not SCOPING. An order recorded
+        # as scoping for something delivered last year would sit on the
+        # delivery board forever, waiting for gates nobody is going to meet.
+        status = Order.Status.DELIVERED if completed_on else Order.Status.SCOPING
+
     last_error: IntegrityError | None = None
     for _ in range(_MAX_REFERENCE_ATTEMPTS):
         try:
@@ -3651,10 +3722,14 @@ def create_order(
                     title=title.strip(),
                     scope=scope.strip(),
                     exclusions=exclusions.strip(),
-                    status=Order.Status.SCOPING,
+                    status=status,
                     contact=lead,
                     target_date=target_date,
                     service=service,
+                    kind=kind,
+                    started_on=started_on,
+                    completed_on=completed_on,
+                    recorded_retrospectively=retrospective,
                 )
             break
         except IntegrityError as exc:  # pragma: no cover - needs a real race
@@ -3662,7 +3737,11 @@ def create_order(
     else:  # pragma: no cover
         raise OperationsError("Could not allocate an order reference. Try again.") from last_error
 
-    create_delivery_gates(order=order)
+    # Gates describe a project being built. Retrospective work has already been
+    # built, and a retainer is never "done" — six unmet gates against either is
+    # a delivery board describing something that is not happening.
+    if not retrospective and kind == Order.Kind.PROJECT:
+        create_delivery_gates(order=order)
 
     # Close the loop: the conversation this came out of now points at the work.
     if from_contact is not None and from_contact.order_id is None:
@@ -3678,7 +3757,11 @@ def create_order(
         direct=True,
     )
 
-    if tell_client:
+    # Never for past work. "This is what we understood you asked for, nothing
+    # has started yet" is a lie about something delivered a year ago, and it
+    # would arrive in the client's inbox looking like we had lost track of
+    # what we had already done for them.
+    if tell_client and not retrospective:
         notify_order_opened(order)
 
     return order

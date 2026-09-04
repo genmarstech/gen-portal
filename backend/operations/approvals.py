@@ -85,6 +85,12 @@ DELEGABLE: dict[str, Delegable] = {
             "Affects future quotes only — sent offers are frozen.",
         ),
         Delegable(
+            "task.assign",
+            "Put work on somebody else's board",
+            "Founder",
+            "Decides what that person does with their week. Reversible — the task can be reassigned or closed.",
+        ),
+        Delegable(
             "client.archive",
             "Archive a client",
             "Founder",

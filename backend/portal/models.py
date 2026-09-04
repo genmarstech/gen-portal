@@ -88,7 +88,62 @@ class Order(models.Model):
         limit_choices_to={"is_staff": True},
     )
 
+    class Kind(models.TextChoices):
+        """
+        What SHAPE of work this is, which is not the same as its status.
+
+        ══════════════════════════════════════════════════════════════════════
+        A PROJECT ENDS. A RETAINER DOES NOT, AND THE DIFFERENCE IS NOT COSMETIC.
+
+        Every expectation attached to an order assumes a project: a fixed
+        scope, a delivery date, gates that get met, a thing that finishes. A
+        hosting arrangement or a monthly retainer has none of those and never
+        will, so measuring one against them produces an order that is
+        permanently late and a delivery board that is permanently wrong.
+        ══════════════════════════════════════════════════════════════════════
+        """
+
+        PROJECT = "project", "Project"
+        RETAINER = "retainer", "Retainer"
+        # Ongoing changes to something already built — the commonest shape of
+        # work with a client we delivered to a year ago.
+        UPDATES = "updates", "Ongoing updates"
+        HOSTING = "hosting", "Hosting and upkeep"
+
+    kind = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.PROJECT, db_index=True
+    )
+
     started_on = models.DateField(null=True, blank=True)
+    completed_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the work actually finished. Set on past work recorded after "
+            "the fact; a project delivered through this system gets it when its "
+            "status moves to delivered."
+        ),
+    )
+
+    # ── recorded after the fact ─────────────────────────────────────────────
+    #
+    # ══════════════════════════════════════════════════════════════════════
+    # THIS FLAG EXISTS TO STOP TEN HISTORICAL ORDERS SETTING OFF TEN ALARMS.
+    #
+    # Charter 05 §III promises a written progress note every week, and the
+    # operations queue counts active orders that have not had one. Backfilling
+    # work Genmars delivered in 2025 would light that counter up for
+    # engagements that finished a year ago — notes that were never going to be
+    # written, for a promise that was not in force at the time.
+    #
+    # It also changes what the CLIENT is told. An order recorded
+    # retrospectively must not show "you will get a written update every week
+    # this engagement is active" against work that is already done.
+    # ══════════════════════════════════════════════════════════════════════
+    recorded_retrospectively = models.BooleanField(
+        default=False,
+        help_text="True for work that happened before it was entered here.",
+    )
     target_date = models.DateField(
         null=True,
         blank=True,
@@ -1747,6 +1802,22 @@ class Task(models.Model):
         limit_choices_to={"is_staff": True},
     )
 
+    # ── what this work is about ─────────────────────────────────────────────
+    #
+    # ══════════════════════════════════════════════════════════════════════
+    # FOUR OPTIONAL LINKS, AND EVERY ONE OF THEM IS OPTIONAL ON PURPOSE.
+    #
+    # A task board that demands to know which project a task belongs to is a
+    # board people stop using, because a real day contains "chase the KRA PIN"
+    # and "write the retainer proposal" alongside project work. The links exist
+    # so a task can be FOUND from the thing it is about — open a client and see
+    # what is outstanding for them — not so that every task is filed.
+    #
+    # They are also how this stops being a second to-do list living beside the
+    # company's actual records. A task hanging off nothing is a note; a task
+    # hanging off a support ticket is the answer somebody is waiting for.
+    # ══════════════════════════════════════════════════════════════════════
+
     order = models.ForeignKey(
         Order,
         on_delete=models.CASCADE,
@@ -1754,6 +1825,37 @@ class Task(models.Model):
         blank=True,
         related_name="tasks",
         help_text="Optional. Plenty of real work is not against an order.",
+    )
+
+    # The client, when the work is for one but not against a specific order —
+    # a retainer conversation, chasing a renewal, preparing a quote.
+    organisation = models.ForeignKey(
+        Organisation,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="tasks",
+    )
+
+    # SET_NULL rather than CASCADE, unlike the two above. A ticket can be
+    # deleted or a decision reversed; the work somebody did about it happened
+    # either way, and deleting the task would erase a person's day to tidy a
+    # reference.
+    ticket = models.ForeignKey(
+        "SupportTicket",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tasks",
+        help_text="The support request this is the answer to.",
+    )
+    decision = models.ForeignKey(
+        "Decision",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tasks",
+        help_text="A decision that created work — the follow-through it commits us to.",
     )
 
     status = models.CharField(

@@ -803,6 +803,15 @@ class TaskSerializer(serializers.ModelSerializer):
     order_reference = serializers.CharField(
         source="order.reference", read_only=True, default=None
     )
+    organisation_name = serializers.CharField(
+        source="organisation.name", read_only=True, default=None
+    )
+    ticket_reference = serializers.CharField(
+        source="ticket.reference", read_only=True, default=None
+    )
+    decision_reference = serializers.CharField(
+        source="decision.reference", read_only=True, default=None
+    )
     overdue = serializers.SerializerMethodField()
 
     class Meta:
@@ -812,6 +821,12 @@ class TaskSerializer(serializers.ModelSerializer):
             "status", "status_label", "priority", "priority_label",
             "due_on", "overdue", "blocked_reason", "done_at",
             "order", "order_reference", "created_at",
+            # What the work is about. All optional — a board that demands to
+            # know which project a task belongs to is a board people stop
+            # using.
+            "organisation", "organisation_name",
+            "ticket", "ticket_reference",
+            "decision", "decision_reference",
         ]
         read_only_fields = fields
 
@@ -826,7 +841,12 @@ class TaskWriteSerializer(serializers.Serializer):
     assignee = serializers.IntegerField()
     title = serializers.CharField(max_length=200)
     detail = serializers.CharField(required=False, allow_blank=True, default="")
+    # What it is about. All optional, and the client is inferred from whichever
+    # of these is given — see services.assign_task.
     order = serializers.CharField(required=False, allow_blank=True, default="")
+    organisation = serializers.IntegerField(required=False, allow_null=True, default=None)
+    ticket = serializers.CharField(required=False, allow_blank=True, default="")
+    decision = serializers.IntegerField(required=False, allow_null=True, default=None)
     due_on = serializers.DateField(required=False, allow_null=True, default=None)
     priority = serializers.ChoiceField(
         choices=Task.Priority.choices, required=False, default=Task.Priority.NORMAL
@@ -1406,6 +1426,13 @@ class OrderCreateSerializer(serializers.Serializer):
     exclusions = serializers.CharField(required=False, allow_blank=True, default="")
     contact = serializers.IntegerField(required=False, allow_null=True)
     target_date = serializers.DateField(required=False, allow_null=True)
+    # Shape of work, and when it actually happened. A start date in the past
+    # or any completion date marks it as recorded after the fact — see
+    # services.create_order.
+    kind = serializers.CharField(required=False, allow_blank=True, default="project")
+    started_on = serializers.DateField(required=False, allow_null=True)
+    completed_on = serializers.DateField(required=False, allow_null=True)
+    status = serializers.CharField(required=False, allow_blank=True, default="")
     service = serializers.IntegerField(required=False, allow_null=True)
     from_contact = serializers.IntegerField(required=False, allow_null=True)
     # Default TRUE. An order the client has not been shown is a scope written

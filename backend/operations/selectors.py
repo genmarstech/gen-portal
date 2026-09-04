@@ -158,9 +158,13 @@ def queue_counts() -> dict[str, int]:
         # nobody is looking at is the failure mode, and the queue screen is
         # where people spend their time rather than the delivery board.
         "open_blockers": Blocker.objects.filter(cleared_at__isnull=True).count(),
-        "awaiting_note": active.exclude(
-            notes__published_at__isnull=False, notes__week_of__gte=cutoff
-        ).count(),
+        # Retrospective records are excluded: their notes were never going to
+        # be written, for a promise that was not in force at the time. Without
+        # this, backfilling a year of past work lights the counter up for
+        # engagements that finished long ago — see Order.recorded_retrospectively.
+        "awaiting_note": active.exclude(recorded_retrospectively=True)
+        .exclude(notes__published_at__isnull=False, notes__week_of__gte=cutoff)
+        .count(),
         # A promise made on a call and not yet kept, past the date it was
         # promised for. Carried here for the same reason as awaiting_note:
         # "I'll send you a quote Thursday" is the commonest thing this company

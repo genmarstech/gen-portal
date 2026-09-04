@@ -199,6 +199,7 @@ class ClientInvoiceSerializer(serializers.ModelSerializer):
 
 
 class OrderDetailSerializer(serializers.ModelSerializer):
+    kind_label = serializers.CharField(source="get_kind_display", read_only=True)
     status_label = serializers.CharField(source="get_status_display", read_only=True)
     contact = ContactSerializer(read_only=True)
     organisation = serializers.CharField(source="organisation.name", read_only=True)
@@ -221,8 +222,14 @@ class OrderDetailSerializer(serializers.ModelSerializer):
             "exclusions",
             "status",
             "status_label",
+            "kind",
+            "kind_label",
             "contact",
             "started_on",
+            "completed_on",
+            # So the page can stop promising a weekly note against work that
+            # was recorded after it finished — see Order.recorded_retrospectively.
+            "recorded_retrospectively",
             "target_date",
             "notes",
             "milestones",

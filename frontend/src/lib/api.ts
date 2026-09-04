@@ -384,6 +384,16 @@ export type OrderDetail = OrderSummary & {
   exclusions: string;
   contact: { full_name: string; email: string };
   started_on: string | null;
+  completed_on: string | null;
+  /** The shape of the work: a project finishes, a retainer does not. */
+  kind: "project" | "retainer" | "updates" | "hosting";
+  kind_label: string;
+  /**
+   * Work recorded after it happened — an engagement that predates this portal.
+   * The page must not promise a weekly note against it: those notes were never
+   * going to be written, for a promise that was not in force at the time.
+   */
+  recorded_retrospectively: boolean;
   notes: ProgressNote[];
   milestones: Milestone[];
   /** Null while an order is still being scoped — an ordinary state, not an error. */

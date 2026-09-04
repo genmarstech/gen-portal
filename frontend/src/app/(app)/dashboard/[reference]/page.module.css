@@ -404,3 +404,102 @@ a.iNumber {
 a.iNumber:hover {
   border-bottom-color: var(--accent);
 }
+
+/* ---------- change request ---------- */
+
+.changeBtn {
+  align-self: flex-start;
+  margin-top: var(--sp-3);
+  padding: 0.5rem 0.9rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--bg);
+  background: var(--ink);
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.changeBtn:hover:not(:disabled) {
+  background: var(--ink-muted);
+}
+
+.changeBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.changeForm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+  padding: var(--sp-4);
+  background: var(--bg-sunken);
+  border-radius: var(--radius);
+}
+
+.changeField {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.changeLabel {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.changeInput {
+  width: 100%;
+  padding: 0.55rem 0.7rem;
+  font: inherit;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius);
+  resize: vertical;
+}
+
+.changeInput:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.changeActions {
+  display: flex;
+  gap: var(--sp-3);
+  align-items: center;
+}
+
+.changeCancel {
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+.changeError {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--danger);
+}
+
+/* Names the reference, so they have something to quote back at us — and says
+   what happens next without claiming when. */
+.changeDone {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+  background: var(--bg-sunken);
+  border-radius: var(--radius);
+}

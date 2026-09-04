@@ -1311,15 +1311,42 @@ class OfferActionView(StaffView):
 
 class TaskListView(StaffView):
     """
-    Internal work. Everyone here can see all of it and assign it.
+    Internal work: the board, and putting something on it.
 
-    Deliberately not gated to a role: knowing what the company is working on is
-    not privileged information inside the company, and a gate on assigning work
-    is a gate on getting it done.
+    ══════════════════════════════════════════════════════════════════════════
+    ASSIGNING WORK TO SOMEBODY ELSE IS DIRECTING THEIR TIME.
+
+    This used to be open to every staff account, on the reasoning that a gate
+    on assigning work is a gate on getting it done. That was wrong, and it was
+    wrong in a way worth naming: it treated assignment as a filing action when
+    it is a management one. Anyone could put a task with a due date on anyone
+    else's board, and the person it landed on had no say in it.
+
+    So handing work to another person is the founder's, like every other act
+    that decides what somebody else does with their week.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── PICKING UP WORK YOURSELF IS NOT ────────────────────────────────────────
+
+    Assigning to YOURSELF stays open to everybody, and that carve-out is what
+    keeps the gate from becoming the thing the old docstring feared. Writing
+    down what you are going to do next is not a management act, and needing
+    permission for it would mean the board stops describing what people are
+    actually working on.
+
+    ── AND THE REFUSAL IS ASKABLE ─────────────────────────────────────────────
+
+    `task.assign` is delegable, so somebody who genuinely needs to hand a piece
+    of work over can ask rather than sending a message that leaves no record.
+
+    READING stays open to everyone. Knowing what the company is working on is
+    not privileged information inside the company.
     """
 
     def get(self, request):
-        tasks = Task.objects.select_related("assignee", "order").all()
+        tasks = Task.objects.select_related(
+            "assignee", "order", "organisation", "ticket", "decision"
+        ).all()
 
         assignee = request.query_params.get("assignee")
         if assignee == "me":
@@ -1331,6 +1358,22 @@ class TaskListView(StaffView):
         if state in Task.Status.values:
             tasks = tasks.filter(status=state)
 
+        # "What is outstanding for this client", answered from whichever thing
+        # the task was filed against — the order, the ticket, or the client
+        # directly. See Task's docstring on why every link is optional.
+        organisation = request.query_params.get("organisation")
+        if organisation:
+            tasks = tasks.filter(organisation_id=organisation)
+
+        for param, field in (
+            ("order", "order__reference"),
+            ("ticket", "ticket__reference"),
+            ("decision", "decision_id"),
+        ):
+            value = request.query_params.get(param)
+            if value:
+                tasks = tasks.filter(**{field: value})
+
         return Response({"tasks": TaskSerializer(tasks, many=True).data})
 
     def post(self, request):
@@ -1338,16 +1381,52 @@ class TaskListView(StaffView):
         form.is_valid(raise_exception=True)
 
         assignee = get_object_or_404(User, pk=form.validated_data["assignee"])
+
+        # Yourself, always. Somebody else, only with the authority to direct
+        # their time — or a founder's approval for this one act.
+        if assignee.pk != request.user.pk and not _may(
+            request,
+            CanManageAccess,
+            action="task.assign",
+            subject=assignee.full_name or assignee.email,
+        ):
+            return _needs_permission(
+                "Putting work on somebody else's board is deciding what they do "
+                "with their week. You can assign to yourself freely.",
+                action="task.assign",
+                subject=assignee.full_name or assignee.email,
+            )
         order = None
         if form.validated_data["order"]:
             order = Order.objects.filter(
                 reference=form.validated_data["order"]
             ).first()
 
+        organisation = None
+        if form.validated_data.get("organisation"):
+            organisation = Organisation.objects.filter(
+                pk=form.validated_data["organisation"]
+            ).first()
+
+        ticket = None
+        if form.validated_data.get("ticket"):
+            ticket = SupportTicket.objects.filter(
+                reference=form.validated_data["ticket"]
+            ).first()
+
+        decision = None
+        if form.validated_data.get("decision"):
+            decision = Decision.objects.filter(
+                pk=form.validated_data["decision"]
+            ).first()
+
         try:
             task = services.assign_task(
                 actor=request.user,
                 assignee=assignee,
+                organisation=organisation,
+                ticket=ticket,
+                decision=decision,
                 title=form.validated_data["title"],
                 detail=form.validated_data["detail"],
                 order=order,
@@ -2192,6 +2271,13 @@ class ClientOrderView(StaffView):
             from_contact = ContactLogEntry.objects.filter(
                 pk=form.validated_data["from_contact"]
             ).first()
+
+        # Blank means "you decide", which the service does from whether there
+        # is a completion date. An empty string would fail its own validation.
+        if not data.get("status"):
+            data["status"] = None
+        if not data.get("kind"):
+            data["kind"] = Order.Kind.PROJECT
 
         try:
             order = services.create_order(
