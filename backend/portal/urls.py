@@ -2,7 +2,7 @@
 
 from django.urls import path
 
-from . import system_api, views
+from . import attachments, system_api, views
 
 urlpatterns = [
     path("onboarding", views.OnboardingView.as_view(), name="onboarding"),
@@ -83,6 +83,17 @@ urlpatterns = [
         "mpesa/callback/<str:token>",
         views.MpesaCallbackView.as_view(),
         name="mpesa-callback-token",
+    ),
+    # ── the one route that serves an uploaded file ──────────────────────────
+    #
+    # Staff-only, always Content-Disposition: attachment, always nosniff. See
+    # portal/attachments.py — it is here rather than under /ops/ only because
+    # it is a browser navigation rather than an API call, and it enforces
+    # IsStaff itself.
+    path(
+        "attachments/<int:pk>",
+        attachments.AttachmentDownloadView.as_view(),
+        name="attachment-download",
     ),
     path("account/export", views.ExportView.as_view(), name="export"),
 ]

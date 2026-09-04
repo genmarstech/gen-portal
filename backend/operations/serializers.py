@@ -15,6 +15,7 @@ from portal.models import (
     ActivityLog,
     Blocker,
     ClientProfile,
+    ContactAttachment,
     ContactLogEntry,
     Contract,
     Decision,
@@ -516,9 +517,20 @@ class OrganisationSerializer(serializers.ModelSerializer):
     memberships = MembershipSerializer(many=True, read_only=True)
     order_count = serializers.IntegerField(read_only=True)
 
+    is_archived = serializers.BooleanField(read_only=True)
+
     class Meta:
         model = Organisation
-        fields = ["id", "name", "created_at", "memberships", "order_count"]
+        fields = [
+            "id",
+            "name",
+            "created_at",
+            "memberships",
+            "order_count",
+            "is_archived",
+            "archived_at",
+            "archived_reason",
+        ]
 
 
 class OrganisationWriteSerializer(serializers.Serializer):
@@ -1257,6 +1269,35 @@ class HostingWriteSerializer(serializers.Serializer):
     notes = serializers.CharField(required=False, allow_blank=True)
 
 
+class AttachmentSerializer(serializers.ModelSerializer):
+    """
+    Metadata only. The bytes leave through AttachmentDownloadView and nowhere
+    else — there is no URL here that a browser could render inline.
+    """
+
+    uploaded_by = serializers.CharField(source="uploaded_by_label", read_only=True)
+    is_image = serializers.BooleanField(read_only=True)
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ContactAttachment
+        fields = [
+            "id",
+            "original_name",
+            "content_type",
+            "size_bytes",
+            "caption",
+            "uploaded_by",
+            "is_image",
+            "url",
+            "created_at",
+        ]
+
+    def get_url(self, attachment: ContactAttachment) -> str:
+        # The download route, not a media path. MEDIA_URL is empty on purpose.
+        return f"/api/attachments/{attachment.pk}"
+
+
 class ContactLogSerializer(serializers.ModelSerializer):
     channel_label = serializers.CharField(source="get_channel_display", read_only=True)
     direction_label = serializers.CharField(source="get_direction_display", read_only=True)
@@ -1270,6 +1311,7 @@ class ContactLogSerializer(serializers.ModelSerializer):
     organisation_id = serializers.IntegerField(read_only=True)
     is_owed = serializers.BooleanField(read_only=True)
     is_overdue = serializers.SerializerMethodField()
+    attachments = AttachmentSerializer(many=True, read_only=True)
 
     class Meta:
         model = ContactLogEntry
@@ -1292,6 +1334,7 @@ class ContactLogSerializer(serializers.ModelSerializer):
             "cleared_at",
             "is_owed",
             "is_overdue",
+            "attachments",
         ]
 
     def get_is_overdue(self, entry: ContactLogEntry) -> bool:
@@ -1308,3 +1351,21 @@ class ContactLogWriteSerializer(serializers.Serializer):
     order = serializers.CharField(required=False, allow_blank=True, default="")
     follow_up = serializers.CharField(max_length=300, required=False, allow_blank=True, default="")
     follow_up_by = serializers.DateField(required=False, allow_null=True)
+
+
+class OrderCreateSerializer(serializers.Serializer):
+    """
+    Shape only. Whether an order may be opened, and what it must contain, lives
+    in services.create_order.
+    """
+
+    title = serializers.CharField(max_length=200, allow_blank=True)
+    scope = serializers.CharField(allow_blank=True)
+    exclusions = serializers.CharField(required=False, allow_blank=True, default="")
+    contact = serializers.IntegerField(required=False, allow_null=True)
+    target_date = serializers.DateField(required=False, allow_null=True)
+    service = serializers.IntegerField(required=False, allow_null=True)
+    from_contact = serializers.IntegerField(required=False, allow_null=True)
+    # Default TRUE. An order the client has not been shown is a scope written
+    # down where the only person who can say it is wrong will never read it.
+    tell_client = serializers.BooleanField(required=False, default=True)

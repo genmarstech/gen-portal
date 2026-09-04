@@ -19,6 +19,7 @@ own release.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from pathlib import Path
 from decimal import Decimal
 
 from django.conf import settings
@@ -671,6 +672,22 @@ class Invoice(models.Model):
     # that is the field that cannot be null. When an order IS attached, its
     # organisation must be this one — enforced by a constraint below, because
     # an invoice filed against the wrong client is visible to the wrong client.
+    # ── who it was billed to, as it read on the day ─────────────────────────
+    #
+    # A COPY of the organisation's name, not a lookup through the FK.
+    #
+    # This model's docstring already commits to the snapshot rule for amounts,
+    # and the billed-to line needs it for exactly the same reason. Reading
+    # `organisation.name` live meant that renaming a client — a correction, a
+    # rebrand, a change of legal entity — silently rewrote the "To:" line on
+    # every invoice already issued, sent and paid. The client's PDF and ours
+    # would then disagree about who was billed, which is the one thing an
+    # invoice number exists to make impossible.
+    #
+    # Blank on rows issued before this field existed; the serializer falls back
+    # to the live name for those, which is what they were already showing.
+    billed_to_name = models.CharField(max_length=200, blank=True)
+
     organisation = models.ForeignKey(
         Organisation,
         on_delete=models.PROTECT,
@@ -1414,6 +1431,11 @@ class ActivityLog(models.Model):
         CONTACT_LOGGED = "contact.logged", "Conversation recorded"
         FOLLOW_UP_CLEARED = "contact.followed_up", "Follow-up cleared"
         CLIENT_PROFILE_CHANGED = "client.profile_changed", "Client details changed"
+        CLIENT_CREATED = "client.created", "Client added"
+        CLIENT_RENAMED = "client.renamed", "Client renamed"
+        CLIENT_ARCHIVED = "client.archived", "Client archived"
+        CLIENT_RESTORED = "client.restored", "Client restored"
+        CLIENT_DELETED = "client.deleted", "Client deleted"
         HOSTING_RECORDED = "hosting.recorded", "Hosting arrangement recorded"
         HOSTING_CHANGED = "hosting.changed", "Hosting arrangement changed"
         HOSTING_RETIRED = "hosting.retired", "Hosting arrangement retired"
@@ -3023,3 +3045,97 @@ class ContactLogEntry(models.Model):
         if not self.is_owed or self.follow_up_by is None:
             return False
         return self.follow_up_by < (today or timezone.localdate())
+
+
+def attachment_path(instance: "ContactAttachment", filename: str) -> str:
+    """
+    Where an uploaded file is stored, and it is NEVER the name it arrived with.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE CLIENT'S FILENAME IS DISPLAY TEXT AND NOTHING ELSE.
+
+    It is attacker-controlled. Used as a path it is `../../etc/passwd` or a
+    name that collides with somebody else's document; stored verbatim it also
+    leaks — "Kilimani Dental invoice dispute Feb.pdf" tells anyone who sees the
+    path something the file itself was going to tell them anyway, but the path
+    ends up in logs, backups and error reports where the file does not.
+
+    So the stored name is a random one, and the extension is taken from the
+    allowlist in portal/attachments.py rather than from the filename. What the
+    client called it lives in `original_name`, as a string, rendered as text.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    import uuid
+
+    suffix = Path(filename).suffix.lower()[:10]
+    # Keep one client's files together, so a deletion request under Charter 05
+    # §VIII is a directory rather than a query.
+    return f"contact/{instance.entry.organisation_id}/{uuid.uuid4().hex}{suffix}"
+
+
+class ContactAttachment(models.Model):
+    """
+    A file or photo that came out of a conversation.
+
+    The commonest one is a photograph: the paper booking sheet a spa still
+    runs on, a screenshot of an error, a receipt. Those arrive over WhatsApp
+    and used to live on a phone, which meant that the single most useful
+    artefact of a scoping conversation was the one thing not in the system.
+
+    ── WHY THERE ARE NO THUMBNAILS ─────────────────────────────────────────────
+
+    Generating them needs Pillow, and Charter 03 §I says a thing enters the
+    stack only when what is already there cannot do the job. Browsers scale
+    images perfectly well, and the cost of not having thumbnails is some
+    bandwidth on a page three people open. The cost of having them is an image
+    parser — historically one of the most exploited pieces of code in any
+    stack — running on files uploaded from outside.
+
+    ── AND NO CLIENT-FACING ROUTE ──────────────────────────────────────────────
+
+    These hang off ContactLogEntry, which is internal. Same reasoning: the log
+    is written honestly because nobody outside Genmars reads it. There is a
+    test that the client export cannot carry these.
+    """
+
+    entry = models.ForeignKey(
+        ContactLogEntry, on_delete=models.CASCADE, related_name="attachments"
+    )
+
+    file = models.FileField(upload_to=attachment_path, max_length=300)
+
+    # What the sender called it. Display text — see attachment_path.
+    original_name = models.CharField(max_length=255)
+    # What we decided it is, from sniffing the bytes — never what the browser
+    # claimed. See portal/attachments.py.
+    content_type = models.CharField(max_length=100)
+    size_bytes = models.PositiveIntegerField()
+
+    caption = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text="What it shows. A photo of a booking sheet is meaningless in a year without this.",
+    )
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="attachments",
+        limit_choices_to={"is_staff": True},
+    )
+    uploaded_by_label = models.CharField(max_length=200, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at", "id"]
+
+    def __str__(self) -> str:
+        return self.original_name
+
+    @property
+    def is_image(self) -> bool:
+        """Whether the BYTES said it is an image. Used only to decide whether a
+        preview is offered, never to decide how it is served."""
+        return self.content_type.startswith("image/")

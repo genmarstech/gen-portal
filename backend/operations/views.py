@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from django.shortcuts import get_object_or_404
+from rest_framework.parsers import FormParser, MultiPartParser
 from django.utils import timezone
 from rest_framework import status as http
 from rest_framework.response import Response
@@ -27,6 +28,7 @@ from portal.models import (
     ActivityLog,
     Blocker,
     ClientProfile,
+    ContactAttachment,
     ContactLogEntry,
     Contract,
     Decision,
@@ -62,8 +64,10 @@ from .permissions import (
 from .serializers import (
     BillingProfileSerializer,
     ActivitySerializer,
+    AttachmentSerializer,
     ClientProfileSerializer,
     ClientProfileWriteSerializer,
+    OrderCreateSerializer,
     ClockSerializer,
     ContactLogSerializer,
     ContactLogWriteSerializer,
@@ -523,24 +527,84 @@ class BackfillGatesView(StaffView):
 
 
 class OrganisationListView(StaffView):
+    """
+    Clients: the list, and adding one.
 
-    permission_classes = [CanManageAccess]
+    ══════════════════════════════════════════════════════════════════════════
+    WHO MAY DO WHAT TO A CLIENT, AND WHY IT IS SPLIT THAT WAY.
+
+    READING is shared with every staff account, like every other read in this
+    app. It used to be founder-only, which was wrong by the house rule and
+    wrong in practice: a delivery engineer needs the client's phone number and
+    the history of what was said in order to do the work, and making them ask
+    somebody for it is management theatre, not access control.
+
+    ADDING one is CanQualify. A client organisation is the front of the
+    pipeline, and it is the same authority Charter 02 §I gives for deciding
+    that an enquiry becomes work.
+
+    RENAMING and editing their details is shared. Fixing a wrong phone number
+    should not need a founder, and renaming is safe now that invoices hold
+    their own copy of the billed-to name.
+
+    ACCESS — inviting and removing people — stays CanManageAccess. That is the
+    one that hands a client's commercial detail to a new pair of eyes, and it
+    is unchanged.
+
+    ARCHIVING and DELETING are CanManageAccess. Both remove a client from every
+    screen the company works from, and archiving is refused outright while
+    money is outstanding.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
     def get(self, request):
+        include_archived = request.query_params.get("archived") == "1"
         return Response(
-            {"organisations": OrganisationSerializer(selectors.organisations(), many=True).data}
+            {
+                "organisations": OrganisationSerializer(
+                    selectors.organisations(include_archived=include_archived), many=True
+                ).data,
+                "archived_count": Organisation.objects.filter(
+                    archived_at__isnull=False
+                ).count(),
+                "may": _client_capabilities(request.user),
+            }
         )
 
     def post(self, request):
+        if not CanQualify().has_permission(request, self):
+            return Response(
+                {"detail": "Adding a client is a commercial decision."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
         form = OrganisationWriteSerializer(data=request.data)
         form.is_valid(raise_exception=True)
         try:
-            org = services.create_organisation(name=form.validated_data["name"])
+            org = services.create_organisation(name=form.validated_data["name"], actor=request.user)
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(
             OrganisationSerializer(selectors.organisation(org.pk)).data,
             status=http.HTTP_201_CREATED,
         )
+
+
+def _client_capabilities(user) -> dict:
+    """
+    What this account may do on the clients screens.
+
+    For HIDING CONTROLS, never for enforcing anything — every write below
+    checks again on the server, and a screen trusting these alone would be a
+    suggestion rather than a permission model. It exists so the UI does not
+    offer a button that is going to 403.
+    """
+    return {
+        "add": user.can_qualify,
+        "rename": True,
+        "manage_access": user.can_manage_access,
+        "archive": user.can_manage_access,
+        "delete": user.can_manage_access,
+    }
 
 
 class OrganisationMembersView(StaffView):
@@ -1916,3 +1980,223 @@ class FollowUpView(StaffView):
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(ContactLogSerializer(entry).data)
+
+
+class ContactAttachmentView(StaffView):
+    """
+    Attach a file or photo to a conversation.
+
+    Multipart, and the ONLY endpoint in this API that takes one. What may be
+    stored is decided by portal/attachments.py, which reads the bytes rather
+    than believing the browser; nothing about that judgement lives here.
+    """
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk: int):
+        entry = get_object_or_404(ContactLogEntry, pk=pk)
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response(
+                {"detail": "No file arrived.", "field": "file"},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+
+        from portal import attachments as attachment_rules
+
+        try:
+            attachment = services.attach_to_contact(
+                entry=entry,
+                actor=request.user,
+                upload=upload,
+                caption=str(request.data.get("caption", "") or ""),
+            )
+        except attachment_rules.AttachmentError as exc:
+            body = {"detail": exc.message}
+            if exc.field:
+                body["field"] = exc.field
+            return Response(body, status=http.HTTP_400_BAD_REQUEST)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(AttachmentSerializer(attachment).data, status=http.HTTP_201_CREATED)
+
+    def delete(self, request, pk: int):
+        """
+        Remove one attachment. `pk` is the ATTACHMENT here, not the entry.
+
+        A real delete, file and row, unlike almost everything else in this
+        system. The reason is Charter 05 §VIII in reverse: a client who sends
+        us a photograph by mistake — the wrong document, somebody's ID — is
+        owed the ability to have it actually gone, and a soft delete that keeps
+        the bytes on disk would be us saying it was deleted when it was not.
+        The log keeps the fact that it existed and who removed it.
+        """
+        attachment = get_object_or_404(ContactAttachment, pk=pk)
+        entry = attachment.entry
+        name = attachment.original_name
+
+        attachment.file.delete(save=False)
+        attachment.delete()
+
+        services.record(
+            actor=request.user,
+            action=ActivityLog.Action.CONTACT_LOGGED,
+            subject=entry.organisation.name,
+            organisation=entry.organisation,
+            summary=f"Attachment removed from a conversation with {entry.organisation.name}: {name[:120]}",
+        )
+        return Response(status=http.HTTP_204_NO_CONTENT)
+
+
+class ClientOrderView(StaffView):
+    """
+    Open an order for an existing client, and tell them.
+
+    ── NOT THE SAME THING AS CONVERTING AN ENQUIRY ─────────────────────────────
+
+    An enquiry is a request that came through the portal and goes through
+    triage. This is for a client we already have, who asked for something on a
+    call — there is no enquiry to qualify, and inventing one so the existing
+    endpoint could be reused would put a fictional client submission in the
+    record.
+
+    Both land in the same place: an order in SCOPING with gates, which is what
+    Charter 05 §I requires to exist before work begins.
+    """
+
+    permission_classes = [CanQualify]
+
+    def post(self, request, pk: int):
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        form = OrderCreateSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = dict(form.validated_data)
+
+        contact = None
+        if data.pop("contact", None):
+            contact = User.objects.filter(
+                pk=form.validated_data["contact"], is_staff=True
+            ).first()
+            if contact is None:
+                return Response(
+                    {"detail": "That is not a Genmars account.", "field": "contact"},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+
+        service = None
+        if data.pop("service", None):
+            service = Service.objects.filter(pk=form.validated_data["service"]).first()
+
+        from_contact = None
+        if data.pop("from_contact", None):
+            from_contact = ContactLogEntry.objects.filter(
+                pk=form.validated_data["from_contact"]
+            ).first()
+
+        try:
+            order = services.create_order(
+                organisation=organisation,
+                actor=request.user,
+                contact=contact,
+                service=service,
+                from_contact=from_contact,
+                **data,
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(
+            OrderDetailSerializer(selectors.order(order.reference)).data,
+            status=http.HTTP_201_CREATED,
+        )
+
+
+class ClientAdminView(StaffView):
+    """
+    Rename, archive, restore and delete a client.
+
+    The permission is decided per verb inside the methods rather than by
+    `permission_classes`, because they genuinely differ — see
+    OrganisationListView for the whole split and the reasoning.
+    """
+
+    def patch(self, request, pk: int):
+        """
+        Rename. Open to any staff account.
+
+        Safe now that `Invoice.billed_to_name` holds its own copy: before that,
+        a rename rewrote the "To:" line on every invoice already issued and
+        paid, so our copy of a numbered document and the client's would
+        disagree about who was billed.
+        """
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        form = OrganisationWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            organisation = services.rename_organisation(
+                organisation=organisation, actor=request.user, name=form.validated_data["name"]
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(OrganisationSerializer(selectors.organisation(organisation.pk)).data)
+
+    def post(self, request, pk: int):
+        """Archive or restore. Founder only."""
+        if not CanManageAccess().has_permission(request, self):
+            return Response(
+                {"detail": "Only a founder can archive or restore a client."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
+
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        action = request.data.get("action")
+        try:
+            if action == "restore":
+                organisation = services.restore_organisation(
+                    organisation=organisation, actor=request.user
+                )
+            elif action == "archive":
+                organisation = services.archive_organisation(
+                    organisation=organisation,
+                    actor=request.user,
+                    reason=str(request.data.get("reason", "") or ""),
+                )
+            else:
+                return Response(
+                    {"detail": "Archive or restore."}, status=http.HTTP_400_BAD_REQUEST
+                )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(OrganisationSerializer(selectors.organisation(organisation.pk)).data)
+
+    def delete(self, request, pk: int):
+        """
+        Really delete. Founder only, and refused the moment anything is
+        attached — see services.delete_organisation.
+        """
+        if not CanManageAccess().has_permission(request, self):
+            return Response(
+                {"detail": "Only a founder can delete a client."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
+
+        organisation = selectors.organisation(pk)
+        if organisation is None:
+            return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        try:
+            services.delete_organisation(organisation=organisation, actor=request.user)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(status=http.HTTP_204_NO_CONTENT)

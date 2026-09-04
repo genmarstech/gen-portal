@@ -257,16 +257,23 @@ def delivery_counts() -> dict[str, int]:
     }
 
 
-def organisations() -> QuerySet[Organisation]:
+def organisations(*, include_archived: bool = False) -> QuerySet[Organisation]:
     """
-    Every client organisation with its people, for the accounts screen.
+    Client organisations with their people, for the clients screen.
+
+    Archived ones are excluded by default. They are not deleted and are one
+    toggle away — see archive_organisation for why hiding rather than deleting
+    is the only honest option for a client we have stopped working with.
 
     Prefetched: a members list that lazily walks memberships is one query per
     organisation plus one per member, on the page whose entire job is showing
     members.
     """
+    qs = Organisation.objects.all()
+    if not include_archived:
+        qs = qs.filter(archived_at__isnull=True)
     return (
-        Organisation.objects.annotate(order_count=Count("orders", distinct=True))
+        qs.annotate(order_count=Count("orders", distinct=True))
         .prefetch_related(
             Prefetch(
                 "memberships",
@@ -280,7 +287,15 @@ def organisations() -> QuerySet[Organisation]:
 
 
 def organisation(pk: int) -> Organisation | None:
-    return organisations().filter(pk=pk).first()
+    """
+    One client by id, ARCHIVED OR NOT.
+
+    Deliberately not scoped to the default list. Archiving hides a client from
+    the screens people work in; it does not make them unreadable, and a link
+    from an old invoice or a log entry to a 404 would look like the record had
+    been destroyed — which is the exact impression archiving exists to avoid.
+    """
+    return organisations(include_archived=True).filter(pk=pk).first()
 
 
 def services() -> QuerySet[Service]:

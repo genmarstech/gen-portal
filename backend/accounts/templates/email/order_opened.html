@@ -1,0 +1,48 @@
+{% extends "email/base.html" %}
+{% block content %}
+{% comment %}
+Charter 02 §I — a signed statement of work comes before delivery. This is sent
+when an order is opened in SCOPING, so it must not say or imply that work has
+begun. "We have written down what we understood" is the whole claim.
+
+Scope and exclusions are IN the message rather than behind a link: the value of
+writing scope down before work is that the client can disagree while it is
+still cheap, and one who has to find a password first disagrees in three weeks.
+{% endcomment %}
+<p style="margin:0 0 20px 0; font-size:13px; color:#7a7480;">
+  {{ reference }}
+</p>
+
+<p style="margin:0 0 24px 0; font-size:15px; line-height:1.7; color:#2e2b34;">
+  This is what we understood you asked for. Nothing has started yet &mdash;
+  please read it and tell us if any of it is wrong.
+</p>
+
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">
+  What it covers
+</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ scope }}</div>
+
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">
+  What it does not cover
+</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ limits }}</div>
+
+{% if target_date %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">
+  Target date
+</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; margin-bottom:22px;">{{ target_date }}</div>
+{% endif %}
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6; margin-top:24px;">
+  <tr>
+    <td style="padding-top:18px; font-size:14px; line-height:1.65; color:#5f5867;">
+      Your contact at Genmars is {{ contact }}.<br><br>
+      This order, and everything added to it, is in the portal:<br>
+      <a href="https://app.genmars.co.ke/dashboard/{{ reference }}" style="color:#834f49;">app.genmars.co.ke/dashboard/{{ reference }}</a>
+    </td>
+  </tr>
+</table>
+{% endblock %}

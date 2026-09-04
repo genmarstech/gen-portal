@@ -350,3 +350,75 @@ def send_data_export_notice(email: str, who: str, organisation: str, when: str) 
         },
     )
 
+
+
+def send_order_opened(
+    *,
+    email: str,
+    reference: str,
+    title: str,
+    scope: str,
+    exclusions: str,
+    target_date: str,
+    contact: str,
+) -> None:
+    """
+    We have written down what a client asked for. Charter 05 §I.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS EMAIL DOES NOT SAY WORK HAS STARTED, BECAUSE IT HAS NOT.
+
+    Charter 02 §I puts a signed statement of work before delivery. This is sent
+    when an order is opened in SCOPING — often straight after a phone call —
+    and the tempting sentence, "we've started on your booking system", would be
+    the company committing itself by notification instead of by contract.
+
+    What it says instead is what is true: here is what we understood, please
+    tell us if it is wrong.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THE SCOPE AND THE EXCLUSIONS ARE IN THE MESSAGE ─────────────────────────
+
+    Not behind a link, for the reason send_progress_note gives — but here it
+    matters more. The whole value of writing scope down before work is that the
+    client gets to disagree while disagreeing is cheap, and a client who has to
+    remember a password first is a client who reads it in three weeks.
+
+    ── AND THE EXCLUSIONS ARE NOT OMITTED WHEN EMPTY ───────────────────────────
+
+    A blank exclusions field says "we have not yet said what is out of scope",
+    which is honest and worth the client seeing. Quietly dropping the heading
+    would let an unstated boundary look like a settled one.
+    """
+    limits = exclusions.strip() or (
+        "We have not yet written down what is outside this. If there is "
+        "something you are assuming is included, now is the moment to say so."
+    )
+
+    _send(
+        to=email,
+        subject=f"{reference} — {title}",
+        text=(
+            f"{title}\n"
+            f"{reference}\n\n"
+            "This is what we understood you asked for. Nothing has started "
+            "yet — please read it and tell us if any of it is wrong.\n\n"
+            f"WHAT IT COVERS\n{scope}\n\n"
+            f"WHAT IT DOES NOT COVER\n{limits}\n\n"
+            + (f"TARGET DATE\n{target_date}\n\n" if target_date else "")
+            + f"Your contact at Genmars is {contact}.\n\n"
+            f"https://app.genmars.co.ke/dashboard/{reference}\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/order_opened.html",
+        context={
+            "heading": title,
+            "preheader": "What we understood you asked for — please check it.",
+            "reference": reference,
+            "scope": scope,
+            "limits": limits,
+            "target_date": target_date,
+            "contact": contact,
+        },
+    )

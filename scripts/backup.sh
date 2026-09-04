@@ -26,6 +26,7 @@ cd "$(dirname "$0")/.."
 RETENTION_DAYS="${RETENTION_DAYS:-14}"
 BACKUP_DIR="${BACKUP_DIR:-./backups}"
 DB_SERVICE="${DB_SERVICE:-db}"
+API_SERVICE="${API_SERVICE:-api}"
 POSTGRES_USER="${POSTGRES_USER:-genmars}"
 POSTGRES_DB="${POSTGRES_DB:-genmars_portal}"
 
@@ -168,6 +169,43 @@ if [ -n "$BACKUP_RECIPIENT" ]; then
     fi
 
     echo "==> Off-box copy ready: ${OFFSITE_DIR}/${name}.gpg"
+fi
+
+# ── uploaded files ──────────────────────────────────────────────────────────
+#
+# ══════════════════════════════════════════════════════════════════════════
+# THE DATABASE DUMP DOES NOT CONTAIN THESE, AND THE ROWS LOOK FINE WITHOUT THEM.
+#
+# Client photographs and documents live in the portal-media volume, not in
+# Postgres. Restore a dump alone and every ContactAttachment row comes back
+# pointing at a file that is not there — the log reads correctly, the download
+# 404s, and nothing anywhere says a restore was incomplete.
+#
+# So they are archived alongside every dump, under the same timestamp, so that
+# a pair can be restored together instead of somebody having to work out which
+# tarball goes with which dump.
+# ══════════════════════════════════════════════════════════════════════════
+
+media_name="media-${stamp}.tar.gz"
+if docker compose exec -T "$API_SERVICE" sh -c "test -d /app/media" >/dev/null 2>&1; then
+    echo "==> Archiving uploaded files"
+    # Streamed out of the container rather than read from the volume path on
+    # the host: the volume is owned by the container's user, and reading it
+    # directly needs root on a host where this runs as a service account.
+    if docker compose exec -T "$API_SERVICE" \
+           tar -czf - -C /app/media . > "${BACKUP_DIR}/${media_name}" 2>/dev/null; then
+        chmod 600 "${BACKUP_DIR}/${media_name}"
+        media_size="$(du -h "${BACKUP_DIR}/${media_name}" | cut -f1)"
+        echo "==> Wrote ${media_name} (${media_size})"
+    else
+        # Loud, and NOT fatal. The database dump is the thing that must not be
+        # lost, and failing the whole backup because the api container was
+        # restarting would trade a complete backup for none at all.
+        rm -f "${BACKUP_DIR}/${media_name}"
+        echo "WARNING: could not archive uploaded files. The database dump" >&2
+        echo "         above is fine; client photos and documents are NOT" >&2
+        echo "         in this backup." >&2
+    fi
 fi
 
 size="$(du -h "$target" | cut -f1)"

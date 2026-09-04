@@ -180,16 +180,42 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 
 class Organisation(models.Model):
-    """The client company. Orders hang off this, not off a user."""
+    """
+    The client company. Orders hang off this, not off a user.
+
+    ── THERE IS NO ORDINARY DELETE, AND THE REASON IS THE CASCADE ──────────────
+
+    Orders, invoices, contracts, support threads and the contact log all point
+    here. Deleting a row would take the company's record of a piece of work
+    with it — including invoices that were issued, sent and paid, which are
+    accounting records and not ours to remove because a relationship ended.
+
+    So a client that is no longer active is ARCHIVED: hidden from the screens
+    people work in, still readable, still attached to everything it was
+    attached to. A real delete is offered only for the genuine mistake — a
+    duplicate typed in twice with nothing hanging off it — and the service
+    refuses the moment anything does.
+    """
 
     name = models.CharField(max_length=200)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    archived_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when we stop working with them. Hides them; deletes nothing.",
+    )
+    archived_reason = models.CharField(max_length=300, blank=True)
 
     class Meta:
         ordering = ["name"]
 
     def __str__(self) -> str:
         return self.name
+
+    @property
+    def is_archived(self) -> bool:
+        return self.archived_at is not None
 
 
 class Membership(models.Model):

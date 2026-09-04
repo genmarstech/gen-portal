@@ -195,6 +195,21 @@ services:
       # running `load_runbooks` needs no rebuild.
       - ./docs/runbooks:/app/docs/runbooks:ro
 
+      # ── uploaded files ──────────────────────────────────────────────────
+      #
+      # A NAMED VOLUME, not a bind mount and not a directory in the image.
+      # The image is rebuilt on every deploy, so anything written inside it
+      # is destroyed the next time somebody ships — and the failure is
+      # silent: the rows survive, the files do not, and nobody finds out
+      # until a client asks for the photo they sent in March.
+      #
+      # NOTHING SERVES THIS PATH. There is no Caddy file_server for it and
+      # there must not be one: every byte here arrived from outside, and a
+      # static route would bypass both the permission check and the
+      # Content-Disposition header in one go. It leaves through
+      # portal.attachments.AttachmentDownloadView or not at all.
+      - portal-media:/app/media
+
     networks:
       - data
       - edge
@@ -316,6 +331,10 @@ services:
 
 volumes:
   portal-db:
+  # Client photographs and documents. Backed up by scripts/backup.sh only in
+  # the sense that the ROWS are in the database dump — the bytes are not. See
+  # the note in DEPLOYMENT.md.
+  portal-media:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Networks

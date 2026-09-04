@@ -264,6 +264,43 @@ USE_TZ = True
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Uploaded files
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ══════════════════════════════════════════════════════════════════════════
+# NOTHING UNDER MEDIA_ROOT IS EVER SERVED BY THE WEB SERVER.
+#
+# There is no Caddy `file_server` for this path and there must not be one.
+# Every file here arrived from outside — a client's photo of a booking sheet,
+# a PDF somebody forwarded — and two things follow from that:
+#
+#   · It is confidential (Charter 05 §V). A public path would hand one
+#     client's document to anyone who guessed the URL, and the URL is the only
+#     thing standing between them.
+#   · It is untrusted. A file the browser renders IN our origin — HTML, SVG —
+#     is stored cross-site scripting against a signed-in operations session.
+#
+# Both are handled in ONE place, portal.attachments.AttachmentDownloadView,
+# which checks the session and always sends Content-Disposition: attachment.
+# ══════════════════════════════════════════════════════════════════════════
+MEDIA_ROOT = env("MEDIA_ROOT", default=str(BASE_DIR / "media"))
+
+# Deliberately empty. Django only uses MEDIA_URL to build public links, and
+# there is no public link — a value here would be an invitation to add one.
+MEDIA_URL = ""
+
+# Anything larger is written to a temp file rather than held in memory, so a
+# handful of concurrent uploads cannot exhaust the container.
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2 * 1024 * 1024
+
+# The hard ceiling on a whole request body. Below this, gunicorn and Django
+# would happily buffer a 500 MB "photo" before anything got the chance to
+# refuse it. The per-file rule that users actually meet lives in
+# portal/attachments.py, which can explain itself; this is the backstop.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 12 * 1024 * 1024
+
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ── OUTBOUND MAIL ───────────────────────────────────────────────────────────

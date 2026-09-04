@@ -24,6 +24,7 @@ from portal.models import (
     BillingProfile,
     Blocker,
     ClientProfile,
+    ContactAttachment,
     ContactLogEntry,
     Contract,
     Decision,
@@ -402,7 +403,7 @@ def clear_blocker(*, blocker: Blocker, resolution: str = "") -> Blocker:
 
 
 @transaction.atomic
-def create_organisation(*, name: str) -> Organisation:
+def create_organisation(*, name: str, actor: User | None = None) -> Organisation:
     """
     A client organisation, created by staff rather than by a signup.
 
@@ -419,7 +420,16 @@ def create_organisation(*, name: str) -> Organisation:
         raise OperationsError(
             f"{existing.name} already exists.", field="name"
         )
-    return Organisation.objects.create(name=name)
+    organisation = Organisation.objects.create(name=name)
+    if actor is not None:
+        record(
+            actor=actor,
+            action=ActivityLog.Action.CLIENT_CREATED,
+            subject=name,
+            organisation=organisation,
+            summary=f"{name} added as a client",
+        )
+    return organisation
 
 
 @transaction.atomic
@@ -1149,6 +1159,7 @@ def issue_invoice(
                 invoice = Invoice.objects.create(
                     number=next_invoice_number(issued_on),
                     organisation=order.organisation,
+                    billed_to_name=order.organisation.name,
                     order=order,
                     milestone=milestone,
                     description=description,
@@ -1268,6 +1279,7 @@ def issue_direct_invoice(
                 invoice = Invoice.objects.create(
                     number=next_invoice_number(issued_on),
                     organisation=organisation,
+                    billed_to_name=organisation.name,
                     order=None,
                     milestone=None,
                     description=description,
@@ -3349,3 +3361,394 @@ def clear_follow_up(*, entry: ContactLogEntry, actor: User, note: str = "") -> C
         + (f" — {note.strip()[:100]}" if note.strip() else ""),
     )
     return entry
+
+
+@transaction.atomic
+def attach_to_contact(
+    *, entry: ContactLogEntry, actor: User, upload, caption: str = ""
+) -> ContactAttachment:
+    """
+    Store a file that came out of a conversation.
+
+    Everything about WHAT may be stored lives in portal/attachments.py, which
+    reads the bytes rather than believing the browser. This function does the
+    bookkeeping around that decision and nothing else.
+    """
+    from portal import attachments
+
+    content_type, extension = attachments.inspect(upload)
+
+    # The name is kept for display only, and trimmed of any path the browser
+    # sent. Some send `C:\Users\...\photo.jpg`; rendering that is untidy, and
+    # letting it anywhere near a filesystem call is the bug this avoids.
+    original = (getattr(upload, "name", "") or "file").replace("\\", "/").split("/")[-1]
+
+    attachment = ContactAttachment(
+        entry=entry,
+        original_name=original[:255],
+        content_type=content_type,
+        size_bytes=upload.size,
+        caption=(caption or "").strip()[:300],
+        uploaded_by=actor,
+        uploaded_by_label=actor.full_name or actor.email,
+    )
+    # `save` on the FileField runs attachment_path, which uses the extension we
+    # decided rather than the one on the upload. Passing `upload.name` here
+    # would put the client's string back into the path.
+    attachment.file.save(f"upload{extension}", upload, save=False)
+    attachment.save()
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CONTACT_LOGGED,
+        subject=entry.organisation.name,
+        organisation=entry.organisation,
+        summary=f"File attached to a conversation with {entry.organisation.name}: {original[:120]}",
+        bytes=upload.size,
+    )
+    return attachment
+
+
+# ── creating an order directly, and telling the client ───────────────────────
+
+
+@transaction.atomic
+def create_order(
+    *,
+    organisation: Organisation,
+    actor: User,
+    title: str,
+    scope: str,
+    exclusions: str = "",
+    contact: User | None = None,
+    target_date: date | None = None,
+    service: Service | None = None,
+    from_contact: ContactLogEntry | None = None,
+    tell_client: bool = True,
+) -> Order:
+    """
+    Open an order for a client we already have, with no enquiry behind it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS DOES NOT START WORK, AND THE CLIENT IS NOT TOLD THAT IT DOES.
+
+    Charter 02 §I puts a signed statement of work before delivery. An existing
+    client asking for a feature over WhatsApp has not signed anything, so what
+    this creates is an order in SCOPING — a written record of what was asked
+    for, with the scope and the exclusions stated, which is what Charter 05 §I
+    requires to exist BEFORE work begins.
+
+    The email says exactly that. It is the single most tempting place in this
+    system to write "we've started on your booking feature", and doing so would
+    be a commitment made by a notification rather than by a contract.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY THE CLIENT IS TOLD AT ALL ───────────────────────────────────────────
+
+    Because otherwise the record of what we understood them to want sits in our
+    system, unread by the only person who can say it is wrong. The whole value
+    of writing scope down before work is that the client gets to disagree with
+    it while disagreeing is still cheap.
+    """
+    if not title.strip():
+        raise OperationsError("Give the order a title.", field="title")
+
+    if service is not None:
+        scope = scope.strip() or service.default_scope
+        exclusions = exclusions.strip() or service.default_exclusions
+
+    if not scope.strip():
+        raise OperationsError(
+            "An order needs a scope. Charter 05 §I — fixed scope, in writing, "
+            "before work begins. This is that writing.",
+            field="scope",
+        )
+
+    lead = contact or actor
+    if not lead.is_staff:
+        raise OperationsError(
+            "The named contact must be a Genmars account.", field="contact"
+        )
+    if from_contact is not None and from_contact.organisation_id != organisation.id:
+        raise OperationsError("That conversation belongs to a different client.")
+
+    last_error: IntegrityError | None = None
+    for _ in range(_MAX_REFERENCE_ATTEMPTS):
+        try:
+            with transaction.atomic():
+                order = Order.objects.create(
+                    organisation=organisation,
+                    reference=next_reference(),
+                    title=title.strip(),
+                    scope=scope.strip(),
+                    exclusions=exclusions.strip(),
+                    status=Order.Status.SCOPING,
+                    contact=lead,
+                    target_date=target_date,
+                    service=service,
+                )
+            break
+        except IntegrityError as exc:  # pragma: no cover - needs a real race
+            last_error = exc
+    else:  # pragma: no cover
+        raise OperationsError("Could not allocate an order reference. Try again.") from last_error
+
+    create_delivery_gates(order=order)
+
+    # Close the loop: the conversation this came out of now points at the work.
+    if from_contact is not None and from_contact.order_id is None:
+        from_contact.order = order
+        from_contact.save(update_fields=["order"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.ENQUIRY_CONVERTED,
+        subject=order.reference,
+        organisation=organisation,
+        summary=f"{order.reference} opened for {organisation.name}: {order.title}",
+        direct=True,
+    )
+
+    if tell_client:
+        notify_order_opened(order)
+
+    return order
+
+
+def notify_order_opened(order: Order) -> None:
+    """
+    Put it in their dashboard and in their inbox.
+
+    Both, and for different reasons. The dashboard is where it lives and can be
+    re-read; the email is what actually reaches somebody who is not going to
+    sign in today. Neither is the record — the order is.
+    """
+    _notify(
+        users=_client_recipients(order.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.ORDER_UPDATE,
+        title=f"{order.reference} — {order.title}",
+        body="We have written down what we understood. Please check it.",
+        url=f"/dashboard/{order.reference}",
+    )
+    _email_order_opened(order)
+
+
+def _email_order_opened(order: Order) -> None:
+    """
+    Email the people at this client who take updates.
+
+    Same two exclusions as a progress note, for the same reasons:
+    `receives_updates` off means they asked not to hear about this, and an
+    unverified address is one nobody has proved they read — sending a client's
+    scope and price to it would be sending it to whoever owns that mailbox.
+    """
+    recipients = (
+        Membership.objects.filter(
+            organisation=order.organisation, receives_updates=True
+        )
+        .select_related("user")
+        .exclude(user__email_verified_at__isnull=True)
+    )
+
+    for membership in recipients:
+        try:
+            emails.send_order_opened(
+                email=membership.user.email,
+                reference=order.reference,
+                title=order.title,
+                scope=order.scope,
+                exclusions=order.exclusions,
+                target_date=order.target_date.isoformat() if order.target_date else "",
+                contact=order.contact.full_name or order.contact.email,
+            )
+        except Exception:
+            # A failed email must not roll back the order. The order is the
+            # fact; the email is an account of it, and the notification in the
+            # dashboard has already landed.
+            log.exception("could not email %s about %s", membership.user.email, order.reference)
+
+
+# ── clients: the rest of the lifecycle ───────────────────────────────────────
+
+
+@transaction.atomic
+def rename_organisation(*, organisation: Organisation, actor: User, name: str) -> Organisation:
+    """
+    Change a client's name.
+
+    ── THIS USED TO REWRITE HISTORY, AND NOW DOES NOT ──────────────────────────
+
+    Invoice documents read the billed-to line from `Invoice.billed_to_name`, a
+    copy taken when the invoice was issued. Before that field existed they read
+    `organisation.name` live, which meant a rename silently changed the "To:"
+    line on every invoice already sent and paid — so our copy and the client's
+    copy of the same numbered document would disagree about who was billed.
+
+    That is why renaming is offered at all rather than being refused: it is a
+    correction people genuinely need (a typo, a rebrand, a change of legal
+    entity), and it is safe now that the documents hold their own copy.
+    """
+    name = (name or "").strip()
+    if not name:
+        raise OperationsError("Give the client a name.", field="name")
+    if name == organisation.name:
+        return organisation
+
+    clash = Organisation.objects.filter(name__iexact=name).exclude(pk=organisation.pk).first()
+    if clash:
+        raise OperationsError(f"{clash.name} already exists.", field="name")
+
+    was = organisation.name
+    organisation.name = name
+    organisation.save(update_fields=["name"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CLIENT_RENAMED,
+        subject=name,
+        organisation=organisation,
+        summary=f"{was} renamed to {name}",
+        was=was,
+    )
+    return organisation
+
+
+@transaction.atomic
+def archive_organisation(
+    *, organisation: Organisation, actor: User, reason: str = ""
+) -> Organisation:
+    """
+    Stop working with a client without erasing them.
+
+    ── AN UNPAID INVOICE BLOCKS THIS ───────────────────────────────────────────
+
+    Archiving hides a client from the screens people work in, and a hidden
+    client with money outstanding is money nobody chases. That is not a
+    hypothetical tidiness concern: "we stopped working with them" and "they
+    never paid the last invoice" are the same conversation more often than not.
+
+    Voiding the invoice or recording the payment are both one click away, and
+    either is an honest answer. Hiding it is not.
+    """
+    if organisation.is_archived:
+        raise OperationsError(f"{organisation.name} is already archived.")
+
+    # ISSUED is the only unsettled state — PAID and VOID are both resolved.
+    # Overdue is a fact about a date rather than a status, so an invoice that
+    # is late is simply still ISSUED and is caught here too.
+    outstanding = Invoice.objects.filter(
+        organisation=organisation, status=Invoice.Status.ISSUED
+    )
+    if outstanding.exists():
+        numbers = ", ".join(outstanding.values_list("number", flat=True)[:5])
+        raise OperationsError(
+            f"{organisation.name} has unpaid invoices ({numbers}). Archiving "
+            "hides them from every screen, and a hidden client with money "
+            "outstanding is money nobody chases. Record the payment, or void "
+            "the invoice if it is not owed."
+        )
+
+    organisation.archived_at = timezone.now()
+    organisation.archived_reason = (reason or "").strip()[:300]
+    organisation.save(update_fields=["archived_at", "archived_reason"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CLIENT_ARCHIVED,
+        subject=organisation.name,
+        organisation=organisation,
+        summary=f"{organisation.name} archived"
+        + (f": {organisation.archived_reason}" if organisation.archived_reason else ""),
+    )
+    return organisation
+
+
+@transaction.atomic
+def restore_organisation(*, organisation: Organisation, actor: User) -> Organisation:
+    if not organisation.is_archived:
+        raise OperationsError(f"{organisation.name} is not archived.")
+
+    organisation.archived_at = None
+    organisation.archived_reason = ""
+    organisation.save(update_fields=["archived_at", "archived_reason"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CLIENT_RESTORED,
+        subject=organisation.name,
+        organisation=organisation,
+        summary=f"{organisation.name} restored",
+    )
+    return organisation
+
+
+# What must not exist for a client to be genuinely deletable. Each of these is
+# either a record we are required to keep or somebody's work.
+# Reverse accessor names, verified against Organisation._meta — a typo here
+# would silently stop blocking on that relation, and the first thing anybody
+# noticed would be a cascade that took an invoice with it. There is a test
+# that every name in this tuple is a real relation.
+ATTACHMENTS_BLOCKING_DELETE = (
+    ("orders", "order"),
+    ("invoices", "invoice"),
+    ("enquiries", "enquiry"),
+    ("tickets", "support request"),
+    ("offers", "offer"),
+    ("incidents", "incident"),
+    ("systems", "system we run"),
+    ("contact_log", "recorded conversation"),
+    ("memberships", "person with access"),
+    ("hosting", "hosting arrangement"),
+)
+
+
+@transaction.atomic
+def delete_organisation(*, organisation: Organisation, actor: User) -> str:
+    """
+    Really delete a client. Only ever the duplicate typed in twice.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS REFUSES THE MOMENT ANYTHING IS ATTACHED, AND THAT IS THE FEATURE.
+
+    Organisation cascades. A delete that went through would take orders,
+    invoices, contracts and support threads with it — including invoices that
+    were issued, sent and paid, which are accounting records, and a support
+    thread that is somebody's evidence of what they were promised.
+
+    None of that is ours to remove because a relationship ended. The answer for
+    a client we no longer work with is `archive_organisation`, which hides them
+    and keeps every word.
+
+    What is left for this function is the honest case: a name typed twice, five
+    minutes ago, with nothing hanging off it.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    blockers = []
+    for relation, noun in ATTACHMENTS_BLOCKING_DELETE:
+        manager = getattr(organisation, relation, None)
+        if manager is None:
+            continue
+        count = manager.count()
+        if count:
+            blockers.append(f"{count} {noun}{'s' if count != 1 else ''}")
+
+    if blockers:
+        raise OperationsError(
+            f"{organisation.name} has {', '.join(blockers)}. Deleting would take "
+            "all of it, including records we are required to keep. Archive them "
+            "instead — it hides them from every screen and keeps every word."
+        )
+
+    name = organisation.name
+    # The log entry FIRST: its organisation FK is SET_NULL, so writing it after
+    # the delete would lose the link, and writing it at all after the row is
+    # gone would be a log entry about something that never existed.
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CLIENT_DELETED,
+        subject=name,
+        summary=f"{name} deleted — nothing was attached to it",
+    )
+    organisation.delete()
+    return name

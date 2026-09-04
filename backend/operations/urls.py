@@ -122,9 +122,23 @@ urlpatterns = [
     path("ops/organisations", views.OrganisationListView.as_view(), name="ops-organisations"),
     # The client record: who they are, what we run for them, what was said.
     path("ops/clients/<int:pk>", views.ClientRecordView.as_view(), name="ops-client"),
+    # Rename, archive, restore, delete. Permission differs per verb — see
+    # OrganisationListView for the split and why.
+    path("ops/clients/<int:pk>/admin", views.ClientAdminView.as_view(), name="ops-client-admin"),
     path("ops/clients/<int:pk>/hosting", views.ClientHostingView.as_view(), name="ops-client-hosting"),
     path("ops/clients/<int:pk>/contact", views.ContactLogView.as_view(), name="ops-client-contact"),
     path("ops/hosting/<int:pk>", views.HostingDetailView.as_view(), name="ops-hosting"),
+    path(
+        "ops/contact/<int:pk>/attachments",
+        views.ContactAttachmentView.as_view(),
+        name="ops-contact-attachments",
+    ),
+    path(
+        "ops/attachments/<int:pk>",
+        views.ContactAttachmentView.as_view(),
+        name="ops-attachment",
+    ),
+    path("ops/clients/<int:pk>/orders", views.ClientOrderView.as_view(), name="ops-client-orders"),
     path("ops/follow-ups", views.FollowUpView.as_view(), name="ops-follow-ups"),
     path("ops/organisations/<int:pk>/members", views.OrganisationMembersView.as_view(), name="ops-org-members"),
     path("ops/memberships/<int:pk>", views.MembershipDetailView.as_view(), name="ops-membership"),

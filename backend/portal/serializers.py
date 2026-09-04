@@ -406,7 +406,16 @@ class InvoiceDocumentSerializer(serializers.Serializer):
         # crash on exactly the documents this page was extended to serve.
         # `test_an_invoice_never_disagrees_with_its_order_about_the_client`
         # proves the two cannot disagree where both exist.
-        return {"organisation": invoice.organisation.name, "contact": ""}
+        # `billed_to_name` is a COPY taken when the invoice was issued, and it
+        # wins. Reading the live organisation meant that renaming a client
+        # rewrote the "To:" line on every invoice already sent and paid — so
+        # our copy of a numbered document and the client's copy would disagree
+        # about who was billed, which is the one thing a number exists to make
+        # impossible. The fallback covers rows issued before the field existed.
+        return {
+            "organisation": invoice.billed_to_name or invoice.organisation.name,
+            "contact": "",
+        }
 
     def get_biller(self, data) -> dict:
         # From the billing profile, which falls back to the BILLING_* settings

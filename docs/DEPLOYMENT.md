@@ -470,6 +470,20 @@ recovery and nobody to appeal to.
 > nightly timer's copies were present and current. The lesson is that the
 > warning is about *how the script was invoked*, not about the configuration.
 
+> **Uploaded files are not in the database dump.** Client photographs and
+> documents live in the `portal-media` volume, and `scripts/backup.sh` now
+> archives them alongside each dump as `media-<stamp>.tar.gz`. Restore the
+> pair, not just the dump: restoring a dump alone brings back every
+> `ContactAttachment` row pointing at a file that is not there, and nothing
+> anywhere reports the restore as incomplete — the log reads correctly and the
+> download 404s.
+>
+> There is no web-server route to that volume and there must not be one. Every
+> byte in it arrived from outside the company, and a static route would bypass
+> both the permission check and the `Content-Disposition: attachment` header in
+> one go. It leaves through `portal.attachments.AttachmentDownloadView` or not
+> at all.
+
 **Take a dump immediately after any deploy that adds tables.** The 2026-09-02
 failure above is the reason: for roughly nine hours the portal held contracts,
 invoices and a recorded M-Pesa payment that no backup contained, because the

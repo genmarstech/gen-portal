@@ -161,14 +161,86 @@ def test_an_engineer_can_do_delivery_work(client, engineer, order):
     ).status_code == 201
 
 
-def test_only_a_founder_can_reach_client_access(client, commercial, engineer):
+def test_every_staff_account_can_read_the_client_list(client, commercial, engineer):
     """
-    Giving somebody access to a client's commercial detail is an access
-    decision, not a commercial one.
+    ── THIS USED TO BE FOUNDER-ONLY, AND THAT WAS WRONG ────────────────────────
+
+    Read is shared everywhere else in this app, and it should be here too. A
+    delivery engineer needs the client's phone number and the history of what
+    was said in order to do the work; making them ask somebody for it is
+    management theatre rather than access control.
+
+    What is actually restricted is below: granting access, and archiving.
     """
     for user in (commercial, engineer):
         client.force_login(user)
-        assert client.get(reverse("ops-organisations")).status_code == 403, user.email
+        assert client.get(reverse("ops-organisations")).status_code == 200, user.email
+
+
+def test_only_a_founder_can_grant_a_person_access_to_a_client(client, commercial, engineer):
+    """
+    Unchanged, and the one that matters. This is the endpoint that hands a
+    client's scope, prices and invoices to a new pair of eyes.
+    """
+    org = Organisation.objects.create(name="Kilimani Dental")
+    for user in (commercial, engineer):
+        client.force_login(user)
+        response = client.post(
+            reverse("ops-org-members", args=[org.pk]),
+            {"email": "someone@example.com", "role": "member"},
+            content_type="application/json",
+        )
+        assert response.status_code == 403, user.email
+
+
+def test_adding_a_client_is_a_commercial_decision(client, commercial, engineer):
+    """A client organisation is the front of the pipeline — Charter 02 §I."""
+    client.force_login(engineer)
+    assert client.post(
+        reverse("ops-organisations"), {"name": "New Client Ltd"},
+        content_type="application/json",
+    ).status_code == 403
+
+    client.force_login(commercial)
+    assert client.post(
+        reverse("ops-organisations"), {"name": "New Client Ltd"},
+        content_type="application/json",
+    ).status_code == 201
+
+
+def test_anybody_can_fix_a_clients_name(client, engineer):
+    """
+    Renaming is shared. It is a correction — a typo, a rebrand — and it is safe
+    now that invoices hold their own copy of the billed-to name.
+    """
+    org = Organisation.objects.create(name="Kilimani Dentl")
+    client.force_login(engineer)
+    response = client.patch(
+        reverse("ops-client-admin", args=[org.pk]),
+        {"name": "Kilimani Dental"},
+        content_type="application/json",
+    )
+    assert response.status_code == 200
+    org.refresh_from_db()
+    assert org.name == "Kilimani Dental"
+
+
+def test_only_a_founder_can_archive_or_delete_a_client(client, commercial, engineer):
+    """Both remove a client from every screen the company works from."""
+    org = Organisation.objects.create(name="Kilimani Dental")
+    for user in (commercial, engineer):
+        client.force_login(user)
+        assert client.post(
+            reverse("ops-client-admin", args=[org.pk]),
+            {"action": "archive"},
+            content_type="application/json",
+        ).status_code == 403, user.email
+        assert client.delete(
+            reverse("ops-client-admin", args=[org.pk])
+        ).status_code == 403, user.email
+
+    org.refresh_from_db()
+    assert org.archived_at is None
 
 
 # ── the team ─────────────────────────────────────────────────────────────────
