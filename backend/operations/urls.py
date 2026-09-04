@@ -96,6 +96,18 @@ urlpatterns = [
 
     # ---- support ----
     path("ops/support", views.TicketListView.as_view(), name="ops-tickets"),
+
+    path("ops/changes", views.ChangeRequestListView.as_view(), name="ops-changes"),
+    path(
+        "ops/changes/<str:reference>/classify",
+        views.ChangeClassifyView.as_view(),
+        name="ops-change-classify",
+    ),
+    path(
+        "ops/changes/<str:reference>/close",
+        views.ChangeCloseView.as_view(),
+        name="ops-change-close",
+    ),
     path("ops/support/<str:reference>/reply", views.TicketReplyView.as_view(), name="ops-ticket-reply"),
     path("ops/support/<str:reference>", views.TicketStateView.as_view(), name="ops-ticket"),
 

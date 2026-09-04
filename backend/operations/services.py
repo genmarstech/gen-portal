@@ -47,6 +47,7 @@ from portal.models import (
     SupportMessage,
     SupportTicket,
     Task,
+    ChangeRequest,
 )
 
 log = logging.getLogger(__name__)
@@ -4176,3 +4177,390 @@ def delete_organisation(*, organisation: Organisation, actor: User) -> str:
     )
     organisation.delete()
     return name
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CHANGE REQUESTS
+#
+# The whole value of this module is that classification happens BEFORE work,
+# and that the four kinds mean what Charter 05 §I says they mean. Both of those
+# are enforced here rather than in a view, because there are three ways in — a
+# client raising one, staff raising one off a logged conversation, and the ops
+# UI — and a guard that lives in one of them protects one of them.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def next_change_reference(today: date | None = None) -> str:
+    """The next change-request reference, e.g. GM-CR-2026-0007."""
+    year = (today or timezone.localdate()).year
+    prefix = f"{REFERENCE_PREFIX}-CR-{year}-"
+    used = ChangeRequest.objects.filter(reference__startswith=prefix).count()
+    return f"{prefix}{used + 1:04d}"
+
+
+@transaction.atomic
+def raise_change_request(
+    *,
+    order: Order,
+    actor: User,
+    summary: str,
+    detail: str = "",
+    contact: ContactLogEntry | None = None,
+) -> ChangeRequest:
+    """
+    Record that someone asked for something.
+
+    ── DELIBERATELY THE EASIEST THING IN THIS FILE TO DO ───────────────────────
+
+    No classification, no impact, no approval — a summary and nothing else is
+    required. That is the design, not an omission.
+
+    The failure this model exists to prevent is a request never being written
+    down, and every field made mandatory at this moment is a reason to deal
+    with it in WhatsApp instead and mean to record it later. Raising is cheap;
+    the discipline lives one step further on, at classification, where somebody
+    has to think anyway.
+
+    A CLIENT CAN RAISE ONE. That is the point of the model — Charter 05 §I is a
+    promise made to them, and a scope-change process only they cannot start is
+    a process that protects one side.
+    """
+    summary = summary.strip()
+    if not summary:
+        raise OperationsError("What did they ask for?", field="summary")
+
+    if order.status == Order.Status.CLOSED:
+        raise OperationsError(
+            "This order is closed. A request against closed work is new work — "
+            "open an enquiry, so it gets scoped and priced rather than absorbed."
+        )
+
+    if contact is not None and contact.organisation_id != order.organisation_id:
+        raise OperationsError(
+            "That conversation belongs to a different client.", field="contact"
+        )
+
+    for _ in range(5):
+        try:
+            with transaction.atomic():
+                change = ChangeRequest.objects.create(
+                    reference=next_change_reference(),
+                    organisation=order.organisation,
+                    order=order,
+                    raised_by=actor,
+                    raised_by_label=(actor.full_name or actor.email)[:200],
+                    contact=contact,
+                    summary=summary[:200],
+                    detail=detail.strip(),
+                )
+            break
+        except IntegrityError:
+            continue
+    else:
+        raise OperationsError("Could not allocate a reference. Try again.")
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CHANGE_RAISED,
+        summary=f"{change.reference} raised against {order.reference}: {summary[:80]}",
+        subject=change.reference,
+        organisation=order.organisation,
+        order=order.reference,
+        from_conversation=bool(contact),
+    )
+
+    # Staff need to see it; the client who raised it does not need telling that
+    # they raised it.
+    _notify(
+        users=_staff_recipients(),
+        audience=Notification.Audience.STAFF,
+        kind=Notification.Kind.CHANGE_RAISED,
+        title=f"Change request {change.reference}",
+        body=f"{order.organisation.name} — {summary[:120]}",
+        url="/changes",
+    )
+    return change
+
+
+@transaction.atomic
+def classify_change_request(
+    *,
+    change: ChangeRequest,
+    actor: User,
+    classification: str,
+    note: str,
+    cost_impact_kes: Decimal | None = None,
+    timeline_impact_days: int | None = None,
+    risk_note: str = "",
+) -> ChangeRequest:
+    """
+    Say which of the four this is, and why.
+
+    ── WHY THE NOTE IS MANDATORY FOR ALL FOUR ──────────────────────────────────
+
+    Including "included in the agreed scope", which is the one where a note
+    feels most redundant and is most needed. That classification ends a
+    commercial conversation before it starts, and the client is entitled to
+    know which clause of the signed scope it ends on. An unexplained "this is
+    included" is indistinguishable from "I do not want to have this argument".
+
+    ── AND WHY IT CAN BE DONE TWICE ────────────────────────────────────────────
+
+    Re-classification is allowed while nothing has been decided, because the
+    first read of a request is often wrong and the honest fix is to change it
+    openly. What it cannot do is move a request the client has already answered
+    — that would rewrite the question after the answer.
+    """
+    if classification not in ChangeRequest.Classification.values:
+        raise OperationsError(
+            "That is not one of the four.", field="classification"
+        )
+
+    note = note.strip()
+    if not note:
+        raise OperationsError(
+            "Say why it is this and not one of the other three. This is the "
+            "line that gets read back three weeks from now.",
+            field="note",
+        )
+
+    if change.status in {
+        ChangeRequest.Status.APPROVED,
+        ChangeRequest.Status.DECLINED,
+        ChangeRequest.Status.DONE,
+        ChangeRequest.Status.WITHDRAWN,
+    }:
+        raise OperationsError(
+            f"{change.reference} has already been answered. Re-classifying it "
+            "now would change the question after the client answered it."
+        )
+
+    is_change = classification == ChangeRequest.Classification.CHANGE
+
+    # ══════════════════════════════════════════════════════════════════════
+    # IMPACT BELONGS TO A CHANGE REQUEST AND NOWHERE ELSE.
+    #
+    # A cost on a defect is a charge to fix what the client already paid for.
+    # A cost on a clarification is a charge for having explained something.
+    # Both are how a relationship ends, and both are easy to do by accident on
+    # a form that shows the same fields for all four.
+    # ══════════════════════════════════════════════════════════════════════
+    if not is_change and (
+        cost_impact_kes not in (None, Decimal("0"))
+        or timeline_impact_days not in (None, 0)
+    ):
+        raise OperationsError(
+            "Only a change request carries cost or time. If this one does, it "
+            "is a change request — classify it as one.",
+            field="classification",
+        )
+
+    if is_change and cost_impact_kes is not None and cost_impact_kes < 0:
+        raise OperationsError(
+            "A negative cost is a credit, and this is not the place to issue one.",
+            field="cost_impact_kes",
+        )
+
+    change.classification = classification
+    change.classification_note = note
+    change.classified_at = timezone.now()
+    change.classified_by = actor
+
+    if is_change:
+        change.cost_impact_kes = cost_impact_kes
+        change.timeline_impact_days = timeline_impact_days
+        change.risk_note = risk_note.strip()
+        change.status = ChangeRequest.Status.AWAITING
+    else:
+        # Clearing rather than leaving stale numbers behind: this may be a
+        # re-classification away from CHANGE, and an impact that no longer
+        # applies is worse than none because it still reads as current.
+        change.cost_impact_kes = None
+        change.timeline_impact_days = None
+        change.risk_note = ""
+        change.status = ChangeRequest.Status.PROCEEDING
+
+    change.save()
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CHANGE_CLASSIFIED,
+        summary=(
+            f"{change.reference} classified as "
+            f"{change.get_classification_display()}"
+        ),
+        subject=change.reference,
+        organisation=change.organisation,
+        order=change.order.reference,
+        classification=classification,
+        cost_impact=str(cost_impact_kes) if is_change else None,
+    )
+
+    _notify(
+        users=_client_recipients(change.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.CHANGE_CLASSIFIED,
+        title=f"{change.reference} — {change.get_classification_display()}",
+        body=(
+            _impact_sentence(change)
+            if is_change
+            else f"{change.summary[:100]} — no additional cost."
+        ),
+        url="/changes",
+    )
+
+    mark_client_notice(
+        order=change.order,
+        reason=f"Change request {change.reference} answered",
+    )
+    return change
+
+
+def _impact_sentence(change: ChangeRequest) -> str:
+    """
+    The impact in words, with "not priced" said out loud.
+
+    Null and zero are different answers and a client reading this is entitled
+    to know which one they got. Rendering an unpriced change as "no additional
+    cost" would be a quote nobody wrote.
+    """
+    if change.cost_impact_kes is None:
+        cost = "not yet priced"
+    elif change.cost_impact_kes == 0:
+        cost = "no additional cost"
+    else:
+        cost = f"KES {change.cost_impact_kes:,.2f}"
+
+    if change.timeline_impact_days is None:
+        time = "timeline impact not yet assessed"
+    elif change.timeline_impact_days == 0:
+        time = "no change to the target date"
+    else:
+        days = change.timeline_impact_days
+        time = f"{days} day{'s' if abs(days) != 1 else ''} added to the target date"
+
+    return f"{cost}, {time}."
+
+
+@transaction.atomic
+def decide_change_request(
+    *, change: ChangeRequest, actor: User, approved: bool, note: str = ""
+) -> ChangeRequest:
+    """
+    The client's answer to a priced change request.
+
+    ── ONLY EVER CALLED FOR A CHANGE ───────────────────────────────────────────
+
+    The other three classifications have nothing to approve; asking a client to
+    approve a defect fix is asking them to agree that we should do what they
+    already paid for.
+
+    ── APPROVAL MOVES THE TARGET DATE, HERE, NOW ───────────────────────────────
+
+    Charter 05 §II: the revised date is stated at approval, not discovered
+    later. `Milestone` already says a change request may move a date; this is
+    the code that actually moves it, at the only moment when both sides are
+    looking at the same number.
+    """
+    if change.status != ChangeRequest.Status.AWAITING:
+        raise OperationsError(
+            f"{change.reference} is not waiting on an answer."
+        )
+
+    change.status = (
+        ChangeRequest.Status.APPROVED if approved else ChangeRequest.Status.DECLINED
+    )
+    change.decided_at = timezone.now()
+    change.decided_by = actor
+    change.decision_note = note.strip()
+    change.save(
+        update_fields=["status", "decided_at", "decided_by", "decision_note", "updated_at"]
+    )
+
+    moved_to = None
+    if approved and change.timeline_impact_days and change.order.target_date:
+        moved_to = change.order.target_date + timedelta(
+            days=change.timeline_impact_days
+        )
+        change.order.target_date = moved_to
+        change.order.save(update_fields=["target_date"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CHANGE_DECIDED,
+        summary=(
+            f"{change.reference} {'approved' if approved else 'declined'} by "
+            f"{actor.full_name or actor.email}"
+        ),
+        subject=change.reference,
+        organisation=change.organisation,
+        order=change.order.reference,
+        target_date_moved_to=moved_to.isoformat() if moved_to else None,
+    )
+
+    _notify(
+        users=_staff_recipients(),
+        audience=Notification.Audience.STAFF,
+        kind=Notification.Kind.CHANGE_DECIDED,
+        title=f"{change.reference} {'approved' if approved else 'declined'}",
+        body=f"{change.organisation.name} — {change.summary[:120]}",
+        url="/changes",
+    )
+
+    if moved_to:
+        mark_client_notice(
+            order=change.order,
+            reason=f"Target date moved to {moved_to:%d %b %Y}",
+        )
+    return change
+
+
+@transaction.atomic
+def close_change_request(
+    *, change: ChangeRequest, actor: User, withdrawn: bool = False, note: str = ""
+) -> ChangeRequest:
+    """
+    Finish one — done, or withdrawn before it was done.
+
+    An unclassified request cannot be closed as done. Closing it that way would
+    mean work happened without anybody deciding whether it was in scope, which
+    is precisely the silent absorption this model exists to make visible.
+    Withdrawing an unclassified one is fine: nothing was built.
+    """
+    if not change.is_open:
+        raise OperationsError(f"{change.reference} is already closed.")
+
+    if not withdrawn and not change.is_classified:
+        raise OperationsError(
+            "This has not been classified. Closing it as done would record work "
+            "that nobody decided was in scope — which is how a fortnight goes "
+            "missing. Classify it first, even retrospectively."
+        )
+
+    if not withdrawn and change.status == ChangeRequest.Status.AWAITING:
+        raise OperationsError(
+            f"{change.reference} is still waiting on the client's approval."
+        )
+
+    change.status = (
+        ChangeRequest.Status.WITHDRAWN if withdrawn else ChangeRequest.Status.DONE
+    )
+    change.closed_at = timezone.now()
+    if note.strip():
+        change.decision_note = note.strip()
+    change.save(
+        update_fields=["status", "closed_at", "decision_note", "updated_at"]
+    )
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.CHANGE_CLOSED,
+        summary=(
+            f"{change.reference} {'withdrawn' if withdrawn else 'done'}: "
+            f"{change.summary[:70]}"
+        ),
+        subject=change.reference,
+        organisation=change.organisation,
+        order=change.order.reference,
+    )
+    return change

@@ -340,3 +340,28 @@ def test_the_counts_never_promise_more_than_the_list_shows(client, staff, spa):
     counted = next(r["count"] for r in body["kinds"] if r["kind"] == "Conversation")
     shown = len([h for h in body["results"] if h["kind"] == "Conversation"])
     assert counted == shown
+
+
+def test_a_change_request_is_found_by_what_the_client_asked_for(client, staff, spa):
+    """
+    Nobody remembers GM-CR-2026-0003. They remember "the Google Ads thing",
+    which is why the client's own words are what this searches.
+    """
+    from portal.models import Order
+
+    client.force_login(staff)
+    order = Order.objects.create(
+        organisation=spa, reference="GM-2026-0900", title="Spa website",
+        contact=staff, scope="A website.",
+    )
+    services.raise_change_request(
+        order=order, actor=staff,
+        summary="Add a Google Ads manager view",
+        detail="They want to see spend against bookings.",
+    )
+
+    hits = [h for h in _find(client, "google ads") if h["kind"] == "Change"]
+    assert len(hits) == 1
+    # The classification rides in the sublabel so a result answers "were we
+    # paid for that?" without a click.
+    assert "not yet classified" in hits[0]["sublabel"]

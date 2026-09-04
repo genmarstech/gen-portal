@@ -37,6 +37,12 @@ urlpatterns = [
         name="invoice-payment-status-flat",
     ),
     path("support", views.SupportView.as_view(), name="support"),
+    path("changes", views.ChangeRequestView.as_view(), name="changes"),
+    path(
+        "changes/<str:reference>/decision",
+        views.ChangeRequestDecisionView.as_view(),
+        name="change-decision",
+    ),
     path(
         "support/<str:reference>/reply",
         views.SupportReplyView.as_view(),

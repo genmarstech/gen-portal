@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from .models import (
     Blocker,
+    ChangeRequest,
     Contract,
     HostingArrangement,
     Invoice,
@@ -858,3 +859,60 @@ class ClientHostingSerializer(serializers.ModelSerializer):
         rather than make the reader decode a label.
         """
         return arrangement.account_holder == HostingArrangement.Holder.GENMARS
+
+
+class ClientChangeRequestSerializer(serializers.ModelSerializer):
+    """
+    A change request, as the client sees it.
+
+    ── THE CLASSIFICATION NOTE IS SENT, ON PURPOSE ─────────────────────────────
+
+    It is the one field a client would most want and that we would most easily
+    justify withholding as "internal reasoning". But the classification decides
+    whether they are charged, and a verdict without its reasoning is a bill
+    with no explanation attached. Anything we would not be willing to show them
+    does not belong in that field in the first place.
+
+    ── WHAT IS ABSENT ──────────────────────────────────────────────────────────
+
+    `classified_by`. Which of us made the call is our bookkeeping, and naming
+    one person turns a company decision into an individual to argue with.
+    """
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    classification_label = serializers.SerializerMethodField()
+    order_reference = serializers.CharField(source="order.reference", read_only=True)
+    order_title = serializers.CharField(source="order.title", read_only=True)
+    impact = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChangeRequest
+        fields = [
+            "reference", "summary", "detail",
+            "status", "status_label",
+            "classification", "classification_label", "classification_note",
+            "cost_impact_kes", "timeline_impact_days", "risk_note", "impact",
+            "order_reference", "order_title",
+            "raised_at", "raised_by_label", "classified_at",
+            "decided_at", "decision_note", "closed_at",
+        ]
+        read_only_fields = fields
+
+    def get_classification_label(self, change: ChangeRequest) -> str:
+        # Empty rather than "Unclassified": the status already says "awaiting
+        # classification", and a second field repeating it reads as a verdict.
+        return change.get_classification_display() if change.classification else ""
+
+    def get_impact(self, change: ChangeRequest) -> str:
+        """
+        The impact in one sentence, built server-side.
+
+        Not assembled in the browser, because "not yet priced" and "no
+        additional cost" are one null check apart and the wrong one is a quote
+        nobody wrote. One implementation, used by the email and the screen.
+        """
+        if change.classification != ChangeRequest.Classification.CHANGE:
+            return ""
+        from operations.services import _impact_sentence
+
+        return _impact_sentence(change)

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from django.db import models
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -29,6 +30,7 @@ from portal.models import (
     BillingProfile,
     ActivityLog,
     Blocker,
+    ChangeRequest,
     ClientProfile,
     ContactAttachment,
     ContactLogEntry,
@@ -86,6 +88,8 @@ from .serializers import (
     SecurityCheckWriteSerializer,
     TicketReplySerializer,
     TicketSerializer,
+    ChangeRequestSerializer,
+    ClassifyChangeSerializer,
     TicketStateSerializer,
     SystemEventSerializer,
     SystemKeySerializer,
@@ -2692,3 +2696,145 @@ def _as_date(value):
         return _date.fromisoformat(str(value))
     except ValueError:
         return None
+
+
+class ChangeRequestListView(StaffView):
+    """
+    Every change request, with the unclassified ones first.
+
+    ── THE ORDERING IS THE FEATURE ─────────────────────────────────────────────
+
+    Default ordering is newest-first everywhere else in this app. Here it is
+    unclassified-first, because an unclassified request is the only state with
+    a cost attached to leaving it alone: work starts on it anyway, and by the
+    time anybody classifies it the answer is contaminated by knowing how long
+    it took. Sorting by date would bury a four-day-old unclassified request
+    under a batch of tidy new ones.
+    """
+
+    def get(self, request):
+        changes = ChangeRequest.objects.select_related(
+            "organisation", "order", "classified_by", "contact"
+        ).all()
+
+        state = request.query_params.get("state")
+        if state == "open":
+            changes = changes.exclude(
+                status__in=[
+                    ChangeRequest.Status.DONE,
+                    ChangeRequest.Status.DECLINED,
+                    ChangeRequest.Status.WITHDRAWN,
+                ]
+            )
+        elif state == "unclassified":
+            changes = changes.filter(classification="")
+        elif state in ChangeRequest.Status.values:
+            changes = changes.filter(status=state)
+
+        organisation = request.query_params.get("organisation")
+        if organisation:
+            changes = changes.filter(organisation_id=organisation)
+
+        order = request.query_params.get("order")
+        if order:
+            changes = changes.filter(order__reference=order)
+
+        changes = changes.annotate(
+            unclassified=models.Case(
+                models.When(classification="", then=models.Value(0)),
+                default=models.Value(1),
+                output_field=models.IntegerField(),
+            )
+        ).order_by("unclassified", "raised_at")
+
+        return Response({"changes": ChangeRequestSerializer(changes, many=True).data})
+
+    def post(self, request):
+        """
+        Staff raising one on a client's behalf — the common case.
+
+        Almost every real change request arrives as a WhatsApp message, so the
+        request that matters most is the one somebody here types in after
+        reading it. `contact` links it back to the logged conversation, which
+        is what makes the client's own words retrievable later.
+        """
+        order = get_object_or_404(
+            Order, reference=str(request.data.get("order", "")).strip()
+        )
+
+        contact = None
+        contact_id = request.data.get("contact")
+        if contact_id:
+            contact = get_object_or_404(ContactLogEntry, pk=contact_id)
+
+        try:
+            change = services.raise_change_request(
+                order=order,
+                actor=request.user,
+                summary=str(request.data.get("summary", "")),
+                detail=str(request.data.get("detail", "")),
+                contact=contact,
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(
+            ChangeRequestSerializer(change).data, status=http.HTTP_201_CREATED
+        )
+
+
+class ChangeClassifyView(StaffView):
+    """
+    Put a request into one of the four kinds.
+
+    ── OPEN TO EVERY STAFF ACCOUNT, AND THAT IS DELIBERATE ─────────────────────
+
+    Classification decides whether a client is charged, which is the shape of
+    thing this app usually gates. It is not gated, because the alternative is
+    worse: a queue of unclassified requests waiting on one person is a queue
+    that gets worked around, and work starting before classification is the
+    exact failure the model exists to prevent.
+
+    What makes that safe is that the decision is not silent. Every
+    classification is logged with its reasoning, the client is told, and
+    `waited_hours` measures how long it sat. A wrong classification is visible
+    and reversible; an unclassified request that quietly became two weeks of
+    work is neither.
+    """
+
+    def post(self, request, reference: str):
+        change = get_object_or_404(ChangeRequest, reference=reference)
+        form = ClassifyChangeSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+
+        try:
+            change = services.classify_change_request(
+                change=change,
+                actor=request.user,
+                classification=form.validated_data["classification"],
+                note=form.validated_data["note"],
+                cost_impact_kes=form.validated_data.get("cost_impact_kes"),
+                timeline_impact_days=form.validated_data.get("timeline_impact_days"),
+                risk_note=form.validated_data.get("risk_note", ""),
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(ChangeRequestSerializer(change).data)
+
+
+class ChangeCloseView(StaffView):
+    """Mark one done, or withdraw it."""
+
+    def post(self, request, reference: str):
+        change = get_object_or_404(ChangeRequest, reference=reference)
+        try:
+            change = services.close_change_request(
+                change=change,
+                actor=request.user,
+                withdrawn=bool(request.data.get("withdrawn")),
+                note=str(request.data.get("note", "")),
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(ChangeRequestSerializer(change).data)

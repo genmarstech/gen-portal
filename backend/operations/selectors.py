@@ -22,6 +22,7 @@ from portal.models import (
     AccessRequest,
     ActivityLog,
     Blocker,
+    ChangeRequest,
     ClientProfile,
     ContactLogEntry,
     Contract,
@@ -193,6 +194,19 @@ def queue_counts() -> dict[str, int]:
             retired_at__isnull=True,
             renews_on__isnull=False,
             renews_on__lte=timezone.localdate() + timedelta(days=30),
+        ).count(),
+        # ══════════════════════════════════════════════════════════════════
+        # AN UNCLASSIFIED CHANGE REQUEST IS THE ONLY STATE WITH A COST TO
+        # LEAVING IT ALONE.
+        #
+        # Work starts on it regardless — somebody was asked for something and
+        # somebody will do it — and by the time anybody classifies it the
+        # answer already knows how long it took. Carried in the header for the
+        # same reason as awaiting_note: this fails silently, and it fails in a
+        # direction that only shows up as an argument about a bill.
+        # ══════════════════════════════════════════════════════════════════
+        "unclassified_changes": ChangeRequest.objects.filter(
+            classification=""
         ).count(),
     }
 

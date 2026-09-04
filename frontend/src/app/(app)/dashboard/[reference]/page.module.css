@@ -517,3 +517,100 @@ a.iNumber:hover {
   border-left: 2px solid var(--accent);
   border-radius: 0 var(--radius) var(--radius) 0;
 }
+
+/* ---------- changes asked for ---------- */
+
+.changeIntro {
+  margin: 0 0 var(--sp-4);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+}
+
+.changeList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.changeRow {
+  padding: var(--sp-4);
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+/*
+  One rule, spent on the only row that needs the reader to act. Giving every
+  row a coloured edge would flatten the distinction it exists to draw.
+*/
+.changeRow:has(.changeTagAction) {
+  border-left: 2px solid var(--accent);
+}
+
+.changeRowHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.changeSummary {
+  font-size: 1rem;
+  line-height: 1.4;
+  color: var(--ink);
+}
+
+.changeTag {
+  flex: none;
+  padding: 0.15rem 0.5rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-muted);
+  background: var(--bg-sunken);
+  border-radius: 999px;
+}
+
+.changeTagAction {
+  color: var(--bg);
+  background: var(--accent);
+}
+
+.changeMeta {
+  margin: var(--sp-2) 0 0;
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.changeBody,
+.changeNote,
+.changeImpact,
+.changeRisk {
+  margin: var(--sp-3) 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink-muted);
+}
+
+/* The reasoning behind the classification. Set apart because it is the part
+   a client reads twice, and the part they would quote back. */
+.changeNote {
+  padding-left: var(--sp-3);
+  border-left: 1px solid var(--rule-strong);
+  color: var(--ink);
+}
+
+.changeImpact {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.changeRisk {
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+}

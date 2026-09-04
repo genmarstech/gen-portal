@@ -46,6 +46,7 @@ from .serializers import (
     ClientInvoiceSerializer,
     ClientOfferSerializer,
     ClientSystemSerializer,
+    ClientChangeRequestSerializer,
     ClientTicketSerializer,
     ClientServiceSerializer,
     EnquirySerializer,
@@ -792,6 +793,111 @@ class SupportReplyView(APIView):
         ticket.refresh_from_db()
         return Response(
             ClientTicketSerializer(ticket, context={"user": request.user}).data
+        )
+
+
+class ChangeRequestView(APIView):
+    """
+    The client's change requests, and raising one.
+
+    ── WHY A CLIENT CAN RAISE ONE AT ALL ───────────────────────────────────────
+
+    Charter 05 §I fixes the scope in writing, and that clause protects both
+    sides. A change process only we can start protects one — it lets a request
+    be heard informally, absorbed quietly, and then disputed later with no
+    record of when it was asked for. The endpoint exists so the client's own
+    timestamp is in the system.
+
+    Raising one is deliberately cheap: a summary is all that is required.
+    Everything consequential happens at classification, which is ours.
+
+    Throttled on the enquiry scope for the same reason support is.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "enquiry"
+    throttle_classes = [EnquiryThrottle]
+
+    def get(self, request):
+        changes = selectors.change_requests_for(request.user)
+        return Response(
+            {
+                "changes": ClientChangeRequestSerializer(
+                    changes, many=True, context={"user": request.user}
+                ).data
+            }
+        )
+
+    def post(self, request):
+        # Looked up THROUGH the user's own orders, so a reference belonging to
+        # another client matches nothing rather than being found and refused.
+        # A change request against somebody else's order would leak both that
+        # the order exists and what was asked of it.
+        order = selectors.order_for(
+            request.user, str(request.data.get("order", "")).strip()
+        )
+        if order is None:
+            return Response(
+                {"detail": "No such order.", "field": "order"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            change = services.raise_change_request(
+                order=order,
+                actor=request.user,
+                summary=str(request.data.get("summary", "")),
+                detail=str(request.data.get("detail", "")),
+            )
+        except services.OperationsError as exc:
+            return Response(
+                {"detail": str(exc), "field": exc.field},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            ClientChangeRequestSerializer(change, context={"user": request.user}).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ChangeRequestDecisionView(APIView):
+    """
+    The client approving or declining a priced change request.
+
+    ── THIS IS THE CLIENT'S DECISION AND NOBODY ELSE'S ─────────────────────────
+
+    There is no staff endpoint that answers on their behalf. Charter 05 §I puts
+    approval before work on a change, and an approval we can record ourselves
+    is not an approval — it is a note saying we believe they agreed.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, reference: str):
+        change = selectors.change_request_for(request.user, reference)
+        if change is None:
+            return Response(
+                {"detail": "No such request."}, status=status.HTTP_404_NOT_FOUND
+            )
+
+        approved = bool(request.data.get("approved"))
+        try:
+            services.decide_change_request(
+                change=change,
+                actor=request.user,
+                approved=approved,
+                note=str(request.data.get("note", "")),
+            )
+        except services.OperationsError as exc:
+            return Response(
+                {"detail": str(exc), "field": exc.field},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        change.refresh_from_db()
+        return Response(
+            ClientChangeRequestSerializer(change, context={"user": request.user}).data
         )
 
 

@@ -289,6 +289,43 @@ export type Ticket = {
   messages: TicketMessage[];
 };
 
+/**
+ * A change request, as the client sees it.
+ *
+ * `impact` is built server-side rather than assembled here, because "not yet
+ * priced" and "no additional cost" are one null check apart and the wrong one
+ * is a quote nobody wrote.
+ */
+export type ChangeRequest = {
+  reference: string;
+  summary: string;
+  detail: string;
+  status:
+    | "raised"
+    | "proceeding"
+    | "awaiting"
+    | "approved"
+    | "declined"
+    | "done"
+    | "withdrawn";
+  status_label: string;
+  classification: "" | "included" | "clarification" | "defect" | "change";
+  classification_label: string;
+  classification_note: string;
+  cost_impact_kes: string | null;
+  timeline_impact_days: number | null;
+  risk_note: string;
+  impact: string;
+  order_reference: string;
+  order_title: string;
+  raised_at: string;
+  raised_by_label: string;
+  classified_at: string | null;
+  decided_at: string | null;
+  decision_note: string;
+  closed_at: string | null;
+};
+
 /** Something Genmars is waiting on this client for. */
 export type WaitingOnYou = {
   id: number;
@@ -554,6 +591,20 @@ export const portal = {
     post<Ticket>("/support", body),
   replyToTicket: (reference: string, body: string) =>
     post<Ticket>(`/support/${reference}/reply`, { body }),
+
+  changes: () => get<{ changes: ChangeRequest[] }>("/changes"),
+  /**
+   * Asking for something that may not be in the signed scope.
+   *
+   * A summary is all that is required, on purpose: every extra mandatory field
+   * is a reason to send a WhatsApp message instead, and a request never
+   * written down is the failure this whole flow exists to prevent.
+   */
+  raiseChange: (body: { order: string; summary: string; detail?: string }) =>
+    post<ChangeRequest>("/changes", body),
+  /** Charter 05 §I — approval before work, and it is theirs to give. */
+  decideChange: (reference: string, approved: boolean, note?: string) =>
+    post<ChangeRequest>(`/changes/${reference}/decision`, { approved, note }),
 
   offers: () => get<{ offers: ClientOffer[] }>("/offers"),
   /**

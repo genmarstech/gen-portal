@@ -4,7 +4,12 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { LoadingMark } from "@/components/LoadingMark";
-import { ApiError, portal, type OrderDetail } from "@/lib/api";
+import {
+  ApiError,
+  portal,
+  type ChangeRequest as ChangeRequestRow,
+  type OrderDetail,
+} from "@/lib/api";
 import styles from "./page.module.css";
 
 /**
@@ -30,6 +35,7 @@ export default function OrderPage() {
   const reference = params.reference;
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [error, setError] = useState<"missing" | "failed" | null>(null);
+  const [changes, setChanges] = useState<ChangeRequestRow[]>([]);
 
   useEffect(() => {
     if (!reference) return;
@@ -37,6 +43,19 @@ export default function OrderPage() {
       .order(reference)
       .then(setOrder)
       .catch((e) => setError(e instanceof ApiError && e.status === 404 ? "missing" : "failed"));
+  }, [reference]);
+
+  // Fetched separately rather than folded into the order payload: the order is
+  // the document, and a failure to load a change list must not blank the page
+  // that shows a client what they agreed to.
+  useEffect(() => {
+    if (!reference) return;
+    portal
+      .changes()
+      .then((body) =>
+        setChanges(body.changes.filter((c) => c.order_reference === reference)),
+      )
+      .catch(() => setChanges([]));
   }, [reference]);
 
   if (error) {
@@ -165,10 +184,46 @@ export default function OrderPage() {
               an invitation — and a change request arrived as a loose support
               message, or as a phone call nobody wrote down.
             */}
-            <ChangeRequest order={order} />
+            <ChangeRequest
+              order={order}
+              onRaised={(c) => setChanges((rows) => [c, ...rows])}
+            />
           </div>
         </div>
       </section>
+
+      {/* ---------- changes asked for ----------
+        DIRECTLY BELOW THE SCOPE, AND THAT PLACEMENT IS THE POINT.
+
+        A change request is only meaningful against the thing it changes. Put
+        on a page of its own it becomes a list of tickets; put here it reads as
+        what it is — the running amendment history of the agreement printed
+        immediately above it.
+      */}
+      {changes.length > 0 ? (
+        <section className={styles.section}>
+          <h2 className={styles.h2}>Changes you have asked for</h2>
+          <p className={styles.changeIntro}>
+            Everything you have asked for on this work, when you asked for it,
+            and what we said it was.
+          </p>
+          <ul className={styles.changeList}>
+            {changes.map((change) => (
+              <ChangeRow
+                key={change.reference}
+                change={change}
+                onDecided={(updated) =>
+                  setChanges((rows) =>
+                    rows.map((r) =>
+                      r.reference === updated.reference ? updated : r,
+                    ),
+                  )
+                }
+              />
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {/* ---------- progress ---------- */}
       <section className={styles.section}>
@@ -356,7 +411,13 @@ function money(amountKes: string): string {
  * tested. What it says instead is what actually happens next — we price it and
  * they approve it before anything is built.
  */
-function ChangeRequest({ order }: { order: OrderDetail }) {
+function ChangeRequest({
+  order,
+  onRaised,
+}: {
+  order: OrderDetail;
+  onRaised: (change: ChangeRequestRow) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -367,8 +428,9 @@ function ChangeRequest({ order }: { order: OrderDetail }) {
   if (sent) {
     return (
       <p className={styles.changeDone} role="status">
-        Sent, as {sent}. It is filed against this work, and we will come back to
-        you with a price before anything is built.
+        Filed as {sent}, against this work. We will tell you which it is —
+        already covered, a clarification, something not working, or a change
+        that carries a price — before anything is built.
       </p>
     );
   }
@@ -389,12 +451,23 @@ function ChangeRequest({ order }: { order: OrderDetail }) {
         setBusy(true);
         setError(null);
         try {
-          const ticket = await portal.raiseTicket({
-            subject,
-            body,
+          // ══════════════════════════════════════════════════════════
+          // THIS USED TO RAISE A SUPPORT TICKET, AND THAT WAS THE BUG.
+          //
+          // The words on this page were already right — "we price it and you
+          // approve it before it is built" — but the request landed in the
+          // support queue beside "my password does not work". Nothing
+          // classified it, nothing priced it, and nobody approved it. The one
+          // fact a scope dispute turns on, WHEN IT WAS ASKED FOR, was recorded
+          // against a ticket that nothing treated as a scope change.
+          // ══════════════════════════════════════════════════════════
+          const raised = await portal.raiseChange({
             order: order.reference,
+            summary: subject,
+            detail: body,
           });
-          setSent(ticket.reference);
+          onRaised(raised);
+          setSent(raised.reference);
         } catch (err) {
           setError(
             err instanceof ApiError ? err.message : "That did not send. Try again.",
@@ -446,5 +519,114 @@ function ChangeRequest({ order }: { order: OrderDetail }) {
         </button>
       </div>
     </form>
+  );
+}
+
+/**
+ * One change request, and — when it is waiting on them — the decision.
+ *
+ * ── THE DATE THEY ASKED IS SHOWN ON EVERY ROW ───────────────────────────────
+ *
+ * Not the date we answered, and not "3 days ago". A scope dispute turns on
+ * when something was asked for, and the client's copy of that fact should be
+ * as plain as ours. A relative time reads as a status; a date reads as a
+ * record.
+ *
+ * ── AND ONLY A PRICED CHANGE GETS BUTTONS ───────────────────────────────────
+ *
+ * Asking someone to approve a defect fix is asking them to agree that we
+ * should do what they already paid for. The other three classifications say
+ * what they are and stop.
+ */
+function ChangeRow({
+  change,
+  onDecided,
+}: {
+  change: ChangeRequestRow;
+  onDecided: (change: ChangeRequestRow) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const decide = async (approved: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onDecided(await portal.decideChange(change.reference, approved));
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : "That did not go through.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className={styles.changeRow}>
+      <div className={styles.changeRowHead}>
+        <strong className={styles.changeSummary}>{change.summary}</strong>
+        <span
+          className={`${styles.changeTag} ${
+            change.status === "awaiting" ? styles.changeTagAction : ""
+          }`}
+        >
+          {change.classification_label || change.status_label}
+        </span>
+      </div>
+
+      <p className={styles.changeMeta}>
+        Asked {new Date(change.raised_at).toLocaleDateString()} · {change.reference}
+      </p>
+
+      {change.detail ? <p className={styles.changeBody}>{change.detail}</p> : null}
+
+      {/* The reasoning, not just the verdict. A classification decides whether
+          they are charged, and a verdict with no explanation attached is a
+          bill with no explanation attached. */}
+      {change.classification_note ? (
+        <p className={styles.changeNote}>{change.classification_note}</p>
+      ) : null}
+
+      {change.impact ? <p className={styles.changeImpact}>{change.impact}</p> : null}
+
+      {change.risk_note ? (
+        <p className={styles.changeRisk}>{change.risk_note}</p>
+      ) : null}
+
+      {change.status === "awaiting" ? (
+        <>
+          {error ? (
+            <p className={styles.changeError} role="alert">
+              {error}
+            </p>
+          ) : null}
+          <div className={styles.changeActions}>
+            <button
+              type="button"
+              className={styles.changeBtn}
+              disabled={busy}
+              onClick={() => void decide(true)}
+            >
+              {busy ? "Sending…" : "Approve this change"}
+            </button>
+            <button
+              type="button"
+              className={styles.changeCancel}
+              disabled={busy}
+              onClick={() => void decide(false)}
+            >
+              Not now
+            </button>
+          </div>
+        </>
+      ) : null}
+
+      {change.status === "declined" ? (
+        <p className={styles.changeMeta}>
+          You declined this. Nothing was built and nothing was charged.
+        </p>
+      ) : null}
+    </li>
   );
 }

@@ -8,6 +8,7 @@ into `portal/serializers.py`, which is the client's view of the same rows.
 
 from __future__ import annotations
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from accounts.models import Membership, Organisation, User
@@ -15,6 +16,7 @@ from portal.models import (
     AccessRequest,
     ActivityLog,
     Blocker,
+    ChangeRequest,
     ClientProfile,
     ContactAttachment,
     ContactLogEntry,
@@ -1520,3 +1522,70 @@ class AccessDecisionSerializer(serializers.Serializer):
         choices=["approve", "decline", "do_it_myself", "withdraw"]
     )
     note = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class ChangeRequestSerializer(serializers.ModelSerializer):
+    """
+    A change request as staff see it: everything, including who classified it.
+
+    `waited_hours` is here rather than in the client serializer for a reason.
+    It measures how long a request sat unclassified, and it is the number that
+    says whether "classify before work starts" is a practice or a sentence in a
+    document — an internal measurement of ourselves, not a fact about the
+    client's request.
+    """
+
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    classification_label = serializers.SerializerMethodField()
+    organisation_name = serializers.CharField(source="organisation.name", read_only=True)
+    order_reference = serializers.CharField(source="order.reference", read_only=True)
+    order_title = serializers.CharField(source="order.title", read_only=True)
+    classified_by_label = serializers.SerializerMethodField()
+    contact_summary = serializers.CharField(
+        source="contact.summary", read_only=True, default=None
+    )
+    waited_hours = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ChangeRequest
+        fields = [
+            "id", "reference", "summary", "detail",
+            "status", "status_label",
+            "classification", "classification_label", "classification_note",
+            "cost_impact_kes", "timeline_impact_days", "risk_note",
+            "organisation_name", "order_reference", "order_title",
+            "raised_at", "raised_by_label", "contact_summary",
+            "classified_at", "classified_by_label", "waited_hours",
+            "decided_at", "decision_note", "closed_at",
+        ]
+        read_only_fields = fields
+
+    def get_classification_label(self, change) -> str:
+        return change.get_classification_display() if change.classification else ""
+
+    def get_classified_by_label(self, change) -> str:
+        who = change.classified_by
+        return (who.full_name or who.email) if who else ""
+
+    def get_waited_hours(self, change):
+        """
+        Hours between raised and classified — or, while it is still
+        unclassified, hours it has been waiting SO FAR.
+
+        Counting from now for an open one is the point: a request that has sat
+        for three days should read as three days, not as null.
+        """
+        end = change.classified_at or timezone.now()
+        return round((end - change.raised_at).total_seconds() / 3600, 1)
+
+
+class ClassifyChangeSerializer(serializers.Serializer):
+    classification = serializers.ChoiceField(
+        choices=ChangeRequest.Classification.choices
+    )
+    note = serializers.CharField(allow_blank=True)
+    cost_impact_kes = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False, allow_null=True
+    )
+    timeline_impact_days = serializers.IntegerField(required=False, allow_null=True)
+    risk_note = serializers.CharField(required=False, allow_blank=True, default="")

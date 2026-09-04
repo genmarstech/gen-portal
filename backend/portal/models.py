@@ -1122,6 +1122,12 @@ class Notification(models.Model):
         TASK_ASSIGNED = "task_assigned", "Task assigned to you"
         SUPPORT_REPLY = "support_reply", "Reply on your support request"
         SUPPORT_RAISED = "support_raised", "New support request"
+        # Split by who has to act. A client seeing "change request raised" for
+        # something they raised themselves is noise; what they need telling
+        # about is the answer and the price.
+        CHANGE_RAISED = "change_raised", "New change request"
+        CHANGE_CLASSIFIED = "change_classified", "Change request answered"
+        CHANGE_DECIDED = "change_decided", "Change request decided"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1537,6 +1543,14 @@ class ActivityLog(models.Model):
         HOSTING_RECORDED = "hosting.recorded", "Hosting arrangement recorded"
         HOSTING_CHANGED = "hosting.changed", "Hosting arrangement changed"
         HOSTING_RETIRED = "hosting.retired", "Hosting arrangement retired"
+
+        # A change request moving through its states. Four actions rather than
+        # one, because "raised" and "classified" are the two that settle a
+        # dispute later and they are asked about separately.
+        CHANGE_RAISED = "change.raised", "Change request raised"
+        CHANGE_CLASSIFIED = "change.classified", "Change request classified"
+        CHANGE_DECIDED = "change.decided", "Change request approved or declined"
+        CHANGE_CLOSED = "change.closed", "Change request closed"
 
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -3519,3 +3533,265 @@ class OrderSeen(models.Model):
 
     def __str__(self) -> str:
         return f"{self.user_id} saw {self.order_id} at {self.seen_at:%Y-%m-%d %H:%M}"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# CHANGE REQUESTS — Charter 05 §I, and the argument it exists to prevent
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+class ChangeRequest(models.Model):
+    """
+    Someone asked for something that was not in the signed scope — or that
+    might not have been, which is the whole difficulty.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE DISPUTE IS ALMOST NEVER ABOUT WHETHER A CHANGE COSTS MONEY.
+
+    It is about WHEN IT WAS RAISED — before the work or after it. Both sides
+    remember that differently and both remember it honestly, because by the
+    time it matters the conversation is weeks old and it happened on WhatsApp.
+
+    `raised_at` is therefore the single most important column in this model. It
+    is set once, on creation, and there is no code path that edits it. Every
+    other field can be revised as understanding improves; this one is the fact
+    the argument turns on, and a fact that can be adjusted afterwards is not
+    evidence of anything.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── CLASSIFICATION HAPPENS BEFORE THE WORK, NOT AFTER ───────────────────────
+
+    A request is classified into one of four kinds before anybody starts on it.
+    Classifying afterwards is how a defect gets billed as a change request and
+    how a change request gets absorbed as a clarification — in both directions
+    the person deciding already knows how much effort it took, and cannot
+    unknow it.
+
+    So `classification` starts empty and the model is explicit about the state
+    where it is still empty. An unclassified request is not a neutral resting
+    place; it is the one state with a clock on it.
+
+    ── THE DANGEROUS ONES ARE SMALL ────────────────────────────────────────────
+
+    A request to add a second payment provider is obviously a change request
+    and gets treated like one. Twenty requests of half a day each get waved
+    through individually, and there is no moment at which anybody decides to
+    absorb two weeks of unpaid work — which is exactly why each one is recorded
+    separately here rather than batched into a note.
+    """
+
+    class Classification(models.TextChoices):
+        """
+        Charter 05 §I in four rows. The definitions are the point: without
+        them the boundary moves depending on who is asked and how the week is
+        going.
+        """
+
+        # Already covered by the signed proposal. Proceed, no commercial change.
+        INCLUDED = "included", "Included in the agreed scope"
+        # The same requirement, better understood. Proceeds — but it is written
+        # down, so it is not later remembered as an addition by either side.
+        CLARIFICATION = "clarification", "Clarification of agreed scope"
+        # Agreed scope not working as specified. Fixed at no charge, and the
+        # cause is recorded: a defect nobody wrote a cause for tends to recur.
+        DEFECT = "defect", "Defect — agreed scope not working"
+        # New or materially altered requirement. Impact on cost, timeline and
+        # risk is documented, and the client approves BEFORE work proceeds.
+        CHANGE = "change", "Change request — new or altered requirement"
+
+    class Status(models.TextChoices):
+        # Raised, not yet classified. The state with a clock on it.
+        RAISED = "raised", "Awaiting classification"
+        # Classified as included, a clarification, or a defect. No commercial
+        # change, so nothing to approve — work can start.
+        PROCEEDING = "proceeding", "Proceeding — no commercial change"
+        # Classified as a change request, impact stated, waiting on the client.
+        AWAITING = "awaiting", "Awaiting your approval"
+        APPROVED = "approved", "Approved"
+        DECLINED = "declined", "Declined"
+        DONE = "done", "Done"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+
+    reference = models.CharField(max_length=32, unique=True, db_index=True)
+
+    organisation = models.ForeignKey(
+        Organisation, on_delete=models.CASCADE, related_name="change_requests"
+    )
+    # ══════════════════════════════════════════════════════════════════════
+    # ALWAYS AGAINST AN ORDER, NEVER FREE-FLOATING.
+    #
+    # A change request is a change TO SOMETHING. Without a signed scope to
+    # measure it against, "is this in scope?" has no answer, and the four
+    # classifications above collapse into one person's opinion. If a client
+    # wants something unrelated to any existing order, that is an enquiry.
+    # ══════════════════════════════════════════════════════════════════════
+    order = models.ForeignKey(
+        Order, on_delete=models.CASCADE, related_name="change_requests"
+    )
+
+    raised_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="changes_raised",
+        help_text="Null once an account is deleted; raised_by_label survives it.",
+    )
+    # The name as it was, kept because the account may be gone by the time
+    # anybody asks who asked for this.
+    raised_by_label = models.CharField(max_length=200, blank=True)
+
+    # Set once. Nothing edits this. See the docstring.
+    raised_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    # Where it came from — usually a WhatsApp message someone logged. Optional
+    # because a client can raise one directly in the portal, and then there is
+    # no conversation to point at.
+    contact = models.ForeignKey(
+        "portal.ContactLogEntry",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="change_requests",
+        help_text="The logged conversation this came out of, where there was one.",
+    )
+
+    summary = models.CharField(
+        max_length=200, help_text="What they asked for, in one line."
+    )
+    detail = models.TextField(
+        blank=True, help_text="Their words, as close to verbatim as possible."
+    )
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.RAISED, db_index=True
+    )
+
+    # ── classification ──────────────────────────────────────────────────────
+    classification = models.CharField(
+        max_length=16, choices=Classification.choices, blank=True, db_index=True
+    )
+    classified_at = models.DateTimeField(null=True, blank=True)
+    classified_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="changes_classified",
+        limit_choices_to={"is_staff": True},
+    )
+    # ══════════════════════════════════════════════════════════════════════
+    # REQUIRED, INCLUDING WHEN THE ANSWER IS "THIS IS INCLUDED".
+    #
+    # The reasoning is the deliverable. "Included" with no note is a decision
+    # that cannot be checked, cannot be appealed and cannot be explained to the
+    # client three weeks later — and "included" is the classification most
+    # likely to be reached for when someone is busy and wants the request to
+    # stop being a decision.
+    # ══════════════════════════════════════════════════════════════════════
+    classification_note = models.TextField(
+        blank=True,
+        help_text="Why it is this and not one of the other three. Required at classification.",
+    )
+
+    # ── impact, only meaningful for a CHANGE ────────────────────────────────
+    #
+    # Null and zero are different answers. Null is "nobody has said"; zero is
+    # "somebody looked and it costs nothing". A client reading "no additional
+    # cost" is entitled to know which of those they are being told.
+    cost_impact_kes = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Additional cost. 0 means priced at nothing; empty means not yet priced.",
+    )
+    timeline_impact_days = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Days added to the target date. 0 means assessed as none.",
+    )
+    risk_note = models.TextField(
+        blank=True, help_text="What this makes more likely to go wrong."
+    )
+
+    # ── the client's answer ─────────────────────────────────────────────────
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="changes_decided",
+    )
+    decision_note = models.TextField(blank=True)
+
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-raised_at", "-id"]
+        indexes = [
+            models.Index(fields=["organisation", "status"], name="change_client_idx"),
+            models.Index(fields=["order", "status"], name="change_order_idx"),
+        ]
+        constraints = [
+            # A classification without a timestamp, or a timestamp without a
+            # classification, is a half-written record that reads as complete.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(classification="", classified_at__isnull=True)
+                    | ~models.Q(classification="") & models.Q(classified_at__isnull=False)
+                ),
+                name="change_classified_together",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.reference} — {self.summary}"
+
+    # ── questions the rest of the system asks ───────────────────────────────
+
+    @property
+    def is_classified(self) -> bool:
+        return bool(self.classification)
+
+    @property
+    def is_open(self) -> bool:
+        return self.status not in {
+            self.Status.DONE,
+            self.Status.DECLINED,
+            self.Status.WITHDRAWN,
+        }
+
+    @property
+    def bills(self) -> bool:
+        """
+        Whether this one can carry money.
+
+        Only an approved change request can. A defect explicitly cannot, and
+        that is the guard worth having in code rather than in a policy
+        document — billing for a defect is billing someone to fix what they
+        already paid for.
+        """
+        return (
+            self.classification == self.Classification.CHANGE
+            and self.status == self.Status.APPROVED
+        )
+
+    @property
+    def needs_client(self) -> bool:
+        return self.status == self.Status.AWAITING
+
+    def waited_to_be_classified(self) -> timedelta | None:
+        """
+        How long it sat unclassified. Measured, never promised — the same
+        stance as `SupportTicket.first_answered_at`.
+
+        This is the number that says whether "classify before work starts" is
+        a practice or a sentence in a document.
+        """
+        if self.classified_at is None:
+            return None
+        return self.classified_at - self.raised_at

@@ -44,6 +44,7 @@ from django.db.models import Q
 
 from accounts.models import Organisation, User
 from portal.models import (
+    ChangeRequest,
     ContactLogEntry,
     Contract,
     Decision,
@@ -74,6 +75,7 @@ KINDS = (
     "Quote",
     "Contract",
     "Support",
+    "Change",
     "Conversation",
     "Task",
     "Decision",
@@ -246,6 +248,34 @@ def search(q: str, kind: str | None = None) -> list[dict]:
                 sublabel=decision.get_status_display(),
                 href="/decisions",
                 exact=_matches_reference(decision.reference, q),
+            )
+        )
+
+    # ── change requests ─────────────────────────────────────────────────────
+    #
+    # Searchable by the client's own words, because that is how anybody looks
+    # for one: nobody remembers GM-CR-2026-0003, they remember "the Google Ads
+    # thing". The classification rides in the sublabel so a search result
+    # answers "were we paid for that?" without a click.
+    for change in ChangeRequest.objects.filter(
+        Q(reference__icontains=q) | Q(summary__icontains=q) | Q(detail__icontains=q)
+    ).select_related("organisation", "order")[:PER_TYPE]:
+        hits.append(
+            Hit(
+                kind="Change",
+                label=f"{change.reference} — {change.summary}",
+                sublabel=" · ".join(
+                    part
+                    for part in (
+                        change.organisation.name,
+                        change.get_classification_display()
+                        if change.classification
+                        else "not yet classified",
+                    )
+                    if part
+                ),
+                href="/changes",
+                exact=_matches_reference(change.reference, q),
             )
         )
 

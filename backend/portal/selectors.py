@@ -25,6 +25,7 @@ from django.db.models import Prefetch, QuerySet
 from accounts.models import User
 from portal.models import (
     Blocker,
+    ChangeRequest,
     Contract,
     HostingArrangement,
     Offer,
@@ -341,6 +342,25 @@ def tickets_for(user: User) -> QuerySet[SupportTicket]:
 
 def ticket_for(user: User, reference: str) -> SupportTicket | None:
     return tickets_for(user).filter(reference=reference).first()
+
+
+def change_requests_for(user: User) -> QuerySet:
+    """
+    Change requests belonging to the user's organisations.
+
+    Scoped on organisation in the query itself, like every other client read in
+    this module. GM-CR-2026-0004 is as guessable as every other reference here,
+    and a change request carries a client's own words plus a price — a leak
+    here would hand one client another's negotiation.
+    """
+    return (
+        ChangeRequest.objects.filter(organisation_id__in=organisation_ids_for(user))
+        .select_related("order", "organisation", "classified_by")
+    )
+
+
+def change_request_for(user: User, reference: str):
+    return change_requests_for(user).filter(reference=reference).first()
 
 
 def waiting_on_client(user: User) -> QuerySet[Blocker]:
