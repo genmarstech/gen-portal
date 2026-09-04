@@ -140,6 +140,12 @@ urlpatterns = [
     ),
     path("ops/clients/<int:pk>/orders", views.ClientOrderView.as_view(), name="ops-client-orders"),
     path("ops/follow-ups", views.FollowUpView.as_view(), name="ops-follow-ups"),
+    # Recent conversations across every client, for assigning work off one.
+    path(
+        "ops/conversations",
+        views.ConversationPickerView.as_view(),
+        name="ops-conversations",
+    ),
 
     # ---- asking a founder for permission to do one thing, once ----
     path("ops/requests", views.AccessRequestView.as_view(), name="ops-requests"),

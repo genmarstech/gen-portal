@@ -683,6 +683,27 @@ def contact_log_for(organisation: Organisation) -> QuerySet[ContactLogEntry]:
     )
 
 
+def recent_conversations(*, limit: int = 40, untasked_only: bool = True):
+    """
+    Conversations across every client, newest first — for assigning work off.
+
+    ── WHY THE DEFAULT HIDES ONES THAT ALREADY BECAME WORK ─────────────────────
+
+    A conversation that already has a task is one somebody has acted on. Left
+    in the list it is an invitation to create a second task for the same call,
+    which is how two people end up doing one thing — and the duplicate is
+    indistinguishable from the original on the board.
+
+    So the picker offers what has NOT been picked up. Everything else is
+    reachable from the client's own page, where the question is history rather
+    than "what still needs somebody".
+    """
+    qs = ContactLogEntry.objects.select_related("organisation", "order", "recorded_by")
+    if untasked_only:
+        qs = qs.filter(tasks__isnull=True)
+    return qs.order_by("-happened_at", "-id")[:limit]
+
+
 def follow_ups_owed(*, overdue_only: bool = False, today: date | None = None):
     """
     Promises made and not yet kept, oldest first.

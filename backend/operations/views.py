@@ -1420,6 +1420,12 @@ class TaskListView(StaffView):
                 pk=form.validated_data["decision"]
             ).first()
 
+        contact = None
+        if form.validated_data.get("contact"):
+            contact = ContactLogEntry.objects.filter(
+                pk=form.validated_data["contact"]
+            ).first()
+
         try:
             task = services.assign_task(
                 actor=request.user,
@@ -1427,6 +1433,7 @@ class TaskListView(StaffView):
                 organisation=organisation,
                 ticket=ticket,
                 decision=decision,
+                contact=contact,
                 title=form.validated_data["title"],
                 detail=form.validated_data["detail"],
                 order=order,
@@ -2488,4 +2495,46 @@ class AccessRequestDecisionView(StaffView):
 
         return Response(
             AccessRequestSerializer(entry, context={"request": request}).data
+        )
+
+
+class ConversationPickerView(StaffView):
+    """
+    Recent conversations, for assigning work off one.
+
+    ── WHY THIS IS NOT THE CLIENT'S CONTACT LOG ────────────────────────────────
+
+    That log answers "what have we said to this client". This answers "what has
+    been said to anybody that nobody has picked up yet" — a different question,
+    across every client, and the one somebody has on the team screen.
+
+    Ones that already became a task are hidden by default: leaving them in is
+    an invitation to create a second task for the same call, and on the board
+    the duplicate is indistinguishable from the original.
+    """
+
+    def get(self, request):
+        entries = selectors.recent_conversations(
+            untasked_only=request.query_params.get("all") != "1"
+        )
+        return Response(
+            {
+                "conversations": [
+                    {
+                        "id": entry.id,
+                        "organisation": entry.organisation_id,
+                        "organisation_name": entry.organisation.name,
+                        "summary": entry.summary,
+                        "channel_label": entry.get_channel_display(),
+                        "happened_at": entry.happened_at,
+                        "order_reference": (
+                            entry.order.reference if entry.order_id else None
+                        ),
+                        "follow_up": entry.follow_up,
+                        "follow_up_by": entry.follow_up_by,
+                        "recorded_by": entry.recorded_by_label,
+                    }
+                    for entry in entries
+                ]
+            }
         )

@@ -2468,6 +2468,7 @@ def assign_task(
     organisation: Organisation | None = None,
     ticket: SupportTicket | None = None,
     decision: Decision | None = None,
+    contact: ContactLogEntry | None = None,
     due_on: date | None = None,
     priority: str = Task.Priority.NORMAL,
 ) -> Task:
@@ -2512,11 +2513,19 @@ def assign_task(
             organisation = order.organisation
         elif ticket is not None:
             organisation = ticket.organisation
+        elif contact is not None:
+            organisation = contact.organisation
+
+    # A conversation about a specific order carries that order with it, so
+    # somebody assigning work off a call does not have to retype a reference
+    # that is already recorded against it.
+    if order is None and contact is not None and contact.order_id is not None:
+        order = contact.order
 
     # And the pieces must agree. A task pointing at one client's order and
     # another client's ticket is a row that appears under both and is right
     # about neither.
-    for label, related in (("order", order), ("ticket", ticket)):
+    for label, related in (("order", order), ("ticket", ticket), ("contact", contact)):
         if (
             related is not None
             and organisation is not None
@@ -2535,6 +2544,7 @@ def assign_task(
         organisation=organisation,
         ticket=ticket,
         decision=decision,
+        contact=contact,
         due_on=due_on,
         priority=priority,
     )

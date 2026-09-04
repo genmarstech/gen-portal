@@ -853,6 +853,10 @@ class TaskWriteSerializer(serializers.Serializer):
     organisation = serializers.IntegerField(required=False, allow_null=True, default=None)
     ticket = serializers.CharField(required=False, allow_blank=True, default="")
     decision = serializers.IntegerField(required=False, allow_null=True, default=None)
+    # A logged conversation this work came out of. Picking one carries its
+    # client and its order across, so nobody retypes a reference already
+    # recorded against the call.
+    contact = serializers.IntegerField(required=False, allow_null=True, default=None)
     due_on = serializers.DateField(required=False, allow_null=True, default=None)
     priority = serializers.ChoiceField(
         choices=Task.Priority.choices, required=False, default=Task.Priority.NORMAL

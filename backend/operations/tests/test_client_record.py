@@ -591,3 +591,82 @@ def test_work_from_a_call_is_visible_to_the_whole_company(client, staff, spa):
 
     counts = client.get(reverse("ops-overview")).json()["counts"]
     assert counts["open_tasks"] == 1
+
+
+# ── assigning work off a conversation ────────────────────────────────────────
+
+
+def test_the_picker_offers_conversations_nobody_has_picked_up(client, staff, spa):
+    """
+    One that already became a task has been acted on. Left in the list it is an
+    invitation to create a second task for the same call — and on the board the
+    duplicate is indistinguishable from the original.
+    """
+    order = Order.objects.create(
+        organisation=spa, reference="GM-2026-0042", title="Spa website", contact=staff
+    )
+    client.force_login(staff)
+
+    # This one auto-creates a task, so it should not be offered.
+    _log(client, spa, summary="Talked about the booking form", order=order.reference)
+    # This one does not.
+    _log(client, spa, summary="Asked how long hosting is paid up for")
+
+    offered = client.get(reverse("ops-conversations")).json()["conversations"]
+    assert [c["summary"] for c in offered] == ["Asked how long hosting is paid up for"]
+
+    everything = client.get(reverse("ops-conversations"), {"all": "1"}).json()
+    assert len(everything["conversations"]) == 2
+
+
+def test_assigning_off_a_conversation_carries_the_client_and_the_order(client, staff, spa):
+    """
+    So nobody retypes a reference that is already recorded against the call.
+    """
+    from portal.models import Task
+
+    order = Order.objects.create(
+        organisation=spa, reference="GM-2026-0042", title="Spa website", contact=staff
+    )
+    client.force_login(staff)
+    entry_id = _log(
+        client, spa, summary="Wants the gallery reordered",
+        order=order.reference, create_task=False,
+    ).json()["id"]
+
+    response = client.post(
+        reverse("ops-tasks"),
+        {
+            "assignee": staff.pk,
+            "title": "Reorder the gallery",
+            "contact": entry_id,
+        },
+        content_type="application/json",
+    )
+    assert response.status_code == 201
+
+    task = Task.objects.get()
+    assert task.contact_id == entry_id
+    assert task.organisation == spa
+    assert task.order == order
+
+
+def test_a_conversation_from_another_client_is_refused(client, staff, spa):
+    """A task pointing at one client's conversation and another's order would
+    appear under both and be right about neither."""
+    other = Organisation.objects.create(name="Somebody Else Ltd")
+    client.force_login(staff)
+    entry_id = _log(client, other, create_task=False).json()["id"]
+
+    response = client.post(
+        reverse("ops-tasks"),
+        {
+            "assignee": staff.pk,
+            "title": "Something",
+            "contact": entry_id,
+            "organisation": spa.pk,
+        },
+        content_type="application/json",
+    )
+    assert response.status_code == 400
+    assert response.json()["field"] == "contact"
