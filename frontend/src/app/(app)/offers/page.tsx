@@ -144,13 +144,21 @@ function Card({
   return (
     <li className={`${styles.card} ${live ? "" : styles.cardSettled}`}>
       <div className={styles.cardHead}>
-        <span className={styles.reference}>{offer.reference}</span>
+        {/* The reference opens the full document — the version that gets
+            printed and forwarded to whoever actually signs off. */}
+        <Link href={`/offers/${offer.reference}`} className={styles.reference}>
+          {offer.reference}
+        </Link>
         <span className={styles.pill}>
           {offer.expired && offer.status === "sent" ? "Expired" : offer.status_label}
         </span>
       </div>
 
       <h3 className={styles.offerTitle}>{offer.title}</h3>
+
+      <p className={styles.openDoc}>
+        <Link href={`/offers/${offer.reference}`}>Read it in full, or print it</Link>
+      </p>
 
       <p className={styles.amount}>
         KES {group(offer.amount_kes)}

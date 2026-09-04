@@ -221,3 +221,8 @@
   border: 1px solid var(--rule);
   border-radius: var(--radius);
 }
+
+.openDoc {
+  margin: 0 0 var(--sp-3);
+  font-size: 0.875rem;
+}

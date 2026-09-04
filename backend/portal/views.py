@@ -40,6 +40,7 @@ from .selectors import (
     orders_for,
 )
 from .serializers import (
+    OfferDocumentSerializer,
     ClientBlockerSerializer,
     ClientInvoiceSerializer,
     ClientOfferSerializer,
@@ -581,6 +582,35 @@ class ServiceCatalogueView(APIView):
         )
 
 
+class OfferDocumentView(APIView):
+    """
+    One offer, as a printable document.
+
+    404 for an offer on somebody else's account — the same answer as for one
+    that does not exist. Offer references are sequential and therefore
+    guessable, so a 403 would confirm which are real, turning this into a
+    counter of how much Genmars is quoting and to whom.
+
+    A DRAFT is never reachable here: `offers_for` excludes them, so an offer we
+    have not decided to send cannot be opened by guessing its reference the day
+    before we send it.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, reference: str):
+        offer = selectors.offer_for(request.user, reference)
+        if offer is None:
+            return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response(
+            OfferDocumentSerializer(
+                {"offer": offer},
+                context={"billing": BillingProfile.load()},
+            ).data
+        )
+
+
 class OfferListView(APIView):
     """
     Offers put to this client.
@@ -593,14 +623,12 @@ class OfferListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        offers = (
-            Offer.objects.filter(
-                organisation_id__in=selectors.organisation_ids_for(request.user)
-            )
-            .exclude(status=Offer.Status.DRAFT)
-            .select_related("organisation")
+        # Scoped in portal/selectors.py, like every other client read. It used
+        # to be filtered here, which is exactly the thing that module exists to
+        # stop: one view's copy of a filter cannot be kept in step with another.
+        return Response(
+            {"offers": ClientOfferSerializer(selectors.offers_for(request.user), many=True).data}
         )
-        return Response({"offers": ClientOfferSerializer(offers, many=True).data})
 
 
 class OfferDecisionView(APIView):

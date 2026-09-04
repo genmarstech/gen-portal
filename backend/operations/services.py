@@ -2050,6 +2050,66 @@ def next_offer_reference(today: date | None = None) -> str:
     return f"{prefix}{used + 1:04d}"
 
 
+PROPOSAL_FIELDS = (
+    "context",
+    "approach",
+    "inclusions",
+    "exclusions",
+    "timeline",
+    "payment_terms",
+    "next_step",
+)
+
+
+@transaction.atomic
+def revise_offer(*, offer: Offer, actor: User, values: dict) -> Offer:
+    """
+    Edit a DRAFT.
+
+    Refuses anything else, and the reason is the whole point of the two-step
+    send: once an offer is sent the client can accept it, so the number and the
+    words are ours to honour. Editing them under somebody who is still deciding
+    means they open on Friday something different from what they read on
+    Tuesday, and neither of us can explain what happened.
+
+    A sent offer that was wrong is WITHDRAWN and replaced, which leaves both
+    versions readable.
+    """
+    if offer.status != Offer.Status.DRAFT:
+        raise OperationsError(
+            f"{offer.reference} is {offer.get_status_display().lower()}. A sent "
+            "offer is not edited — withdraw it and make a new one, so both "
+            "versions stay readable and the client can see what changed."
+        )
+
+    editable = ("title", "detail", "amount_kes", "expires_on", *PROPOSAL_FIELDS)
+    changed = []
+    for field in editable:
+        if field not in values:
+            continue
+        new = values[field]
+        if isinstance(new, str):
+            new = new.strip()
+        if new != getattr(offer, field):
+            setattr(offer, field, new)
+            changed.append(field)
+
+    if not (offer.title or "").strip():
+        raise OperationsError("Say what is being offered.", field="title")
+    if not (offer.detail or "").strip() and not (offer.inclusions or "").strip():
+        raise OperationsError("Say what it includes.", field="detail")
+    if offer.amount_kes is not None and Decimal(offer.amount_kes) <= 0:
+        raise OperationsError(
+            "An offer has to be for a positive amount.", field="amount_kes"
+        )
+    if offer.expires_on and offer.expires_on < timezone.localdate():
+        raise OperationsError("That date has already passed.", field="expires_on")
+
+    if changed:
+        offer.save(update_fields=changed)
+    return offer
+
+
 @transaction.atomic
 def make_offer(
     *,
@@ -2061,6 +2121,7 @@ def make_offer(
     expires_on: date,
     service: Service | None = None,
     tier: ServiceTier | None = None,
+    **proposal,
 ) -> Offer:
     """
     Put a price to a client. Created as a DRAFT — sending is a separate act.
@@ -2082,8 +2143,11 @@ def make_offer(
     if not title:
         raise OperationsError("Say what is being offered.", field="title")
 
-    detail = detail.strip()
-    if not detail:
+    detail = (detail or "").strip()
+    # Either the summary line or the structured "what the price covers" has to
+    # say something. A price with no description of what it buys is a number
+    # the client cannot evaluate and we cannot later prove we described.
+    if not detail and not (proposal.get("inclusions") or "").strip():
         raise OperationsError(
             "Say what it includes. The client reads this and decides on it.",
             field="detail",
@@ -2120,6 +2184,10 @@ def make_offer(
                     list_price_kes=tier.price_kes if tier else None,
                     expires_on=expires_on,
                     created_by=actor,
+                    **{
+                        field: (proposal.get(field) or "").strip()
+                        for field in PROPOSAL_FIELDS
+                    },
                 )
             break
         except IntegrityError:
@@ -2153,7 +2221,11 @@ def send_offer(*, offer: Offer, actor: User) -> Offer:
 
     offer.status = Offer.Status.SENT
     offer.sent_at = timezone.now()
-    offer.save(update_fields=["status", "sent_at"])
+    # Frozen at send, like the amount and for the same reason: this is the
+    # moment the document becomes something the client holds a copy of, and
+    # renaming the organisation later must not change who it was addressed to.
+    offer.offered_to_name = offer.organisation.name
+    offer.save(update_fields=["status", "sent_at", "offered_to_name"])
 
     _notify(
         users=_client_recipients(offer.organisation),
@@ -2177,8 +2249,68 @@ def send_offer(*, offer: Offer, actor: User) -> Offer:
         expires_on=str(offer.expires_on),
     )
 
+    # The email, which is the half that actually reaches anybody. A price
+    # sitting behind a login is indistinguishable, from our side, from having
+    # quoted somebody who went quiet.
+    _email_offer(offer)
+
     log.info("offer %s sent by %s", offer.reference, actor.email)
     return offer
+
+
+def _email_offer(offer: Offer) -> None:
+    """
+    Send the quote to everyone at the client who takes updates.
+
+    Same two exclusions as a progress note. `receives_updates` off means they
+    asked not to hear from us, and an unverified address is one nobody has
+    proved they read — a price is commercial detail and does not go to a
+    mailbox we cannot place.
+    """
+    proposal = {
+        "context": offer.context,
+        "approach": offer.approach,
+        "inclusions": offer.inclusions,
+        "exclusions": offer.exclusions,
+        "timeline": offer.timeline,
+    }
+    # Fall back to the single `detail` blob when none of the structured fields
+    # were used, so a quote written the old way still says something.
+    if not any(v.strip() for v in proposal.values()):
+        proposal = {"inclusions": offer.detail}
+
+    recipients = (
+        Membership.objects.filter(
+            organisation=offer.organisation, receives_updates=True
+        )
+        .select_related("user")
+        .exclude(user__email_verified_at__isnull=True)
+    )
+
+    for membership in recipients:
+        try:
+            emails.send_offer(
+                email=membership.user.email,
+                reference=offer.reference,
+                title=offer.title,
+                amount_kes=f"{offer.amount_kes:,.2f}",
+                list_price_kes=(
+                    f"{offer.list_price_kes:,.2f}"
+                    if offer.list_price_kes and offer.list_price_kes != offer.amount_kes
+                    else ""
+                ),
+                expires_on=f"{offer.expires_on:%-d %B %Y}",
+                proposal={k: v for k, v in proposal.items() if v.strip()},
+                payment_terms=offer.payment_terms,
+                next_step=offer.next_step,
+            )
+        except Exception:
+            # A failed email must not roll back the send. The offer is the
+            # fact and it is already in their dashboard; this is an account of
+            # it, and one that failed is logged rather than swallowed silently.
+            log.exception(
+                "could not email %s about offer %s", membership.user.email, offer.reference
+            )
 
 
 @transaction.atomic

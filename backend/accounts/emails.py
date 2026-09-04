@@ -422,3 +422,100 @@ def send_order_opened(
             "contact": contact,
         },
     )
+
+
+def send_offer(
+    *,
+    email: str,
+    reference: str,
+    title: str,
+    amount_kes: str,
+    list_price_kes: str,
+    expires_on: str,
+    proposal: dict,
+    payment_terms: str,
+    next_step: str,
+) -> None:
+    """
+    A quote or proposal, put in front of a client.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS THE HALF THAT WAS MISSING, AND IT IS THE HALF THAT MATTERS.
+
+    Sending an offer used to write a notification into the portal and stop. So
+    a price sat behind a login, waiting for a client to happen to sign in — and
+    from our side that is indistinguishable from having quoted somebody who
+    went quiet.
+
+    Worse, the person we talk to is usually not the person who signs off. A
+    quote lives or dies on being forwardable, and one that exists only inside a
+    portal that one named individual can reach is a quote the decision-maker
+    never sees.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THE WHOLE THING IS IN THE MESSAGE ───────────────────────────────────────
+
+    Not a link to it. Same rule as send_progress_note, and the same reason:
+    "you have a quote, sign in to read it" is a notification about a
+    notification. The portal link is there for accepting, which is the one
+    thing that genuinely needs an authenticated click.
+
+    ── AND IT DOES NOT PRESSURE ANYBODY ────────────────────────────────────────
+
+    The expiry is stated once, as a fact, because an open-ended price is one we
+    are still bound by in a year after our costs have moved. It is not repeated,
+    not counted down, and not framed as an opportunity closing — Charter 04 §III
+    is specific over impressive, and a deadline used as leverage is neither.
+    """
+    lines = [title, reference, ""]
+
+    headings = [
+        ("context", "WHAT WE UNDERSTOOD"),
+        ("approach", "HOW WE WOULD DO IT"),
+        ("inclusions", "WHAT THE PRICE COVERS"),
+        ("exclusions", "WHAT IT DOES NOT COVER"),
+        ("timeline", "HOW LONG"),
+    ]
+    for key, heading in headings:
+        value = (proposal.get(key) or "").strip()
+        if value:
+            lines += [heading, value, ""]
+
+    lines += [f"PRICE\nKES {amount_kes}"]
+    if list_price_kes:
+        # What we discounted FROM. A price without its reference point is a
+        # number they cannot judge, and hiding it would make the discount a
+        # sales tactic rather than a fact.
+        lines[-1] += f"  (list price KES {list_price_kes})"
+    lines += ["", f"This price is valid until {expires_on}.", ""]
+
+    if payment_terms.strip():
+        lines += ["PAYMENT", payment_terms.strip(), ""]
+    if next_step.strip():
+        lines += ["IF YOU WANT TO GO AHEAD", next_step.strip(), ""]
+
+    lines += [
+        "You can read it, print it and accept it here:",
+        "https://app.genmars.co.ke/offers",
+        "",
+        "Genmars Tech Limited",
+        "genmars.co.ke",
+    ]
+
+    _send(
+        to=email,
+        subject=f"{title} — quote from Genmars ({reference})",
+        text="\n".join(lines),
+        template="email/offer.html",
+        context={
+            "heading": title,
+            "preheader": f"KES {amount_kes}, valid until {expires_on}.",
+            "reference": reference,
+            "amount_kes": amount_kes,
+            "list_price_kes": list_price_kes,
+            "expires_on": expires_on,
+            "proposal": proposal,
+            "payment_terms": payment_terms.strip(),
+            "next_step": next_step.strip(),
+        },
+    )

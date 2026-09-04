@@ -43,6 +43,14 @@ urlpatterns = [
         name="support-reply",
     ),
     path("offers", views.OfferListView.as_view(), name="offer-list"),
+    # One offer as a printable document — the version that gets forwarded to
+    # whoever actually signs off. Must sit ABOVE the decision route so the
+    # reference is not swallowed.
+    path(
+        "offers/<str:reference>",
+        views.OfferDocumentView.as_view(),
+        name="offer-document",
+    ),
     path(
         "offers/<str:reference>/decision",
         views.OfferDecisionView.as_view(),

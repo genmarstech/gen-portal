@@ -686,3 +686,77 @@ class ClientSystemSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
+
+
+class OfferDocumentSerializer(serializers.Serializer):
+    """
+    A quote or proposal as a DOCUMENT — something a client can print, file and
+    forward to whoever actually signs off.
+
+    ── WHY A DOCUMENT AND NOT JUST THE LIST ROW ────────────────────────────────
+
+    Because the person we are talking to is usually not the person who decides.
+    A quote lives or dies on being forwardable: it gets printed, attached to an
+    email, taken into a meeting. A price that exists only inside a portal one
+    named individual can sign into is a price the decision-maker never sees,
+    and "they went quiet" is what that looks like from our side.
+
+    ── THE HEADINGS NOBODY FILLED IN ARE ABSENT, NOT EMPTY ─────────────────────
+
+    Every proposal field is optional, so a renewal quoted in one line renders as
+    one line. A document with five blank headings reads as unfinished, which is
+    the opposite of what a quote needs to do.
+    """
+
+    offer = ClientOfferSerializer(read_only=True)
+    offered_to = serializers.SerializerMethodField()
+    biller = serializers.SerializerMethodField()
+    proposal = serializers.SerializerMethodField()
+    terms = serializers.SerializerMethodField()
+
+    def get_offered_to(self, data) -> dict:
+        offer = data["offer"]
+        # The snapshot wins — see Offer.offered_to_name. Renaming a client must
+        # not change the "To:" line on a quote they are holding a copy of.
+        return {"organisation": offer.offered_to_name or offer.organisation.name}
+
+    def get_biller(self, data) -> dict:
+        """Who is quoting. Same source as an invoice, so the two documents
+        cannot disagree about who Genmars is."""
+        profile = self.context["billing"]
+        return {
+            "legal_name": profile.resolve("legal_name"),
+            "email": profile.resolve("email"),
+            "kra_pin": profile.resolve("kra_pin") or None,
+            "postal_address": profile.resolve("postal_address") or None,
+        }
+
+    def get_proposal(self, data) -> dict:
+        """
+        Only what was written. Absent keys render as absent headings.
+
+        Ordered the way it has to be READ: what we understood, then what we
+        would do, then what is and is not covered, then how long. Price and
+        terms come after all of it, because a number before its reasoning is a
+        number somebody argues with.
+        """
+        offer = data["offer"]
+        parts = {
+            "context": offer.context,
+            "approach": offer.approach,
+            "inclusions": offer.inclusions,
+            "exclusions": offer.exclusions,
+            "timeline": offer.timeline,
+        }
+        return {key: value for key, value in parts.items() if value.strip()}
+
+    def get_terms(self, data) -> dict:
+        offer = data["offer"]
+        profile = self.context["billing"]
+        return {
+            "payment_terms": offer.payment_terms.strip() or None,
+            # Falls back to the standing terms on the billing profile, so a
+            # quote that says nothing about payment still says something true.
+            "standing_terms": profile.resolve("terms") or None,
+            "next_step": offer.next_step.strip() or None,
+        }

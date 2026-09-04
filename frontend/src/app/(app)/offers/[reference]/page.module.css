@@ -1,0 +1,245 @@
+.page {
+  padding-bottom: var(--sp-16);
+}
+
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: var(--sp-16);
+}
+
+.notFound {
+  margin-block: var(--sp-8) var(--sp-4);
+  color: var(--ink);
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-block: var(--sp-6) var(--sp-4);
+}
+
+.back {
+  font-size: 0.875rem;
+}
+
+.controlActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+
+.print {
+  padding: 0.5rem 0.9rem;
+  font: inherit;
+  font-size: 0.875rem;
+  color: var(--bg);
+  background: var(--ink);
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.print:hover {
+  background: var(--ink-muted);
+}
+
+/* "Download" alone promises a file and hands you a dialog. This says where the
+   PDF actually comes from, so the button is not a broken promise. */
+.printNote {
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+/* Constrained to roughly a page width, so what is on screen is what comes out
+   of the printer. */
+.doc {
+  max-width: 46rem;
+  padding: clamp(var(--sp-6), 4vw, var(--sp-10));
+  background: var(--bg-raised);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-6);
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: var(--sp-5);
+  margin-bottom: var(--sp-6);
+  border-bottom: 1px solid var(--rule);
+}
+
+.kind {
+  margin: 0 0 0.35rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.title {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 400;
+  line-height: 1.25;
+  color: var(--ink);
+  text-wrap: balance;
+}
+
+.reference {
+  margin: 0.4rem 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  color: var(--ink-faint);
+}
+
+.parties {
+  min-width: 12rem;
+}
+
+.partyLabel {
+  margin: var(--sp-3) 0 0.15rem;
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.partyLabel:first-child {
+  margin-top: 0;
+}
+
+.party {
+  margin: 0;
+  font-size: 0.9375rem;
+  color: var(--ink);
+}
+
+.partyLine {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--ink-muted);
+}
+
+/* Before the price, never after. Somebody skimming must not read the figure
+   first and act on a number that is no longer ours to honour. */
+.state {
+  margin: 0 0 var(--sp-6);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--ink);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
+  border-radius: var(--radius);
+}
+
+.section {
+  margin-bottom: var(--sp-6);
+}
+
+.sectionHeading {
+  margin: 0 0 0.4rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.sectionBody {
+  max-width: 62ch;
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+
+/* The price sits after the reasoning and is the only thing on the page given
+   this much weight. A number before its argument is one somebody disputes. */
+.price {
+  margin-bottom: var(--sp-6);
+  padding-block: var(--sp-5);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.priceLabel {
+  margin: 0 0 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.priceValue {
+  margin: 0;
+  font-size: 1.875rem;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.listPrice {
+  margin: 0.3rem 0 0;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+}
+
+/* Stated once, as a fact. The date exists because an open-ended price is one
+   we are still bound by after our costs have moved — not to hurry anybody. */
+.validity {
+  margin: 0.6rem 0 0;
+  font-size: 0.875rem;
+  color: var(--ink-muted);
+}
+
+.accept {
+  max-width: 62ch;
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.65;
+  color: var(--ink-muted);
+}
+
+@media print {
+  /* Controls are meaningless on paper, and printing them suggests the sheet
+     can do something it cannot. */
+  .controls,
+  .accept {
+    display: none !important;
+  }
+
+  .doc {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    background: #fff;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .doc,
+  .title,
+  .party,
+  .sectionBody,
+  .priceValue {
+    color: #000;
+  }
+
+  /* A section split across a page break reads as two half-thoughts. */
+  .section,
+  .price {
+    break-inside: avoid;
+  }
+}

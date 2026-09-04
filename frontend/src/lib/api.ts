@@ -221,6 +221,30 @@ export type ClientOffer = {
   decided_at: string | null;
 };
 
+export type OfferDocument = {
+  offer: ClientOffer;
+  offered_to: { organisation: string };
+  biller: {
+    legal_name: string;
+    email: string;
+    kra_pin: string | null;
+    postal_address: string | null;
+  };
+  /** Only the sections that were written. Keys are absent, never blank. */
+  proposal: Partial<{
+    context: string;
+    approach: string;
+    inclusions: string;
+    exclusions: string;
+    timeline: string;
+  }>;
+  terms: {
+    payment_terms: string | null;
+    standing_terms: string | null;
+    next_step: string | null;
+  };
+};
+
 export type TicketMessage = {
   id: number;
   author_label: string;
@@ -470,6 +494,15 @@ export const portal = {
     post<Ticket>(`/support/${reference}/reply`, { body }),
 
   offers: () => get<{ offers: ClientOffer[] }>("/offers"),
+  /**
+   * One quote as a printable document — the version that gets forwarded to
+   * whoever actually signs off.
+   *
+   * Headings nobody filled in are ABSENT from `proposal`, not empty, so a
+   * renewal quoted in one line renders as one line rather than as a document
+   * with five blank sections.
+   */
+  offer: (reference: string) => get<OfferDocument>(`/offers/${reference}`),
   /** Accepting files an enquiry. It does not start work — a signed SOW does. */
   decideOffer: (reference: string, decision: "accept" | "decline", reason?: string) =>
     post<ClientOffer>(`/offers/${reference}/decision`, { decision, reason }),

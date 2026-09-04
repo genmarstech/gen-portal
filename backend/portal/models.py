@@ -1548,6 +1548,68 @@ class Offer(models.Model):
         help_text="What it includes, in the client's language. Copied at send."
     )
 
+    # ── the proposal ────────────────────────────────────────────────────────
+    #
+    # ══════════════════════════════════════════════════════════════════════
+    # A QUOTE AND A PROPOSAL ARE THE SAME ROW, FILLED IN TO DIFFERENT DEPTHS.
+    #
+    # There is no second model, because there is no second thing. A renewal
+    # quoted over the phone needs a title, a number and a date; a piece of work
+    # somebody has to justify internally needs the reasoning as well. Splitting
+    # them would give us two references, two documents and two accept buttons
+    # for one commitment — and Charter 03 §I asks whether what is already here
+    # can do the job. It can, with more fields.
+    #
+    # All optional, so a one-line quote stays a one-line quote and the document
+    # simply omits the headings nobody filled in.
+    # ══════════════════════════════════════════════════════════════════════
+
+    context = models.TextField(
+        blank=True,
+        help_text=(
+            "What we understood the problem to be. The client reads this first "
+            "and it is where they find out we were listening — or that we were "
+            "not, which is cheaper to discover here than after a deposit."
+        ),
+    )
+    approach = models.TextField(blank=True, help_text="How we would do it.")
+    inclusions = models.TextField(blank=True, help_text="What the price covers.")
+    exclusions = models.TextField(
+        blank=True,
+        help_text=(
+            "What it does not. Charter 05 §I — exclusions in writing before "
+            "work begins, and a quote is before work begins."
+        ),
+    )
+    timeline = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text=(
+            "An ESTIMATE of how long, in plain words. Charter 03 §IV forbids "
+            "putting a commitment in front of a client that has not been tested "
+            "under real conditions, so this is not a deadline and must not be "
+            "worded as one."
+        ),
+    )
+    payment_terms = models.TextField(
+        blank=True, help_text="Deposit, milestones, what is due when."
+    )
+    next_step = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text=(
+            "What happens if they say yes. Accepting files an enquiry, which we "
+            "qualify — it does not start work, and the document should not let "
+            "anyone think it does."
+        ),
+    )
+
+    # Who it was addressed to, as it read on the day. Same rule and the same
+    # reason as Invoice.billed_to_name: an offer is a document the client
+    # holds a copy of, and renaming the organisation must not change the
+    # "To:" line on a quote already sent.
+    offered_to_name = models.CharField(max_length=200, blank=True)
+
     amount_kes = models.DecimalField(
         max_digits=12,
         decimal_places=2,

@@ -733,6 +733,10 @@ class OfferSerializer(serializers.ModelSerializer):
             "status", "status_label", "expires_on", "expired",
             "sent_at", "decided_at", "decline_reason",
             "created_by_name", "created_at",
+            # The proposal. All optional — a renewal quoted in one line renders
+            # as one line, and the document omits the headings nobody used.
+            "context", "approach", "inclusions", "exclusions", "timeline",
+            "payment_terms", "next_step",
         ]
         read_only_fields = fields
 
@@ -745,12 +749,43 @@ class OfferSerializer(serializers.ModelSerializer):
 
 
 class OfferWriteSerializer(serializers.Serializer):
+    """
+    Drafting a quote or a proposal — the same row, filled in to different
+    depths. See Offer in portal/models.py for why there is no second model.
+    """
+
     organisation = serializers.IntegerField()
     title = serializers.CharField(max_length=200)
-    detail = serializers.CharField()
+    detail = serializers.CharField(allow_blank=True, required=False, default="")
     amount_kes = serializers.DecimalField(max_digits=12, decimal_places=2)
     expires_on = serializers.DateField()
     tier = serializers.IntegerField(required=False, allow_null=True, default=None)
+
+    # ── the proposal, all optional ──────────────────────────────────────────
+    context = serializers.CharField(required=False, allow_blank=True, default="")
+    approach = serializers.CharField(required=False, allow_blank=True, default="")
+    inclusions = serializers.CharField(required=False, allow_blank=True, default="")
+    exclusions = serializers.CharField(required=False, allow_blank=True, default="")
+    timeline = serializers.CharField(
+        max_length=300, required=False, allow_blank=True, default=""
+    )
+    payment_terms = serializers.CharField(required=False, allow_blank=True, default="")
+    next_step = serializers.CharField(
+        max_length=300, required=False, allow_blank=True, default=""
+    )
+
+
+class OfferReviseSerializer(OfferWriteSerializer):
+    """
+    Editing a DRAFT. The organisation cannot move — an offer that changed which
+    client it was for would carry a reference somebody had already been quoted.
+    """
+
+    organisation = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields.pop("organisation", None)
 
 
 class TaskSerializer(serializers.ModelSerializer):

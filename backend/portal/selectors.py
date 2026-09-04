@@ -26,6 +26,7 @@ from accounts.models import User
 from portal.models import (
     Blocker,
     Contract,
+    Offer,
     Invoice,
     Order,
     SupportTicket,
@@ -117,6 +118,40 @@ def client_invoice_for(user: User, number: str) -> Invoice | None:
     number and expects a 404.
     """
     return invoices_for(user).filter(number=number).first()
+
+
+def offers_for(user: User) -> QuerySet[Offer]:
+    """
+    Offers this client has actually been sent.
+
+    ── DRAFTS ARE EXCLUDED HERE, NOT IN THE VIEW ───────────────────────────────
+
+    An offer we have not sent is not one they have received, and showing it
+    would put a price in front of somebody before we had decided to. That rule
+    used to live inline in the view; it belongs in this module with every other
+    client scope, so a second view — the document route — cannot get it subtly
+    different.
+    """
+    if not user.is_authenticated:
+        return Offer.objects.none()
+    return (
+        Offer.objects.filter(organisation_id__in=organisation_ids_for(user))
+        .exclude(status=Offer.Status.DRAFT)
+        .select_related("organisation", "service")
+        .order_by("-created_at")
+    )
+
+
+def offer_for(user: User, reference: str) -> Offer | None:
+    """
+    One offer by reference, scoped to the client.
+
+    Returns None for an offer belonging to someone else — the same answer as
+    for one that does not exist. An offer reference is sequential and therefore
+    guessable, so a 403 would confirm which are real and turn this into a
+    counter of how much business Genmars is quoting, and to whom.
+    """
+    return offers_for(user).filter(reference=reference).first()
 
 
 def published_notes_for(order: Order) -> QuerySet:

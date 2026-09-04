@@ -87,6 +87,7 @@ from .serializers import (
     SystemSerializer,
     SystemWriteSerializer,
     OfferSerializer,
+    OfferReviseSerializer,
     OfferWriteSerializer,
     TaskSerializer,
     TaskStatusSerializer,
@@ -1179,6 +1180,10 @@ class OfferListView(StaffView):
                 amount_kes=form.validated_data["amount_kes"],
                 expires_on=form.validated_data["expires_on"],
                 tier=tier,
+                **{
+                    field: form.validated_data.get(field, "")
+                    for field in services.PROPOSAL_FIELDS
+                },
             )
         except services.OperationsError as exc:
             return _refuse(exc)
@@ -1186,9 +1191,28 @@ class OfferListView(StaffView):
 
 
 class OfferActionView(StaffView):
-    """Send or withdraw. Accepting and declining belong to the client."""
+    """Send, withdraw, or edit a draft. Accepting and declining belong to the client."""
 
     permission_classes = [CanCommit]
+
+    def patch(self, request, pk: int):
+        """
+        Revise a DRAFT.
+
+        Refused on anything already sent — see services.revise_offer. A sent
+        offer that was wrong is withdrawn and replaced, so both versions stay
+        readable and the client can see what changed.
+        """
+        offer = get_object_or_404(Offer, pk=pk)
+        form = OfferReviseSerializer(data=request.data, partial=True)
+        form.is_valid(raise_exception=True)
+        try:
+            offer = services.revise_offer(
+                offer=offer, actor=request.user, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(OfferSerializer(offer).data)
 
     def post(self, request, pk: int):
         offer = get_object_or_404(Offer, pk=pk)

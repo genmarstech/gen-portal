@@ -1,0 +1,75 @@
+{% extends "email/base.html" %}
+{% block content %}
+{% comment %}
+The whole quote is IN the message, not behind a link. The person we are talking
+to is usually not the person who signs off, and a quote lives or dies on being
+forwardable — one that exists only inside a portal that one named individual
+can reach is a quote the decision-maker never sees.
+
+The expiry is stated ONCE, as a fact. Not counted down, not repeated, not framed
+as an opportunity closing. Charter 04 §III — specific over impressive.
+
+Headings that were not filled in are absent rather than empty: a document with
+five blank sections reads as unfinished.
+{% endcomment %}
+<p style="margin:0 0 20px 0; font-size:13px; color:#7a7480;">{{ reference }}</p>
+
+{% if proposal.context %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">What we understood</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ proposal.context }}</div>
+{% endif %}
+
+{% if proposal.approach %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">How we would do it</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ proposal.approach }}</div>
+{% endif %}
+
+{% if proposal.inclusions %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">What the price covers</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ proposal.inclusions }}</div>
+{% endif %}
+
+{% if proposal.exclusions %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">What it does not cover</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ proposal.exclusions }}</div>
+{% endif %}
+
+{% if proposal.timeline %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">How long</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; margin-bottom:22px;">{{ proposal.timeline }}</div>
+{% endif %}
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6; border-bottom:1px solid #e2dbd6; margin-bottom:22px;">
+  <tr>
+    <td style="padding:18px 0;">
+      <p style="margin:0 0 4px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">Price</p>
+      <p style="margin:0; font-size:24px; color:#2e2b34;">KES {{ amount_kes }}</p>
+      {% if list_price_kes %}
+      <p style="margin:4px 0 0 0; font-size:13px; color:#7a7480;">List price KES {{ list_price_kes }}</p>
+      {% endif %}
+      <p style="margin:10px 0 0 0; font-size:14px; color:#5f5867;">Valid until {{ expires_on }}.</p>
+    </td>
+  </tr>
+</table>
+
+{% if payment_terms %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">Payment</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ payment_terms }}</div>
+{% endif %}
+
+{% if next_step %}
+<p style="margin:0 0 6px 0; font-size:11px; letter-spacing:0.09em; text-transform:uppercase; color:#7a7480;">If you want to go ahead</p>
+<div style="font-size:15px; line-height:1.7; color:#2e2b34; white-space:pre-wrap; margin-bottom:22px;">{{ next_step }}</div>
+{% endif %}
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6;">
+  <tr>
+    <td style="padding-top:18px; font-size:14px; line-height:1.65; color:#5f5867;">
+      You can read it, print it and accept it here:<br>
+      <a href="https://app.genmars.co.ke/offers" style="color:#834f49;">app.genmars.co.ke/offers</a>
+    </td>
+  </tr>
+</table>
+{% endblock %}
