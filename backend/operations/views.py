@@ -1345,7 +1345,7 @@ class TaskListView(StaffView):
 
     def get(self, request):
         tasks = Task.objects.select_related(
-            "assignee", "order", "organisation", "ticket", "decision"
+            "assignee", "order", "organisation", "ticket", "decision", "contact"
         ).all()
 
         assignee = request.query_params.get("assignee")

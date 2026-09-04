@@ -1858,6 +1858,18 @@ class Task(models.Model):
         help_text="A decision that created work — the follow-through it commits us to.",
     )
 
+    # The conversation this came out of. Provenance rather than filing: six
+    # weeks on, "why am I doing this" is answered by the call it came from,
+    # and a task whose origin is a WhatsApp message nobody can find is a task
+    # people quietly close.
+    contact = models.ForeignKey(
+        "ContactLogEntry",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tasks",
+    )
+
     status = models.CharField(
         max_length=16, choices=Status.choices, default=Status.TODO
     )

@@ -3473,6 +3473,7 @@ def log_contact(
     order: Order | None = None,
     follow_up: str = "",
     follow_up_by: date | None = None,
+    create_task: bool = True,
 ) -> ContactLogEntry:
     """
     Write down a conversation.
@@ -3537,7 +3538,85 @@ def log_contact(
         summary=f"{entry.get_channel_display()} with {organisation.name}: {summary[:180]}",
         follow_up=bool(follow_up),
     )
+
+    if create_task:
+        _task_from_contact(entry=entry, actor=actor)
+
     return entry
+
+
+def _task_from_contact(*, entry: ContactLogEntry, actor: User) -> Task | None:
+    """
+    Turn a conversation into work on the board, where the board can be seen.
+
+    ══════════════════════════════════════════════════════════════════════════
+    NOT EVERY CONVERSATION, AND THAT RESTRAINT IS THE DESIGN.
+
+    Making every logged message a task is the obvious version of this and it
+    fails within a fortnight: the board fills with "called about the invoice"
+    rows nobody will ever tick off, the real work is buried among them, and
+    people stop opening it. A board that is mostly noise is worse than no
+    board, because the noise is indistinguishable from work at a glance.
+
+    So a task is created when the conversation produced one of two things:
+
+      · A FOLLOW-UP. We said we would do something, by a date. That is not a
+        record of a chat, it is an obligation with a deadline, and it is the
+        commonest thing this company drops.
+
+      · A CONVERSATION ABOUT A SPECIFIC PIECE OF WORK. Talking about an order
+        almost always means something changed about it, and the caller is the
+        only person who knows what. Left as a log entry it is visible to
+        whoever goes looking; as a task it is visible to everyone.
+
+    A conversation attached to neither is a record, and inventing work for it
+    would be inventing work.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── IT IS ASSIGNED TO WHOEVER LOGGED IT ─────────────────────────────────────
+
+    They had the conversation, so they are the only person who could act on it
+    today. It is theirs until somebody reassigns it — and assigning to yourself
+    needs no permission, which is what lets any staff account log a call
+    without a founder in the loop.
+    """
+    if not entry.follow_up and entry.order_id is None:
+        return None
+
+    # The promise if there was one; otherwise the conversation itself, marked
+    # as needing a decision rather than pretending to be an instruction.
+    if entry.follow_up:
+        title = entry.follow_up
+        detail = f"Promised on {timezone.localtime(entry.happened_at):%-d %B}."
+    else:
+        title = f"Follow up: {entry.summary}"
+        detail = "Raised on a call about this work. Close it if nothing is needed."
+
+    if entry.detail:
+        detail = f"{detail}\n\n{entry.detail}"
+
+    task = Task.objects.create(
+        title=title[:200],
+        detail=detail,
+        assignee=actor,
+        assigned_by=actor,
+        organisation=entry.organisation,
+        order=entry.order,
+        contact=entry,
+        due_on=entry.follow_up_by,
+        # A promise with a date outranks a note to self about a call.
+        priority=Task.Priority.HIGH if entry.follow_up else Task.Priority.NORMAL,
+    )
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.TASK_ASSIGNED,
+        subject=entry.order.reference if entry.order else entry.organisation.name,
+        organisation=entry.organisation,
+        summary=f"{task.title} — from a {entry.get_channel_display().lower()} with {entry.organisation.name}",
+        from_contact=True,
+    )
+    return task
 
 
 @transaction.atomic
@@ -3557,6 +3636,14 @@ def clear_follow_up(*, entry: ContactLogEntry, actor: User, note: str = "") -> C
     entry.cleared_at = timezone.now()
     entry.cleared_by = actor
     entry.save(update_fields=["cleared_at", "cleared_by"])
+
+    # The task this promise created is done too. Leaving it open would mean
+    # marking the same thing finished in two places, and the second one is the
+    # one people forget — so the board slowly fills with work that was
+    # completed weeks ago, which is how a board stops being believed.
+    entry.tasks.exclude(status=Task.Status.DONE).update(
+        status=Task.Status.DONE, done_at=timezone.now()
+    )
 
     record(
         actor=actor,

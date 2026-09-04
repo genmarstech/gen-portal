@@ -812,6 +812,11 @@ class TaskSerializer(serializers.ModelSerializer):
     decision_reference = serializers.CharField(
         source="decision.reference", read_only=True, default=None
     )
+    # Where it came from. Six weeks on, "why am I doing this" is answered by
+    # the call it came out of.
+    contact_summary = serializers.CharField(
+        source="contact.summary", read_only=True, default=None
+    )
     overdue = serializers.SerializerMethodField()
 
     class Meta:
@@ -827,6 +832,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "organisation", "organisation_name",
             "ticket", "ticket_reference",
             "decision", "decision_reference",
+            "contact", "contact_summary",
         ]
         read_only_fields = fields
 
@@ -1406,6 +1412,10 @@ class ContactLogSerializer(serializers.ModelSerializer):
 class ContactLogWriteSerializer(serializers.Serializer):
     channel = serializers.ChoiceField(choices=ContactLogEntry.Channel.choices)
     direction = serializers.ChoiceField(choices=ContactLogEntry.Direction.choices)
+    # Defaults ON. A conversation with a promise, or about a specific order,
+    # becomes work on the board — see services._task_from_contact for why not
+    # every conversation does.
+    create_task = serializers.BooleanField(required=False, default=True)
     summary = serializers.CharField(max_length=300, allow_blank=True)
     detail = serializers.CharField(required=False, allow_blank=True, default="")
     with_whom = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")

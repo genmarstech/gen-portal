@@ -479,3 +479,115 @@ def test_an_unknown_client_is_a_404(client, staff):
         ).status_code
         == 404
     )
+
+
+# ── a conversation becoming work ─────────────────────────────────────────────
+
+
+def test_a_promise_on_a_call_lands_on_the_board(client, staff, spa):
+    """
+    "I'll send you a quote Thursday" is not a record of a chat, it is an
+    obligation with a deadline — and the commonest thing this company drops.
+    """
+    from portal.models import Task
+
+    client.force_login(staff)
+    due = str(timezone.localdate() + timedelta(days=2))
+    _log(client, spa, follow_up="Send a quote for the booking feature", follow_up_by=due)
+
+    task = Task.objects.get()
+    assert task.title == "Send a quote for the booking feature"
+    assert task.due_on == timezone.localdate() + timedelta(days=2)
+    assert task.organisation == spa
+    # Assigned to whoever had the conversation — they are the only person who
+    # could act on it today, and assigning to yourself needs no permission.
+    assert task.assignee == staff
+    assert task.priority == Task.Priority.HIGH
+
+
+def test_a_conversation_about_a_specific_order_becomes_work(client, staff, spa):
+    """
+    Talking about an order almost always means something changed about it, and
+    the caller is the only person who knows what.
+    """
+    from portal.models import Task
+
+    order = Order.objects.create(
+        organisation=spa, reference="GM-2026-0042", title="Spa website", contact=staff
+    )
+    client.force_login(staff)
+    _log(client, spa, order=order.reference)
+
+    task = Task.objects.get()
+    assert task.order == order
+    assert task.title.startswith("Follow up:")
+    # Provenance, so "why am I doing this" is answerable six weeks later.
+    assert task.contact is not None
+    assert task.priority == Task.Priority.NORMAL
+
+
+def test_an_ordinary_conversation_creates_no_task(client, staff, spa):
+    """
+    ═══════════════════════════════════════════════════════════════════════════
+    THE RESTRAINT IS THE DESIGN.
+
+    Making every logged message a task fails within a fortnight: the board
+    fills with "called about the invoice" rows nobody will ever tick off, and
+    a board that is mostly noise is worse than no board — the noise is
+    indistinguishable from work at a glance.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+    from portal.models import Task
+
+    client.force_login(staff)
+    _log(client, spa)
+    assert not Task.objects.exists()
+
+
+def test_the_task_can_be_declined_at_the_point_of_logging(client, staff, spa):
+    from portal.models import Task
+
+    order = Order.objects.create(
+        organisation=spa, reference="GM-2026-0042", title="Spa website", contact=staff
+    )
+    client.force_login(staff)
+    _log(client, spa, order=order.reference, create_task=False)
+    assert not Task.objects.exists()
+
+
+def test_clearing_the_follow_up_closes_its_task(client, staff, spa):
+    """
+    Otherwise the same thing is marked finished in two places, and the second
+    is the one people forget — so the board fills with work completed weeks ago,
+    which is how a board stops being believed.
+    """
+    from portal.models import Task
+
+    client.force_login(staff)
+    entry_id = _log(
+        client, spa, follow_up="Send a quote", follow_up_by=str(timezone.localdate())
+    ).json()["id"]
+
+    client.patch(
+        reverse("ops-follow-ups"), {"id": entry_id}, content_type="application/json"
+    )
+
+    task = Task.objects.get()
+    assert task.status == Task.Status.DONE
+    assert task.done_at is not None
+
+
+def test_work_from_a_call_is_visible_to_the_whole_company(client, staff, spa):
+    """
+    The board only lived on the team screen, so a task raised from a call was
+    visible to whoever went looking rather than to everybody. It is counted on
+    the queue now.
+    """
+    client.force_login(staff)
+    _log(
+        client, spa, follow_up="Send a quote",
+        follow_up_by=str(timezone.localdate() + timedelta(days=1)),
+    )
+
+    counts = client.get(reverse("ops-overview")).json()["counts"]
+    assert counts["open_tasks"] == 1

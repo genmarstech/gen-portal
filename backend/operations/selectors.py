@@ -35,6 +35,7 @@ from portal.models import (
     ProgressNote,
     Service,
     Shift,
+    Task,
 )
 
 
@@ -184,6 +185,10 @@ def queue_counts() -> dict[str, int]:
         "requests_pending": AccessRequest.objects.filter(
             status=AccessRequest.Status.PENDING
         ).count(),
+        # Work on the board that is not finished. Carried here because the
+        # board only lived on the team screen, so a task raised from a call was
+        # visible to whoever went looking for it rather than to everybody.
+        "open_tasks": Task.objects.exclude(status=Task.Status.DONE).count(),
         "renewals_due": HostingArrangement.objects.filter(
             retired_at__isnull=True,
             renews_on__isnull=False,
