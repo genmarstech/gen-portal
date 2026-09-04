@@ -24,6 +24,7 @@ from rest_framework.views import APIView
 from accounts.mail_health import mail_health
 from accounts.models import Membership, Organisation, User
 from portal.models import (
+    AccessRequest,
     BillingProfile,
     ActivityLog,
     Blocker,
@@ -53,7 +54,7 @@ from portal.models import (
 
 from portal.system_api import issue_key
 
-from . import selectors, services
+from . import approvals, selectors, services
 from .permissions import (
     CanCommit,
     CanConfigureBilling,
@@ -62,6 +63,9 @@ from .permissions import (
     IsStaff,
 )
 from .serializers import (
+    AccessDecisionSerializer,
+    AccessRequestSerializer,
+    AccessRequestWriteSerializer,
     BillingProfileSerializer,
     ActivitySerializer,
     AttachmentSerializer,
@@ -137,6 +141,46 @@ class StaffView(APIView):
     """Base class, so `permission_classes` cannot be forgotten on a new view."""
 
     permission_classes = [IsStaff]
+
+
+def _may(request, permission, *, action: str, subject: str = "") -> bool:
+    """
+    Either they hold the standing permission, or a founder approved this exact
+    act and the approval is still live — in which case it is SPENT here.
+
+    ── WHY THIS IS EXPLICIT IN EACH VIEW AND NOT A DECORATOR ───────────────────
+
+    Because the subject matters. An approval to archive Kilimani Dental must not
+    be spendable on a different client, and only the view knows which client the
+    request is about. A generic wrapper would either ignore the subject — making
+    every approval a blanket one — or have to guess it from the URL, which is
+    the kind of guess that is right until a route changes.
+    """
+    if permission().has_permission(request, None):
+        return True
+    return approvals.consume(actor=request.user, action=action, subject=subject)
+
+
+def _needs_permission(message: str, *, action: str, subject: str = ""):
+    """
+    A 403 that says what to do next.
+
+    ── A REFUSAL WITH NOWHERE TO GO IS WHY PEOPLE SHARE PASSWORDS ──────────────
+
+    The workflow used to leave the software at this point: a WhatsApp message,
+    a call, a founder signing in to do it, and no record that any of it
+    happened. `can_request` lets the screen offer to ask instead, so the asking
+    is the thing that gets written down.
+
+    Absent from the body — deliberately — for anything not in the allowlist.
+    The client sees no request button for a role change, because there is no
+    request to make.
+    """
+    body = {"detail": message, "action": action, "subject": subject}
+    if approvals.may_request(action):
+        body["can_request"] = True
+        body["asking_for"] = approvals.DELEGABLE[action].label
+    return Response(body, status=http.HTTP_403_FORBIDDEN)
 
 
 def _refuse(exc: services.OperationsError):
@@ -885,6 +929,7 @@ class AllInvoiceListView(StaffView):
                 amount_kes=form.validated_data["amount_kes"],
                 due_on=form.validated_data["due_on"],
                 issued_on=form.validated_data["issued_on"],
+                outside_system=form.validated_data.get("outside_system", ""),
             )
         except services.OperationsError as exc:
             return _refuse(exc)
@@ -1191,9 +1236,14 @@ class OfferListView(StaffView):
 
 
 class OfferActionView(StaffView):
-    """Send, withdraw, or edit a draft. Accepting and declining belong to the client."""
+    """
+    Send, withdraw, or edit a draft. Accepting and declining belong to the client.
 
-    permission_classes = [CanCommit]
+    Not gated at the class level any more: sending is delegable, so the check
+    happens per verb inside `post` where the subject — which offer — is known.
+    An approval to send GM-OFF-2026-0004 must not be spendable on a different
+    quote at a different price.
+    """
 
     def patch(self, request, pk: int):
         """
@@ -1203,6 +1253,11 @@ class OfferActionView(StaffView):
         offer that was wrong is withdrawn and replaced, so both versions stay
         readable and the client can see what changed.
         """
+        if not CanCommit().has_permission(request, self):
+            return Response(
+                {"detail": "Drafting and pricing are commercial decisions."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
         offer = get_object_or_404(Offer, pk=pk)
         form = OfferReviseSerializer(data=request.data, partial=True)
         form.is_valid(raise_exception=True)
@@ -1217,6 +1272,22 @@ class OfferActionView(StaffView):
     def post(self, request, pk: int):
         offer = get_object_or_404(Offer, pk=pk)
         action = request.data.get("action")
+
+        if action == "send":
+            if not _may(
+                request, CanCommit, action="offer.send", subject=offer.reference
+            ):
+                return _needs_permission(
+                    "Sending a quote puts a price the client can accept in front "
+                    "of them. That is a commercial decision.",
+                    action="offer.send",
+                    subject=offer.reference,
+                )
+        elif not CanCommit().has_permission(request, self):
+            return Response(
+                {"detail": "Withdrawing an offer is a commercial decision."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
 
         try:
             if action == "send":
@@ -2174,17 +2245,29 @@ class ClientAdminView(StaffView):
 
     def post(self, request, pk: int):
         """Archive or restore. Founder only."""
-        if not CanManageAccess().has_permission(request, self):
-            return Response(
-                {"detail": "Only a founder can archive or restore a client."},
-                status=http.HTTP_403_FORBIDDEN,
-            )
-
         organisation = selectors.organisation(pk)
         if organisation is None:
             return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
 
         action = request.data.get("action")
+
+        # Restoring is not gated the same way: it UNDOES a hide, and needing a
+        # founder to reverse something reversible is friction with no risk
+        # behind it. Archiving is the direction that takes a client off every
+        # screen, so that is the one that needs the authority.
+        if action == "archive" and not _may(
+            request, CanManageAccess, action="client.archive", subject=organisation.name
+        ):
+            return _needs_permission(
+                "Archiving a client is a founder's decision.",
+                action="client.archive",
+                subject=organisation.name,
+            )
+        if action == "restore" and not CanManageAccess().has_permission(request, self):
+            return Response(
+                {"detail": "Only a founder can restore a client."},
+                status=http.HTTP_403_FORBIDDEN,
+            )
         try:
             if action == "restore":
                 organisation = services.restore_organisation(
@@ -2209,18 +2292,114 @@ class ClientAdminView(StaffView):
         Really delete. Founder only, and refused the moment anything is
         attached — see services.delete_organisation.
         """
-        if not CanManageAccess().has_permission(request, self):
-            return Response(
-                {"detail": "Only a founder can delete a client."},
-                status=http.HTTP_403_FORBIDDEN,
-            )
-
         organisation = selectors.organisation(pk)
         if organisation is None:
             return Response({"detail": "No such client."}, status=http.HTTP_404_NOT_FOUND)
+
+        if not _may(
+            request, CanManageAccess, action="client.delete", subject=organisation.name
+        ):
+            return _needs_permission(
+                "Deleting a client is a founder's decision.",
+                action="client.delete",
+                subject=organisation.name,
+            )
 
         try:
             services.delete_organisation(organisation=organisation, actor=request.user)
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(status=http.HTTP_204_NO_CONTENT)
+
+
+class AccessRequestView(StaffView):
+    """
+    Ask a founder for permission to do one thing, and see what has been asked.
+
+    ── EVERYONE SEES THE QUEUE, LIKE EVERY OTHER READ HERE ─────────────────────
+
+    Not only the founder. If three people are blocked on one person, the fact
+    that they are blocked is not confidential — and a queue only the approver
+    can see is one where nobody else can tell whether asking was even
+    registered.
+    """
+
+    def get(self, request):
+        state = request.query_params.get("status")
+        entries = AccessRequest.objects.select_related("requested_by", "decided_by")
+        if state:
+            entries = entries.filter(status=state)
+
+        return Response(
+            {
+                "requests": AccessRequestSerializer(
+                    entries[:100], many=True, context={"request": request}
+                ).data,
+                "pending": approvals.pending_for_founder().count(),
+                "may_decide": request.user.can_manage_access,
+                # What can be asked for at all. The screen renders nothing for
+                # anything absent here, so there is no button for a role change.
+                "delegable": [
+                    {"action": d.key, "label": d.label, "held_by": d.held_by, "note": d.note}
+                    for d in approvals.DELEGABLE.values()
+                ],
+            }
+        )
+
+    def post(self, request):
+        form = AccessRequestWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            entry = approvals.request_permission(
+                actor=request.user,
+                action=form.validated_data["action"],
+                subject=form.validated_data["subject"],
+                reason=form.validated_data["reason"],
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(
+            AccessRequestSerializer(entry, context={"request": request}).data,
+            status=http.HTTP_201_CREATED,
+        )
+
+
+class AccessRequestDecisionView(StaffView):
+    """
+    Answer one. Approve, decline, do it yourself — or withdraw your own.
+
+    ── APPROVING DOES NOT CHANGE WHAT ANYBODY MAY DO ───────────────────────────
+
+    It authorises the one act asked about, on the subject named, once, for
+    AccessRequest.LIFETIME. The row is spent at the point of the write and
+    `used_at` records it. A standing grant would be a role change nobody
+    decided to make.
+    """
+
+    def post(self, request, pk: int):
+        entry = get_object_or_404(AccessRequest, pk=pk)
+        form = AccessDecisionSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        decision = form.validated_data["decision"]
+        note = form.validated_data["note"]
+
+        try:
+            if decision == "withdraw":
+                entry = approvals.withdraw(entry=entry, actor=request.user)
+            elif decision == "do_it_myself":
+                entry = approvals.mark_done_by_founder(
+                    entry=entry, actor=request.user, note=note
+                )
+            else:
+                entry = approvals.decide(
+                    entry=entry,
+                    actor=request.user,
+                    approve=decision == "approve",
+                    note=note,
+                )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(
+            AccessRequestSerializer(entry, context={"request": request}).data
+        )

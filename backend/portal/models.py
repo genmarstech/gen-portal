@@ -1436,6 +1436,12 @@ class ActivityLog(models.Model):
         CLIENT_ARCHIVED = "client.archived", "Client archived"
         CLIENT_RESTORED = "client.restored", "Client restored"
         CLIENT_DELETED = "client.deleted", "Client deleted"
+
+        # Asking for, and deciding on, permission to do one thing once.
+        ACCESS_REQUESTED = "access.requested", "Permission requested"
+        ACCESS_APPROVED = "access.approved", "Permission granted for one act"
+        ACCESS_DECLINED = "access.declined", "Permission refused"
+        ACCESS_USED = "access.used", "Granted permission used"
         HOSTING_RECORDED = "hosting.recorded", "Hosting arrangement recorded"
         HOSTING_CHANGED = "hosting.changed", "Hosting arrangement changed"
         HOSTING_RETIRED = "hosting.retired", "Hosting arrangement retired"
@@ -3201,3 +3207,130 @@ class ContactAttachment(models.Model):
         """Whether the BYTES said it is an image. Used only to decide whether a
         preview is offered, never to decide how it is served."""
         return self.content_type.startswith("image/")
+
+
+class AccessRequest(models.Model):
+    """
+    "I need to do something I am not allowed to do. May I?"
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE PROBLEM THIS SOLVES IS A 403 WITH NOWHERE TO GO.
+
+    Before this, a delivery engineer who needed a client archived hit a refusal
+    and the workflow left the software: a WhatsApp message, a call, a founder
+    logging in to do it, and no record anywhere that any of it happened. The
+    permission was enforced and the process around it was invisible.
+
+    Worse, that friction is what makes people share passwords. A permission
+    model with no way to ask is a permission model somebody eventually routes
+    around, and the routing-around is never written down.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── AN APPROVAL IS SINGLE-USE AND IT EXPIRES ────────────────────────────────
+
+    This is the part that makes the whole thing safe rather than a slow way to
+    give everyone every permission. Approving does NOT change what somebody may
+    do; it authorises ONE act, on ONE subject, once, within a window. The row
+    is consumed the moment it is used, and `used_at` records that it was.
+
+    A standing grant would be indistinguishable from a role change made without
+    anybody deciding to change a role.
+
+    ── SOME THINGS ARE NOT REQUESTABLE, AND THAT LIST IS THE POINT ─────────────
+
+    See DELEGABLE in operations/approvals.py. Changing a staff role, inviting
+    staff, deactivating an account and editing the company's billing details
+    are absent from it deliberately. Those are the acts that GRANT power or
+    REDIRECT MONEY, and a request to perform one is exactly what an attacker
+    with a delivery account would send — reasonable-looking, urgent, arriving
+    while the founder is on a phone. One distracted approval on "make me a
+    founder" is the entire permission model.
+
+    For those, the answer stays "the founder does it", and the refusal says so.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Waiting on a founder"
+        APPROVED = "approved", "Approved"
+        DECLINED = "declined", "Declined"
+        # The founder did it themselves rather than handing the permission
+        # over. Kept distinct from APPROVED because "I did this for you" and
+        # "you may do this" are different decisions and the log should not
+        # blur them.
+        DONE_BY_FOUNDER = "done", "Done by a founder"
+        WITHDRAWN = "withdrawn", "Withdrawn"
+
+    # How long an approval stays usable. Short on purpose: this exists to
+    # unblock somebody who is working right now, and an approval still valid
+    # next week is a permission nobody remembers granting.
+    LIFETIME = timedelta(hours=8)
+
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="access_requests",
+        limit_choices_to={"is_staff": True},
+    )
+    requested_by_label = models.CharField(max_length=200, blank=True)
+
+    # A key from operations/approvals.py — "client.archive", "offer.send".
+    action = models.CharField(max_length=60, db_index=True)
+    # What it is about: a reference, a client name. Part of what an approval
+    # authorises, so that "yes, archive Kilimani Dental" cannot be spent on a
+    # different client.
+    subject = models.CharField(max_length=120, blank=True)
+
+    reason = models.TextField(
+        help_text=(
+            "Why they need it. Required — this is the entire content of the "
+            "decision, and a request without one asks the founder to approve "
+            "a verb."
+        )
+    )
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
+
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="access_decisions",
+        limit_choices_to={"is_staff": True},
+    )
+    decided_by_label = models.CharField(max_length=200, blank=True)
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.TextField(blank=True)
+
+    # Set when approved; the approval is dead after this.
+    expires_at = models.DateTimeField(null=True, blank=True)
+    # Set the moment the approval is spent. One act, once.
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["status", "-created_at"], name="access_req_status_idx"),
+            models.Index(
+                fields=["requested_by", "action", "status"], name="access_req_lookup_idx"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.requested_by_label} → {self.action} ({self.status})"
+
+    def is_live(self, now=None) -> bool:
+        """Approved, unspent, and still inside its window."""
+        if self.status != self.Status.APPROVED or self.used_at is not None:
+            return False
+        if self.expires_at is None:
+            return False
+        return self.expires_at > (now or timezone.now())
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == self.Status.PENDING

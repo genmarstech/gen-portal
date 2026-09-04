@@ -12,6 +12,7 @@ from rest_framework import serializers
 
 from accounts.models import Membership, Organisation, User
 from portal.models import (
+    AccessRequest,
     ActivityLog,
     Blocker,
     ClientProfile,
@@ -380,6 +381,12 @@ class DirectInvoiceSerializer(serializers.Serializer):
     amount_kes = serializers.DecimalField(max_digits=12, decimal_places=2)
     due_on = serializers.DateField(required=False, allow_null=True, default=None)
     issued_on = serializers.DateField(required=False, allow_null=True, default=None)
+    # Only read when the client has nothing on file at all — see
+    # services.issue_direct_invoice. It says where the work came from and is
+    # kept with the invoice in the log.
+    outside_system = serializers.CharField(
+        max_length=300, required=False, allow_blank=True, default=""
+    )
 
 
 class VoidInvoiceSerializer(serializers.Serializer):
@@ -1404,3 +1411,71 @@ class OrderCreateSerializer(serializers.Serializer):
     # Default TRUE. An order the client has not been shown is a scope written
     # down where the only person who can say it is wrong will never read it.
     tell_client = serializers.BooleanField(required=False, default=True)
+
+
+# ── asking a founder ─────────────────────────────────────────────────────────
+
+
+class AccessRequestSerializer(serializers.ModelSerializer):
+    requested_by = serializers.CharField(source="requested_by_label", read_only=True)
+    decided_by = serializers.CharField(source="decided_by_label", read_only=True)
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+    what = serializers.SerializerMethodField()
+    is_live = serializers.SerializerMethodField()
+    mine = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AccessRequest
+        fields = [
+            "id",
+            "action",
+            "what",
+            "subject",
+            "reason",
+            "status",
+            "status_label",
+            "requested_by",
+            "decided_by",
+            "decided_at",
+            "decision_note",
+            "expires_at",
+            "used_at",
+            "is_live",
+            "mine",
+            "created_at",
+        ]
+
+    def get_what(self, entry: AccessRequest) -> dict:
+        """
+        What the act is, in words, plus how bad it would be.
+
+        The founder deciding sees the consequence rather than a slug — "hides
+        them from the working screens, deletes nothing and can be undone" is
+        the fact the decision actually turns on.
+        """
+        from operations import approvals
+
+        return approvals.describe(entry)
+
+    def get_is_live(self, entry: AccessRequest) -> bool:
+        return entry.is_live()
+
+    def get_mine(self, entry: AccessRequest) -> bool:
+        request = self.context.get("request")
+        return bool(request and entry.requested_by_id == request.user.id)
+
+
+class AccessRequestWriteSerializer(serializers.Serializer):
+    action = serializers.CharField(max_length=60)
+    subject = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    reason = serializers.CharField(allow_blank=True)
+
+
+class AccessDecisionSerializer(serializers.Serializer):
+    # `approve` hands the permission over for one act; `do_it_myself` records
+    # that the founder handled it instead. Two different answers to the same
+    # request, and the log keeps them apart.
+    decision = serializers.ChoiceField(
+        choices=["approve", "decline", "do_it_myself", "withdraw"]
+    )
+    note = serializers.CharField(required=False, allow_blank=True, default="")

@@ -1203,6 +1203,7 @@ def issue_direct_invoice(
     amount_kes: Decimal,
     due_on: date | None = None,
     issued_on: date | None = None,
+    outside_system: str = "",
 ) -> Invoice:
     """
     Bill a client for something that is not a project milestone.
@@ -1226,25 +1227,52 @@ def issue_direct_invoice(
     project invoice by someone in a hurry, and the contract requirement would
     quietly stop existing.
 
-    ── THE GUARD HERE ──────────────────────────────────────────────────────────
+    ── THE GUARD HERE, AND WHY IT WAS WIDENED ──────────────────────────────────
 
     The client must be one we have an actual relationship with. Anyone can be
-    added as an organisation; that is not the same as being someone we may
-    send a bill to. So this requires the organisation to have at least one
-    order, or an invoice already — evidence of a prior working relationship,
-    which is exactly the founder's own description of who these invoices are
-    for.
+    typed into the organisations list; that is not the same as somebody we may
+    send a bill to, and the failure this prevents is invoicing a duplicate or a
+    half-finished record by mistake.
+
+    It used to accept only an order or a previous invoice as evidence. That was
+    too narrow and it blocked the commonest real case: a client Genmars has
+    worked with for a year whose engagement predates this system, so the
+    evidence of the relationship is real and simply lives somewhere else.
+
+    So evidence now includes anything that only exists because somebody did the
+    work of recording a real client — a contact profile, a logged conversation,
+    a domain we renew for them.
+
+    ── AND WHERE THERE IS GENUINELY NOTHING ────────────────────────────────────
+
+    It is still allowed, but it stops being silent. `outside_system` must say
+    where the work came from, and that sentence goes into the log next to the
+    invoice number. A hard refusal here would only teach people to type a fake
+    order to get past it, which is worse: the pipeline would fill with
+    fictional work and the guard would have caused the thing it existed to
+    prevent.
     """
     has_history = (
         organisation.orders.exists()
         or Invoice.objects.filter(organisation=organisation).exists()
+        # Added when the guard was widened. Each of these exists only because
+        # somebody recorded a real client: a phone number and a contact name,
+        # a conversation, a domain we renew on their behalf.
+        or organisation.contact_log.exists()
+        or organisation.hosting.exists()
+        or ClientProfile.objects.filter(organisation=organisation)
+        .exclude(contact_name="", client_since=None, what_they_do="")
+        .exists()
     )
-    if not has_history:
+    outside_system = (outside_system or "").strip()
+    if not has_history and not outside_system:
         raise OperationsError(
-            f"{organisation.name} has no orders and no previous invoices, so "
-            "there is nothing on file showing we have worked with them. Raise "
-            "the work as an order first, or check this is the right client.",
-            field="organisation",
+            f"There is nothing on file for {organisation.name} — no orders, no "
+            "invoices, no conversations, nothing we run for them. If the work "
+            "predates this system, say where it came from and this will go "
+            "through; the note is kept with the invoice. Otherwise check this "
+            "is the right client.",
+            field="outside_system",
         )
 
     description = description.strip()
@@ -1301,9 +1329,18 @@ def issue_direct_invoice(
         action=ActivityLog.Action.INVOICE_ISSUED,
         subject=invoice.number,
         organisation=organisation,
-        summary=f"{invoice.number} issued to {organisation.name} for KES {invoice.amount_kes:,.2f} (no order)",
+        summary=(
+            f"{invoice.number} issued to {organisation.name} for "
+            f"KES {invoice.amount_kes:,.2f} (no order)"
+            # Where the work came from, when there was nothing on file. Kept
+            # in the summary rather than only in `detail` so it is readable in
+            # the log without opening anything — this is the line somebody
+            # will want months later when asking what this invoice was for.
+            + (f" — {outside_system}" if outside_system else "")
+        ),
         amount_kes=str(invoice.amount_kes),
         direct=True,
+        outside_system=outside_system or None,
     )
 
     log.info(

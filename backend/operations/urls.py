@@ -140,6 +140,14 @@ urlpatterns = [
     ),
     path("ops/clients/<int:pk>/orders", views.ClientOrderView.as_view(), name="ops-client-orders"),
     path("ops/follow-ups", views.FollowUpView.as_view(), name="ops-follow-ups"),
+
+    # ---- asking a founder for permission to do one thing, once ----
+    path("ops/requests", views.AccessRequestView.as_view(), name="ops-requests"),
+    path(
+        "ops/requests/<int:pk>",
+        views.AccessRequestDecisionView.as_view(),
+        name="ops-request",
+    ),
     path("ops/organisations/<int:pk>/members", views.OrganisationMembersView.as_view(), name="ops-org-members"),
     path("ops/memberships/<int:pk>", views.MembershipDetailView.as_view(), name="ops-membership"),
 

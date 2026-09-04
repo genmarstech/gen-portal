@@ -784,8 +784,9 @@ def test_a_payment_with_no_reference_is_refused_unless_it_is_cash(signed, staff)
 
 def test_a_direct_invoice_needs_no_order_but_does_need_a_client_we_know(staff):
     """
-    Anyone can be added as an organisation. That is not the same as being
-    someone we may send a bill to.
+    Anyone can be typed into the organisations list. That is not the same as
+    being someone we may send a bill to, and the failure this prevents is
+    invoicing a duplicate or a half-finished record by mistake.
     """
     stranger = Organisation.objects.create(name="Someone We Have Never Met")
 
@@ -795,8 +796,84 @@ def test_a_direct_invoice_needs_no_order_but_does_need_a_client_we_know(staff):
             description="Consultancy", amount_kes=Decimal("40000.00"),
         )
 
-    assert "no orders and no previous invoices" in str(caught.value)
+    assert caught.value.field == "outside_system"
     assert Invoice.objects.count() == 0
+
+
+def test_work_that_predates_this_system_can_be_billed_by_saying_so(staff):
+    """
+    ═══════════════════════════════════════════════════════════════════════════
+    THE CASE THE OLD GUARD BLOCKED.
+
+    A client Genmars has worked with for a year, whose engagement predates this
+    system, so the evidence of the relationship is real and lives elsewhere.
+
+    A hard refusal would only teach people to type a fake order to get past it,
+    which is worse: the pipeline fills with fictional work, and the guard has
+    caused the thing it existed to prevent.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+    from portal.models import ActivityLog
+
+    client = Organisation.objects.create(name="Clips Serenity Spa")
+
+    invoice = services.issue_direct_invoice(
+        organisation=client, actor=staff,
+        description="Website maintenance, August",
+        amount_kes=Decimal("15000.00"),
+        outside_system="Site built and running since 2025; agreed on WhatsApp.",
+    )
+
+    assert invoice.order_id is None
+    # The note is in the log next to the number, readable without opening
+    # anything — it is the line somebody wants months later.
+    entry = ActivityLog.objects.get(subject=invoice.number)
+    assert "predates" in entry.summary or "WhatsApp" in entry.summary
+
+
+@pytest.mark.parametrize("evidence", ["conversation", "hosting", "profile"])
+def test_a_recorded_relationship_is_evidence_enough_on_its_own(staff, evidence):
+    """
+    The guard used to accept only an order or a previous invoice. Each of these
+    exists only because somebody recorded a real client.
+    """
+    from portal.models import ClientProfile, ContactLogEntry, HostingArrangement
+
+    client = Organisation.objects.create(name="Clips Serenity Spa")
+    if evidence == "conversation":
+        ContactLogEntry.objects.create(
+            organisation=client, channel="whatsapp", direction="inbound",
+            summary="Asked about adding online booking",
+        )
+    elif evidence == "hosting":
+        HostingArrangement.objects.create(
+            organisation=client, kind="domain", identifier="clipsserenityspa.co.ke",
+        )
+    else:
+        ClientProfile.objects.create(organisation=client, contact_name="The owner")
+
+    invoice = services.issue_direct_invoice(
+        organisation=client, actor=staff,
+        description="Website maintenance, August", amount_kes=Decimal("15000.00"),
+    )
+    assert invoice.order_id is None
+
+
+def test_an_empty_profile_is_not_evidence(staff):
+    """
+    A profile row is created on first READ of a client page, so its mere
+    existence proves nothing — only a filled-in one does.
+    """
+    from portal.models import ClientProfile
+
+    stranger = Organisation.objects.create(name="Someone We Have Never Met")
+    ClientProfile.objects.create(organisation=stranger)
+
+    with pytest.raises(services.OperationsError):
+        services.issue_direct_invoice(
+            organisation=stranger, actor=staff,
+            description="Consultancy", amount_kes=Decimal("40000.00"),
+        )
 
 
 def test_a_past_client_can_be_invoiced_without_a_contract(signed, staff):

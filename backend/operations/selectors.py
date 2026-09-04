@@ -19,6 +19,7 @@ from django.utils import timezone
 
 from accounts.models import Membership, Organisation, User
 from portal.models import (
+    AccessRequest,
     ActivityLog,
     Blocker,
     ClientProfile,
@@ -173,6 +174,12 @@ def queue_counts() -> dict[str, int]:
         # A domain lapses silently and the client cannot tell it apart from us
         # having broken something. Thirty days is enough warning to recover a
         # .co.ke without paying a redemption fee.
+        # Somebody is stopped and waiting on a person. Carried here for the
+        # same reason as the weekly-note count: a request nobody sees is
+        # indistinguishable from not having asked.
+        "requests_pending": AccessRequest.objects.filter(
+            status=AccessRequest.Status.PENDING
+        ).count(),
         "renewals_due": HostingArrangement.objects.filter(
             retired_at__isnull=True,
             renews_on__isnull=False,
