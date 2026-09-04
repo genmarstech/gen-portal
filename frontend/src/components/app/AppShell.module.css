@@ -103,7 +103,21 @@
   );
 }
 
-@media (min-width: 48rem) {
+/*
+ * ── 56rem, NOT 48rem, AND THE 8rem IS THE WHOLE POINT ───────────────────────
+ *
+ * This switched to one nowrap row at 48rem. Measured there: the brand lockup
+ * is 150px, six labels with their gaps come to about 424px, and the tools
+ * about 145px — 767px of content into roughly 728px of inner width. It
+ * overflowed for the whole band between 48rem and about 50rem, and with
+ * `nowrap` and `flex: none` nothing could give, so the PAGE moved sideways.
+ * Which is the exact thing the note at the top of this file says a layout must
+ * never do.
+ *
+ * The two-row layout above is perfectly good at those widths. It only needs to
+ * end once one row genuinely fits.
+ */
+@media (min-width: 56rem) {
   .headerInner {
     flex-wrap: nowrap;
     gap: var(--sp-6);
@@ -112,7 +126,14 @@
   /* One row again, in reading order: brand, nav, then the tools. */
   .nav {
     order: 2;
-    flex: none;
+    /*
+     * Shrinkable, not fixed. `flex: none` plus `nowrap` is what turned a
+     * slightly-too-wide nav into a sideways-scrolling page; allowing it to
+     * shrink means a seventh link added later costs a scroll inside the nav
+     * rather than breaking the layout for every screen.
+     */
+    flex: 0 1 auto;
+    min-width: 0;
   }
 
   .tools {
@@ -179,12 +200,16 @@
   }
 }
 
-@media (min-width: 48rem) {
+@media (min-width: 56rem) {
   .nav {
-    overflow-x: visible;
     margin-inline: 0;
     padding-inline: 0;
-    /* Nothing is cut off here, so nothing should look faded. */
+    /*
+     * The fade goes, but the SCROLL stays. Nothing is cut off at these widths
+     * so a permanent fade over the last link would be a lie — but leaving
+     * `overflow-x: auto` in place means that if a label is ever lengthened or
+     * a link added, the nav scrolls instead of the page.
+     */
     -webkit-mask-image: none;
     mask-image: none;
   }

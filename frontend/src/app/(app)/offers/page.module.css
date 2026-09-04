@@ -69,6 +69,10 @@
 .cardSettled { opacity: 0.72; }
 
 .cardHead {
+  /* Wraps rather than squeezing. A reference and a long status word —
+     "Superseded", "In progress" — share this row, and on a 320px screen
+     something has to give; a second line is better than two clipped ones. */
+  flex-wrap: wrap;
   display: flex;
   align-items: center;
   justify-content: space-between;
