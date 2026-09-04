@@ -15,6 +15,8 @@ urlpatterns = [
     path("ops/overview", views.OverviewView.as_view(), name="ops-overview"),
     # One box over everything — see operations/search.py for the ranking.
     path("ops/search", views.SearchView.as_view(), name="ops-search"),
+    # Reports out, as CSV — see operations/exports.py.
+    path("ops/reports", views.ReportView.as_view(), name="ops-reports"),
     path("ops/staff", views.StaffDirectoryView.as_view(), name="ops-staff"),
     path("ops/staff/<int:pk>", views.StaffDetailView.as_view(), name="ops-staff-member"),
 

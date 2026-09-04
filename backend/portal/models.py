@@ -1497,6 +1497,13 @@ class ActivityLog(models.Model):
         ACCESS_APPROVED = "access.approved", "Permission granted for one act"
         ACCESS_DECLINED = "access.declined", "Permission refused"
         ACCESS_USED = "access.used", "Granted permission used"
+
+        # Not to gate it — every staff account can already read all of this on
+        # a screen, and a control that can be defeated by copying is theatre.
+        # It is recorded because a bulk export is the shape of the act somebody
+        # would want to reconstruct later, and the log is the account of what
+        # was done rather than a barrier to doing it.
+        REPORT_EXPORTED = "report.exported", "Report exported"
         HOSTING_RECORDED = "hosting.recorded", "Hosting arrangement recorded"
         HOSTING_CHANGED = "hosting.changed", "Hosting arrangement changed"
         HOSTING_RETIRED = "hosting.retired", "Hosting arrangement retired"

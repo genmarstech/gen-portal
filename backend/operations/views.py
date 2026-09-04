@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import FormParser, MultiPartParser
 from django.utils import timezone
@@ -54,7 +55,7 @@ from portal.models import (
 
 from portal.system_api import issue_key
 
-from . import approvals, search, selectors, services
+from . import approvals, exports, search, selectors, services
 from .permissions import (
     CanCommit,
     CanConfigureBilling,
@@ -2569,3 +2570,87 @@ class SearchView(StaffView):
                 "kinds": search.counts(q),
             }
         )
+
+
+class ReportView(StaffView):
+    """
+    Reports out, as CSV. See operations/exports.py.
+
+    ── WHY THIS IS NOT FOUNDER-ONLY ────────────────────────────────────────────
+
+    Every staff account can already read all of it on a screen, so a permission
+    here would stop nobody — it would just mean the sensitive rows leave as a
+    copy-paste instead of a file, which is the same act with no record.
+
+    So it is open, and every export is LOGGED. The log is the account of what
+    was done, not a barrier to doing it, and a bulk export is exactly the shape
+    of act somebody would want to reconstruct afterwards.
+    """
+
+    def get(self, request):
+        """What can be exported, and what each one contains."""
+        return Response(
+            {
+                "reports": [
+                    {
+                        "key": r.key,
+                        "label": r.label,
+                        "describes": r.describes,
+                        "dated": r.dated,
+                    }
+                    for r in exports.REPORTS.values()
+                ]
+            }
+        )
+
+    def post(self, request):
+        key = request.data.get("report")
+        if key not in exports.REPORTS:
+            return Response(
+                {"detail": "No such report.", "field": "report"},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+
+        today = timezone.localdate()
+        start = _as_date(request.data.get("from")) or today.replace(day=1)
+        end = _as_date(request.data.get("to")) or today
+        if end < start:
+            return Response(
+                {"detail": "The end of the period is before the start.", "field": "to"},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+
+        body = exports.render(key, start, end)
+        report = exports.REPORTS[key]
+
+        services.record(
+            actor=request.user,
+            action=ActivityLog.Action.REPORT_EXPORTED,
+            subject=report.label,
+            summary=(
+                f"{report.label} exported by {request.user.full_name or request.user.email}"
+                + (f" for {start} to {end}" if report.dated else "")
+            ),
+            report=key,
+            rows=max(0, body.count("\n") - 1),
+        )
+
+        response = HttpResponse(body, content_type="text/csv; charset=utf-8")
+        response["Content-Disposition"] = (
+            f'attachment; filename="{exports.filename(key, start, end)}"'
+        )
+        # A client's billing history must not sit in a shared proxy cache.
+        response["Cache-Control"] = "private, no-store"
+        return response
+
+
+def _as_date(value):
+    """A date, or None. A malformed one falls back rather than 500s."""
+    from datetime import date as _date
+
+    if not value:
+        return None
+    try:
+        return _date.fromisoformat(str(value))
+    except ValueError:
+        return None
