@@ -104,6 +104,17 @@ RUN set -eux; \
     rm -f build.sqlite3; \
     chown -R 10002:10002 /app/staticfiles
 
+# ── where uploaded client files land ────────────────────────────────────────
+#
+# Created HERE, owned by the app user, even though a named volume is mounted
+# over it at runtime. Docker seeds an empty named volume from the image path it
+# covers — including its ownership — so without this the volume is created
+# root-owned, the unprivileged app user cannot write to it, and every upload
+# fails with a permission error at the moment a client's photo is being saved.
+#
+# Nothing here serves this directory. See portal/attachments.py.
+RUN mkdir -p /app/media && chown 10002:10002 /app/media
+
 USER 10002:10002
 
 EXPOSE 8010
