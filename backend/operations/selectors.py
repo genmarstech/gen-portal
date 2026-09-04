@@ -12,12 +12,17 @@ widening is confined to a module whose docstring says so, behind `IsStaff`.
 
 from __future__ import annotations
 
-from django.db.models import Count, Prefetch, QuerySet
+from datetime import date, datetime, time, timedelta
 
-from accounts.models import Membership, Organisation
+from django.db.models import Count, Prefetch, Q, QuerySet
+from django.utils import timezone
+
+from accounts.models import Membership, Organisation, User
 from portal.models import (
+    ActivityLog,
     Blocker,
     Contract,
+    Decision,
     DeliveryGate,
     Enquiry,
     Invoice,
@@ -25,6 +30,7 @@ from portal.models import (
     Order,
     ProgressNote,
     Service,
+    Shift,
 )
 
 
@@ -366,3 +372,205 @@ def demand() -> list[dict]:
     out.sort(key=lambda e: (-e["enquiries"], -Decimal(e["invoiced_kes"]), e["name"]))
     return out
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The workroom — shifts, streaks, and the decision register
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _day_start(day: date) -> datetime:
+    """Midnight in Nairobi, as an aware datetime. USE_TZ is on; naive would drift."""
+    return timezone.make_aware(datetime.combine(day, time.min), timezone.get_current_timezone())
+
+
+def open_shift_for(person: User) -> Shift | None:
+    """The shift this person is currently in, if any. At most one — see Shift."""
+    return Shift.objects.filter(person=person, ended_at__isnull=True).first()
+
+
+def who_is_in() -> QuerySet[Shift]:
+    """
+    Everyone clocked in right now.
+
+    The one question this whole feature has to answer well. In a company where
+    two of three people are usually somewhere else, "can I ask Asha this now"
+    is asked several times a day and currently answered by sending a message
+    and waiting to see.
+    """
+    return (
+        Shift.objects.filter(ended_at__isnull=True)
+        .select_related("person")
+        .order_by("started_at")
+    )
+
+
+def shifts_between(
+    *, start: date, end: date, person: User | None = None
+) -> QuerySet[Shift]:
+    """
+    Shifts that STARTED in [start, end], inclusive, in Nairobi time.
+
+    Filtered on the start for the reason Shift.local_date gives: a shift is one
+    day's work, and the day it belongs to is the day it began.
+    """
+    qs = (
+        Shift.objects.filter(
+            started_at__gte=_day_start(start),
+            started_at__lt=_day_start(end + timedelta(days=1)),
+        )
+        .select_related("person")
+        .order_by("-started_at")
+    )
+    if person is not None:
+        qs = qs.filter(person=person)
+    return qs
+
+
+def worked_dates(person: User, *, since: date | None = None) -> set[date]:
+    """Every Nairobi date this person clocked in on."""
+    qs = Shift.objects.filter(person=person)
+    if since is not None:
+        qs = qs.filter(started_at__gte=_day_start(since))
+    return {timezone.localtime(s).date() for s in qs.values_list("started_at", flat=True)}
+
+
+def working_streak(person: User, *, today: date | None = None) -> dict:
+    """
+    Consecutive working days clocked in.
+
+    ══════════════════════════════════════════════════════════════════════════
+    A WEEKEND DOES NOT BREAK A STREAK, AND THAT IS THE WHOLE DESIGN.
+
+    A counter that resets every Saturday measures whether you worked the
+    weekend, which is the opposite of what this company should be rewarding —
+    and a number that is 5 at best is a number nobody looks at twice. So
+    Saturday and Sunday are SKIPPED: they extend a streak if worked and are
+    invisible if not.
+
+    Public holidays are not modelled and therefore do break a streak. That is a
+    known gap rather than a decision, and the honest fix is a holiday calendar,
+    not a fudge factor here.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── TODAY BEING BLANK IS NOT A BREAK ────────────────────────────────────────
+
+    A streak counted strictly to today would read zero every morning before the
+    first clock-in, which turns a quiet motivator into a daily accusation. So
+    it may end today OR yesterday-as-a-working-day; only a missed working day
+    with a later one after it ends it.
+    """
+    today = today or timezone.localdate()
+    days = worked_dates(person)
+    if not days:
+        return {"current": 0, "longest": 0, "last_worked": None, "worked_today": False}
+
+    def is_weekend(d: date) -> bool:
+        return d.weekday() >= 5
+
+    # ── current ──
+    cursor = today
+    if cursor not in days:
+        # Walk back over weekend days and at most one unworked working day
+        # (today itself, which may simply not have started yet).
+        cursor -= timedelta(days=1)
+        while is_weekend(cursor) and cursor not in days:
+            cursor -= timedelta(days=1)
+    current = 0
+    while cursor in days or is_weekend(cursor):
+        if cursor in days:
+            current += 1
+        cursor -= timedelta(days=1)
+
+    # ── longest ever ──
+    longest = 0
+    run = 0
+    ordered = sorted(days)
+    previous: date | None = None
+    for day in ordered:
+        if previous is not None:
+            gap = previous + timedelta(days=1)
+            missed = False
+            while gap < day:
+                if not is_weekend(gap):
+                    missed = True
+                    break
+                gap += timedelta(days=1)
+            run = 1 if missed else run + 1
+        else:
+            run = 1
+        previous = day
+        longest = max(longest, run)
+
+    return {
+        "current": current,
+        "longest": longest,
+        "last_worked": max(days),
+        "worked_today": today in days,
+    }
+
+
+def workroom(*, days: int = 14, today: date | None = None) -> list[dict]:
+    """
+    Per-person totals for the window: hours, days, streak, things done.
+
+    "Things done" is a COUNT of activity entries, and it is presented as a count
+    and never as a score. Two entries can be a week of work and forty can be an
+    afternoon of tidying; the number says somebody was here and acting, which
+    is all a count of a log can honestly say.
+    """
+    today = today or timezone.localdate()
+    start = today - timedelta(days=days - 1)
+
+    acted = dict(
+        ActivityLog.objects.filter(created_at__gte=_day_start(start), actor__isnull=False)
+        .values_list("actor_id")
+        .annotate(n=Count("id"))
+    )
+
+    rows = []
+    for person in User.objects.filter(is_staff=True, is_active=True).order_by("full_name", "email"):
+        shifts = list(shifts_between(start=start, end=today, person=person))
+        minutes = sum(s.minutes for s in shifts)
+        rows.append(
+            {
+                "id": person.id,
+                "name": person.full_name or person.email,
+                "email": person.email,
+                "role": person.staff_role,
+                "minutes": minutes,
+                "days": len({s.local_date for s in shifts}),
+                "shifts": len(shifts),
+                "acted": acted.get(person.id, 0),
+                "streak": working_streak(person, today=today),
+                "open_since": next((s.started_at for s in shifts if s.is_open), None),
+            }
+        )
+    return rows
+
+
+def decisions(*, status: str | None = None, q: str | None = None) -> QuerySet[Decision]:
+    """
+    The register, newest first.
+
+    Reversed and superseded entries are INCLUDED by default. They are most of
+    the value — a register that quietly drops its wrong turns teaches the same
+    lesson twice.
+    """
+    qs = Decision.objects.select_related("decided_by", "supersedes").prefetch_related(
+        "superseded_by"
+    )
+    if status:
+        qs = qs.filter(status=status)
+    if q:
+        qs = qs.filter(
+            Q(title__icontains=q)
+            | Q(context__icontains=q)
+            | Q(decision__icontains=q)
+            | Q(reference__icontains=q)
+        )
+    return qs
+
+
+def decision(pk: int) -> Decision | None:
+    return decisions().filter(pk=pk).first()

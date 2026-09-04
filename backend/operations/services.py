@@ -10,7 +10,7 @@ place, rather than spread across view bodies where the next view forgets one.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -24,6 +24,7 @@ from portal.models import (
     BillingProfile,
     Blocker,
     Contract,
+    Decision,
     DeliveryGate,
     ActivityLog,
     Enquiry,
@@ -38,6 +39,7 @@ from portal.models import (
     ProgressNote,
     Service,
     ServiceTier,
+    Shift,
     SupportMessage,
     SupportTicket,
     Task,
@@ -2701,3 +2703,334 @@ def set_billing_details(*, actor: User, values: dict) -> BillingProfile:
         fields=changed,
     )
     return profile
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The workroom — clocking in and out
+# ═════════════════════════════════════════════════════════════════════════════
+
+# How long a shift may stay open before we stop believing it.
+#
+# Eighteen hours, not twenty-four: the failure this catches is somebody
+# clocking in on Monday morning and closing the laptop, and the tell is that
+# the shift is still open on Tuesday. A twenty-four hour window would let a
+# Monday 09:00 shift be closed at Tuesday 08:00 as a twenty-three hour day
+# without anybody being asked about it.
+STALE_SHIFT = timedelta(hours=18)
+
+
+@transaction.atomic
+def clock_in(*, actor: User, note: str = "") -> Shift:
+    """
+    Start a shift, for the requesting account and no other.
+
+    There is no `person` argument and there must not be one. See Shift.
+    """
+    open_shift = Shift.objects.select_for_update().filter(
+        person=actor, ended_at__isnull=True
+    ).first()
+    if open_shift is not None:
+        raise OperationsError(
+            f"You have been clocked in since "
+            f"{timezone.localtime(open_shift.started_at):%H:%M on %-d %B}. "
+            "Clock out first."
+        )
+
+    try:
+        shift = Shift.objects.create(person=actor, started_note=(note or "").strip()[:200])
+    except IntegrityError:
+        # The partial unique index caught a double tap the SELECT above raced
+        # past. Same refusal, because the same thing is true.
+        raise OperationsError("You are already clocked in.")
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.SHIFT_STARTED,
+        subject="shift",
+        summary=f"{actor.full_name or actor.email} clocked in",
+        note=shift.started_note,
+    )
+    return shift
+
+
+@transaction.atomic
+def clock_out(*, actor: User, note: str = "", ended_at=None) -> Shift:
+    """
+    End the open shift.
+
+    ── WHY A STALE SHIFT WILL NOT CLOSE AT "NOW" ───────────────────────────────
+
+    Forgetting to clock out is the ordinary failure here, and closing such a
+    shift at the current time writes a nineteen-hour day into the timesheet.
+    One of those poisons every average and every total on the screen, and
+    nothing about the record says it is wrong.
+
+    So past STALE_SHIFT this refuses and asks when the person actually
+    finished. The answer is a memory rather than a measurement, which is why
+    `ended_late` is set: the row keeps the distinction instead of presenting
+    both kinds of hour as the same fact.
+    """
+    shift = Shift.objects.select_for_update().filter(
+        person=actor, ended_at__isnull=True
+    ).first()
+    if shift is None:
+        raise OperationsError("You are not clocked in.")
+
+    now = timezone.now()
+    late = False
+
+    if ended_at is None:
+        if now - shift.started_at > STALE_SHIFT:
+            raise OperationsError(
+                "This shift has been open since "
+                f"{timezone.localtime(shift.started_at):%H:%M on %-d %B} — long "
+                "enough that it looks like a missed clock-out. When did you "
+                "actually finish?",
+                field="ended_at",
+            )
+        ended_at = now
+    else:
+        late = True
+        if ended_at <= shift.started_at:
+            raise OperationsError(
+                "That is before the shift started.", field="ended_at"
+            )
+        if ended_at > now:
+            raise OperationsError(
+                "That is in the future. A shift is recorded after it happens.",
+                field="ended_at",
+            )
+
+    shift.ended_at = ended_at
+    shift.ended_note = (note or "").strip()[:200]
+    shift.ended_late = late
+    shift.save(update_fields=["ended_at", "ended_note", "ended_late"])
+
+    hours, minutes = divmod(shift.minutes, 60)
+    record(
+        actor=actor,
+        action=ActivityLog.Action.SHIFT_ENDED,
+        subject="shift",
+        summary=(
+            f"{actor.full_name or actor.email} clocked out after "
+            f"{hours}h {minutes:02d}m" + (" (entered afterwards)" if late else "")
+        ),
+        minutes=shift.minutes,
+        entered_afterwards=late,
+        note=shift.ended_note,
+    )
+    return shift
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The decision register
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def next_decision_reference(today: date | None = None) -> str:
+    year = (today or timezone.localdate()).year
+    prefix = f"{REFERENCE_PREFIX}-DEC-{year}-"
+    used = Decision.objects.filter(reference__startswith=prefix).count()
+    return f"{prefix}{used + 1:04d}"
+
+
+@transaction.atomic
+def record_decision(
+    *,
+    actor: User,
+    title: str,
+    context: str,
+    decision: str,
+    options: str = "",
+    consequences: str = "",
+    revisit_when: str = "",
+    status: str = Decision.Status.DECIDED,
+    decided_on: date | None = None,
+    supersedes: Decision | None = None,
+) -> Decision:
+    """
+    Write a decision down.
+
+    `context` is required and the refusal says why. It is the one field that
+    stops being obvious first — the constraint that forced the choice is gone
+    within weeks, and without it the entry reads as a preference somebody had.
+    """
+    title = (title or "").strip()
+    context = (context or "").strip()
+    body = (decision or "").strip()
+
+    if not title:
+        raise OperationsError("What was decided? One line.", field="title")
+    if not body:
+        raise OperationsError("Say what we are actually doing.", field="decision")
+    if not context:
+        raise OperationsError(
+            "What was true at the time that forced a choice? Without it, this "
+            "reads in six months as an arbitrary preference — which is how a "
+            "decision gets undone and the original problem comes back.",
+            field="context",
+        )
+    if status not in Decision.Status.values:
+        raise OperationsError("That is not a status.", field="status")
+    if status in {Decision.Status.SUPERSEDED, Decision.Status.REVERSED}:
+        raise OperationsError(
+            "A new entry is proposed or decided. Superseding and reversing are "
+            "things that happen to an existing one.",
+            field="status",
+        )
+
+    decided = status == Decision.Status.DECIDED
+    if supersedes is not None and not decided:
+        raise OperationsError(
+            "A proposal does not supersede anything yet. It replaces "
+            f"{supersedes.reference} when it is decided.",
+            field="supersedes",
+        )
+    if supersedes is not None and supersedes.status != Decision.Status.DECIDED:
+        raise OperationsError(
+            f"{supersedes.reference} is {supersedes.get_status_display().lower()}, "
+            "so there is nothing in force to replace.",
+            field="supersedes",
+        )
+
+    for attempt in range(5):
+        try:
+            with transaction.atomic():
+                entry = Decision.objects.create(
+                    reference=next_decision_reference(),
+                    title=title[:200],
+                    context=context,
+                    options=(options or "").strip(),
+                    decision=body,
+                    consequences=(consequences or "").strip(),
+                    revisit_when=(revisit_when or "").strip()[:300],
+                    status=status,
+                    decided_by=actor if decided else None,
+                    decided_by_label=(actor.full_name or actor.email) if decided else "",
+                    decided_on=(decided_on or timezone.localdate()) if decided else None,
+                    supersedes=supersedes,
+                )
+            break
+        except IntegrityError:
+            if attempt == 4:
+                raise
+    else:  # pragma: no cover
+        raise OperationsError("Could not allocate a decision reference.")
+
+    if supersedes is not None:
+        supersedes.status = Decision.Status.SUPERSEDED
+        supersedes.save(update_fields=["status"])
+        record(
+            actor=actor,
+            action=ActivityLog.Action.DECISION_SUPERSEDED,
+            subject=supersedes.reference,
+            summary=f"{supersedes.reference} superseded by {entry.reference}",
+            replaced_by=entry.reference,
+        )
+
+    record(
+        actor=actor,
+        action=(
+            ActivityLog.Action.DECISION_MADE
+            if decided
+            else ActivityLog.Action.DECISION_RECORDED
+        ),
+        subject=entry.reference,
+        summary=f"{entry.reference} {'decided' if decided else 'proposed'}: {entry.title}",
+    )
+    return entry
+
+
+@transaction.atomic
+def revise_decision(*, entry: Decision, actor: User, **values) -> Decision:
+    """
+    Edit a PROPOSAL. Refuses anything else.
+
+    A decided entry has been relied on — quoted in a contract, built against,
+    told to a client — and editing it rewrites what the company was working
+    from. Supersede it instead; the original stays readable, which is where
+    the value is.
+    """
+    if not entry.is_open_to_edits:
+        raise OperationsError(
+            f"{entry.reference} is {entry.get_status_display().lower()} and is not "
+            "edited. Record a new decision that supersedes it — the original "
+            "stays readable, which is most of the point of keeping this.",
+        )
+
+    editable = ("title", "context", "options", "decision", "consequences", "revisit_when")
+    changed = []
+    for field in editable:
+        if field not in values:
+            continue
+        new = (values[field] or "").strip()
+        if new != getattr(entry, field):
+            setattr(entry, field, new)
+            changed.append(field)
+
+    if not (entry.title or "").strip():
+        raise OperationsError("What was decided? One line.", field="title")
+    if not (entry.context or "").strip():
+        raise OperationsError("A decision without its context teaches nothing.", field="context")
+    if not (entry.decision or "").strip():
+        raise OperationsError("Say what we are actually doing.", field="decision")
+
+    if changed:
+        entry.save(update_fields=[*changed, "updated_at"])
+    return entry
+
+
+@transaction.atomic
+def decide(*, entry: Decision, actor: User, decided_on: date | None = None) -> Decision:
+    """Move a proposal to decided. From here it is superseded, never edited."""
+    if entry.status != Decision.Status.PROPOSED:
+        raise OperationsError(
+            f"{entry.reference} is already {entry.get_status_display().lower()}."
+        )
+    entry.status = Decision.Status.DECIDED
+    entry.decided_by = actor
+    entry.decided_by_label = actor.full_name or actor.email
+    entry.decided_on = decided_on or timezone.localdate()
+    entry.save(update_fields=["status", "decided_by", "decided_by_label", "decided_on", "updated_at"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.DECISION_MADE,
+        subject=entry.reference,
+        summary=f"{entry.reference} decided: {entry.title}",
+    )
+    return entry
+
+
+@transaction.atomic
+def reverse_decision(*, entry: Decision, actor: User, reason: str) -> Decision:
+    """
+    We were wrong. Say so, in the register, with the reason attached.
+
+    The reason is required. A reversal without one is the single entry in this
+    register that teaches nothing — it removes a decision from force and leaves
+    the next person to make the same one again.
+    """
+    reason = (reason or "").strip()
+    if not reason:
+        raise OperationsError(
+            "Why is it being reversed? A reversal with no reason leaves the "
+            "next person free to make the same decision again.",
+            field="reason",
+        )
+    if entry.status not in {Decision.Status.PROPOSED, Decision.Status.DECIDED}:
+        raise OperationsError(
+            f"{entry.reference} is already {entry.get_status_display().lower()}."
+        )
+
+    entry.status = Decision.Status.REVERSED
+    entry.reversal_reason = reason
+    entry.save(update_fields=["status", "reversal_reason", "updated_at"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.DECISION_REVERSED,
+        subject=entry.reference,
+        summary=f"{entry.reference} reversed: {reason[:180]}",
+    )
+    return entry

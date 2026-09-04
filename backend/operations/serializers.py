@@ -15,6 +15,7 @@ from portal.models import (
     ActivityLog,
     Blocker,
     Contract,
+    Decision,
     DeliveryGate,
     Enquiry,
     Incident,
@@ -28,6 +29,7 @@ from portal.models import (
     SecurityCheck,
     Service,
     ServiceTier,
+    Shift,
     System,
     SystemEvent,
     SupportMessage,
@@ -1010,3 +1012,142 @@ class BillingProfileSerializer(serializers.Serializer):
     # with the rest of the rules, so the refusal comes back as {detail, field}
     # like every other operations refusal rather than as DRF's field-keyed
     # shape that this app's error handling does not read.
+
+
+# ── the workroom ─────────────────────────────────────────────────────────────
+
+
+class ShiftSerializer(serializers.ModelSerializer):
+    """One clocked stretch, as a timesheet row."""
+
+    person = serializers.SerializerMethodField()
+    minutes = serializers.IntegerField(read_only=True)
+    on_date = serializers.DateField(source="local_date", read_only=True)
+    is_open = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Shift
+        fields = [
+            "id",
+            "person",
+            "started_at",
+            "ended_at",
+            "started_note",
+            "ended_note",
+            "ended_late",
+            "minutes",
+            "on_date",
+            "is_open",
+        ]
+
+    def get_person(self, shift: Shift) -> dict:
+        return {
+            "id": shift.person_id,
+            "name": shift.person.full_name or shift.person.email,
+        }
+
+
+class ClockSerializer(serializers.Serializer):
+    """
+    Clocking in or out.
+
+    NOTE there is no `person`. The service takes the actor and nothing else —
+    see Shift's docstring on why nobody clocks anybody else.
+    """
+
+    action = serializers.ChoiceField(choices=["in", "out"])
+    note = serializers.CharField(max_length=200, required=False, allow_blank=True, default="")
+    # Only read when closing a shift somebody forgot about, and only then. See
+    # services.clock_out.
+    ended_at = serializers.DateTimeField(required=False, allow_null=True)
+
+
+class DecisionSerializer(serializers.ModelSerializer):
+    """
+    A register entry, whole. There is no summary form.
+
+    The context and the alternatives are the parts worth reading, and a list
+    view that showed only the title would be a list of assertions — which is
+    the artefact this register exists to replace.
+    """
+
+    decided_by = serializers.SerializerMethodField()
+    supersedes = serializers.SerializerMethodField()
+    superseded_by = serializers.SerializerMethodField()
+    status_label = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = Decision
+        fields = [
+            "id",
+            "reference",
+            "title",
+            "context",
+            "options",
+            "decision",
+            "consequences",
+            "revisit_when",
+            "status",
+            "status_label",
+            "decided_by",
+            "decided_on",
+            "supersedes",
+            "superseded_by",
+            "reversal_reason",
+            "created_at",
+        ]
+
+    def get_decided_by(self, entry: Decision) -> str:
+        # The label, not the FK. It outlives the account being deactivated,
+        # which is the whole reason the column exists.
+        return entry.decided_by_label
+
+    def get_supersedes(self, entry: Decision) -> dict | None:
+        if entry.supersedes is None:
+            return None
+        return {"reference": entry.supersedes.reference, "title": entry.supersedes.title}
+
+    def get_superseded_by(self, entry: Decision) -> dict | None:
+        replacement = entry.superseded_by.first()
+        if replacement is None:
+            return None
+        return {"reference": replacement.reference, "title": replacement.title}
+
+
+class DecisionWriteSerializer(serializers.Serializer):
+    """
+    Shape only. Every rule about what a decision must contain lives in
+    services.record_decision, so refusals come back as {detail, field} like the
+    rest of this API.
+    """
+
+    title = serializers.CharField(max_length=200, allow_blank=True)
+    context = serializers.CharField(allow_blank=True)
+    decision = serializers.CharField(allow_blank=True)
+    options = serializers.CharField(required=False, allow_blank=True, default="")
+    consequences = serializers.CharField(required=False, allow_blank=True, default="")
+    revisit_when = serializers.CharField(
+        max_length=300, required=False, allow_blank=True, default=""
+    )
+    status = serializers.ChoiceField(
+        choices=[Decision.Status.PROPOSED, Decision.Status.DECIDED],
+        required=False,
+        default=Decision.Status.DECIDED,
+    )
+    decided_on = serializers.DateField(required=False, allow_null=True)
+    supersedes = serializers.IntegerField(required=False, allow_null=True)
+
+
+class DecisionActionSerializer(serializers.Serializer):
+    """What can happen to an entry that already exists."""
+
+    action = serializers.ChoiceField(choices=["decide", "reverse", "revise"])
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+    decided_on = serializers.DateField(required=False, allow_null=True)
+
+    title = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    context = serializers.CharField(required=False, allow_blank=True)
+    decision = serializers.CharField(required=False, allow_blank=True)
+    options = serializers.CharField(required=False, allow_blank=True)
+    consequences = serializers.CharField(required=False, allow_blank=True)
+    revisit_when = serializers.CharField(max_length=300, required=False, allow_blank=True)

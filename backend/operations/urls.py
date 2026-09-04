@@ -62,6 +62,12 @@ urlpatterns = [
 
     path("ops/demand", views.DemandView.as_view(), name="ops-demand"),
 
+    # ---- the workroom: who is here, and what we decided ----
+    path("ops/clock", views.ClockView.as_view(), name="ops-clock"),
+    path("ops/timesheet", views.TimesheetView.as_view(), name="ops-timesheet"),
+    path("ops/decisions", views.DecisionListView.as_view(), name="ops-decisions"),
+    path("ops/decisions/<int:pk>", views.DecisionDetailView.as_view(), name="ops-decision"),
+
     # ---- catalogue pricing and the log ----
     path("ops/tiers", views.TierListView.as_view(), name="ops-tiers"),
     path("ops/tiers/<int:pk>/price", views.TierPriceView.as_view(), name="ops-tier-price"),

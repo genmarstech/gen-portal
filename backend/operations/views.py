@@ -12,6 +12,8 @@ re-implemented slightly differently by the next endpoint.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status as http
@@ -25,6 +27,7 @@ from portal.models import (
     ActivityLog,
     Blocker,
     Contract,
+    Decision,
     DeliveryGate,
     Incident,
     Invoice,
@@ -56,6 +59,11 @@ from .permissions import (
 from .serializers import (
     BillingProfileSerializer,
     ActivitySerializer,
+    ClockSerializer,
+    DecisionActionSerializer,
+    DecisionSerializer,
+    DecisionWriteSerializer,
+    ShiftSerializer,
     SecurityCheckSerializer,
     SecurityCheckWriteSerializer,
     TicketReplySerializer,
@@ -1527,3 +1535,194 @@ def request_user_may_edit(request) -> bool:
     reads as a bug, where an absent one reads as a rule.
     """
     return CanConfigureBilling().has_permission(request, None)
+
+
+# ── the workroom ─────────────────────────────────────────────────────────────
+
+
+class ClockView(StaffView):
+    """
+    Clock in, clock out, and what your own state is.
+
+    GET is about YOU — the open shift, today's total, your streak. The whole
+    team's is on the timesheet. Splitting them keeps this endpoint small enough
+    to be called from the header of every page without paying for a team-wide
+    aggregate on each one.
+    """
+
+    def get(self, request):
+        return Response(self._state(request.user))
+
+    def post(self, request):
+        form = ClockSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = form.validated_data
+        try:
+            if data["action"] == "in":
+                services.clock_in(actor=request.user, note=data["note"])
+            else:
+                services.clock_out(
+                    actor=request.user,
+                    note=data["note"],
+                    ended_at=data.get("ended_at"),
+                )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(self._state(request.user))
+
+    def _state(self, user) -> dict:
+        today = timezone.localdate()
+        open_shift = selectors.open_shift_for(user)
+        todays = selectors.shifts_between(start=today, end=today, person=user)
+        return {
+            "open": ShiftSerializer(open_shift).data if open_shift else None,
+            # Whether the open shift is old enough that clocking out will ask
+            # for a time. The button says so BEFORE it is pressed rather than
+            # refusing after — a control that fails on click reads as broken.
+            "stale": bool(
+                open_shift
+                and timezone.now() - open_shift.started_at > services.STALE_SHIFT
+            ),
+            "today_minutes": sum(s.minutes for s in todays),
+            "streak": selectors.working_streak(user, today=today),
+            "who_is_in": [
+                {
+                    "id": s.person_id,
+                    "name": s.person.full_name or s.person.email,
+                    "since": s.started_at,
+                    "note": s.started_note,
+                }
+                for s in selectors.who_is_in()
+            ],
+        }
+
+
+class TimesheetView(StaffView):
+    """
+    The whole team's last fortnight.
+
+    ── EVERYONE SEES EVERYONE, LIKE EVERY OTHER READ HERE ──────────────────────
+
+    Same rule as enquiries, contracts and blockers: read is shared, write is
+    scoped. A timesheet only the founder could read would be surveillance; one
+    everybody can read is a rota. The write side is what is actually
+    restricted, and it is restricted to yourself — nobody can add an hour to
+    anybody else's week.
+    """
+
+    def get(self, request):
+        try:
+            days = max(1, min(90, int(request.query_params.get("days", 14))))
+        except (TypeError, ValueError):
+            days = 14
+
+        person = None
+        raw = request.query_params.get("person")
+        if raw:
+            person = User.objects.filter(pk=raw, is_staff=True).first()
+            if person is None:
+                return Response({"detail": "No such staff account."}, status=http.HTTP_404_NOT_FOUND)
+
+        today = timezone.localdate()
+        start = today - timedelta(days=days - 1)
+        shifts = selectors.shifts_between(start=start, end=today, person=person)
+
+        return Response(
+            {
+                "days": days,
+                "from": start,
+                "to": today,
+                "people": selectors.workroom(days=days, today=today),
+                "shifts": ShiftSerializer(shifts, many=True).data,
+                "who_is_in": [
+                    {
+                        "id": s.person_id,
+                        "name": s.person.full_name or s.person.email,
+                        "since": s.started_at,
+                        "note": s.started_note,
+                    }
+                    for s in selectors.who_is_in()
+                ],
+            }
+        )
+
+
+class DecisionListView(StaffView):
+    """
+    The register.
+
+    Any staff account may write here — see Decision. The authority to MAKE a
+    given decision lives on the endpoint that acts on it; gating the writing
+    down of one on rank would only produce decisions that never got written.
+    """
+
+    def get(self, request):
+        entries = selectors.decisions(
+            status=request.query_params.get("status") or None,
+            q=(request.query_params.get("q") or "").strip() or None,
+        )
+        return Response(
+            {
+                "decisions": DecisionSerializer(entries, many=True).data,
+                "statuses": [
+                    {"value": v, "label": l} for v, l in Decision.Status.choices
+                ],
+            }
+        )
+
+    def post(self, request):
+        form = DecisionWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = dict(form.validated_data)
+
+        supersedes = None
+        raw = data.pop("supersedes", None)
+        if raw:
+            supersedes = selectors.decision(raw)
+            if supersedes is None:
+                return Response(
+                    {"detail": "No such decision.", "field": "supersedes"},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            entry = services.record_decision(
+                actor=request.user, supersedes=supersedes, **data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(DecisionSerializer(entry).data, status=http.HTTP_201_CREATED)
+
+
+class DecisionDetailView(StaffView):
+    """One entry, and the three things that can happen to it."""
+
+    def get(self, request, pk):
+        entry = get_object_or_404(Decision, pk=pk)
+        return Response(DecisionSerializer(entry).data)
+
+    def patch(self, request, pk):
+        entry = get_object_or_404(Decision, pk=pk)
+        form = DecisionActionSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = dict(form.validated_data)
+        action = data.pop("action")
+
+        try:
+            if action == "decide":
+                entry = services.decide(
+                    entry=entry, actor=request.user, decided_on=data.get("decided_on")
+                )
+            elif action == "reverse":
+                entry = services.reverse_decision(
+                    entry=entry, actor=request.user, reason=data.get("reason", "")
+                )
+            else:
+                data.pop("reason", None)
+                data.pop("decided_on", None)
+                entry = services.revise_decision(
+                    entry=entry, actor=request.user, **data
+                )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(DecisionSerializer(entry).data)

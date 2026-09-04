@@ -1398,6 +1398,16 @@ class ActivityLog(models.Model):
         # details is one more place they can be read from.
         BILLING_CHANGED = "billing.changed", "Billing details changed"
 
+        # The workroom. A shift is logged for the same reason a payment is:
+        # the Shift row is the state and can be corrected, this is the account
+        # of what was done and when, and it survives the correction.
+        SHIFT_STARTED = "shift.started", "Clocked in"
+        SHIFT_ENDED = "shift.ended", "Clocked out"
+        DECISION_RECORDED = "decision.recorded", "Decision recorded"
+        DECISION_MADE = "decision.made", "Decision made"
+        DECISION_SUPERSEDED = "decision.superseded", "Decision superseded"
+        DECISION_REVERSED = "decision.reversed", "Decision reversed"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2397,3 +2407,231 @@ class BillingProfile(models.Model):
             return None
         hint = self.resolve("mpesa_account_hint") or "{number}"
         return hint.replace("{number}", invoice_number)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# THE WORKROOM — what the company itself does all day
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Everything above this line is about a CLIENT: their order, their invoice,
+# their ticket. The two models below are about US, and they are here rather
+# than in a new app for the reason Charter 03 §I gives — an app boundary is a
+# thing entering the stack, and these rows are read alongside orders and
+# activity on the same screens, by the same selectors, behind the same
+# `is_staff` gate.
+
+
+class Shift(models.Model):
+    """
+    One stretch of somebody being at work. Clock in, clock out.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS A RECORD, NOT A SUPERVISOR.
+
+    It measures nothing about how hard anybody worked and it must never be
+    made to. There is no idle timer, no screenshot, no keystroke count, and
+    adding one would change what this company is — Charter 01. What it answers
+    is narrower and genuinely useful in a company where two people are often
+    somewhere else: is anyone around right now, and where did last week go.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── ONE OPEN SHIFT PER PERSON, ENFORCED IN THE DATABASE ─────────────────────
+
+    Not in the service layer. Two taps on a phone with a slow connection is the
+    ordinary way you end up clocked in twice, and the second row would double
+    every hour that person worked that day. A partial unique index refuses it
+    at the point the row is written, which is the only place a race can be
+    settled.
+
+    ── NOBODY CLOCKS ANYBODY ELSE ──────────────────────────────────────────────
+
+    There is no endpoint that takes a person. `person` is always the requesting
+    account, set by the service from `actor`. A founder cannot clock a delivery
+    engineer in, and that is not an oversight: a timesheet somebody else can
+    write is not a timesheet, it is an assertion about a person made in their
+    name.
+    """
+
+    person = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="shifts",
+        limit_choices_to={"is_staff": True},
+    )
+
+    started_at = models.DateTimeField(default=timezone.now, db_index=True)
+    ended_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Null means still clocked in. There is exactly one of these per person.",
+    )
+
+    # What you are on. Optional, one line, and it is the part that makes this
+    # worth reading back — "hours on Tuesday" tells you nothing a month later.
+    started_note = models.CharField(max_length=200, blank=True)
+    ended_note = models.CharField(max_length=200, blank=True)
+
+    # True when the shift was closed with a time typed in rather than "now",
+    # which happens when somebody forgot. Kept because an hour figure that was
+    # remembered is a weaker fact than one that was measured, and a timesheet
+    # that hides the difference invites the reader to trust both equally.
+    ended_late = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ["-started_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["person"],
+                condition=models.Q(ended_at__isnull=True),
+                name="one_open_shift_per_person",
+            ),
+            models.CheckConstraint(
+                # A shift that ends before it starts is negative hours in every
+                # total that reads it, and the totals are the whole point.
+                condition=models.Q(ended_at__isnull=True)
+                | models.Q(ended_at__gt=models.F("started_at")),
+                name="shift_ends_after_it_starts",
+            ),
+        ]
+        indexes = [models.Index(fields=["person", "-started_at"], name="shift_person_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.person_id} {self.started_at:%Y-%m-%d %H:%M}"
+
+    @property
+    def is_open(self) -> bool:
+        return self.ended_at is None
+
+    @property
+    def minutes(self) -> int:
+        """Length so far. An open shift is measured to now, not to zero."""
+        end = self.ended_at or timezone.now()
+        return max(0, int((end - self.started_at).total_seconds() // 60))
+
+    @property
+    def local_date(self) -> date:
+        """
+        The day this shift BELONGS to — the day it started, in Nairobi.
+
+        Deliberately the start and not the end. A shift that runs past midnight
+        is one day's work finished late, and splitting it across two dates
+        would put an hour of Monday into Tuesday's total and break Monday's
+        place in a streak.
+        """
+        return timezone.localtime(self.started_at).date()
+
+
+class Decision(models.Model):
+    """
+    Why we did it that way.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE REGISTER EXISTS BECAUSE REASONS EVAPORATE AND CHOICES DO NOT.
+
+    Six months on, the choice is still in the codebase, in the pricing, in the
+    contract — and the reasoning behind it is in somebody's memory, if it is
+    anywhere. What follows is the expensive failure: the constraint that forced
+    the choice is forgotten, the choice starts looking arbitrary, somebody
+    undoes it, and the original problem comes back wearing different clothes.
+
+    So `context` is not optional here. A register that records what was decided
+    without what was true at the time is a list of arbitrary-looking choices,
+    which is worse than nothing because it invites exactly that undoing.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── A DECIDED ENTRY IS NOT EDITED ───────────────────────────────────────────
+
+    Same discipline as ActivityLog, Contract and Invoice, and for the same
+    reason: a record you can quietly rewrite is a draft. A decision that turned
+    out wrong is REVERSED with the reason attached, and a decision that has
+    moved on is SUPERSEDED by a new entry that points back at it. Both leave
+    the original readable, which is the only version of this that helps anyone
+    — the wrong turns are most of the value.
+
+    A PROPOSED entry is still editable. It has not been relied on yet.
+
+    ── NOT A PERMISSION SYSTEM ─────────────────────────────────────────────────
+
+    Any staff account may write here. The authority to make a given decision
+    lives where Charter 02 §I put it and is enforced by the endpoint that acts
+    on it — issuing a contract, changing a price, converting an enquiry. Gating
+    the WRITING DOWN of a decision on rank would only mean decisions get made
+    and not written down, which is the failure this exists to prevent.
+    """
+
+    class Status(models.TextChoices):
+        PROPOSED = "proposed", "Proposed"
+        DECIDED = "decided", "Decided"
+        SUPERSEDED = "superseded", "Superseded"
+        REVERSED = "reversed", "Reversed"
+
+    reference = models.CharField(max_length=32, unique=True, db_index=True)
+    title = models.CharField(max_length=200, help_text="The choice, in one line.")
+
+    context = models.TextField(
+        help_text="What was true at the time that forced a choice. Required — see the docstring."
+    )
+    options = models.TextField(
+        blank=True,
+        help_text="What else was on the table. Blank is honest when there genuinely was one option.",
+    )
+    decision = models.TextField(help_text="What we are doing.")
+    consequences = models.TextField(
+        blank=True, help_text="What this commits us to, including what it costs."
+    )
+    revisit_when = models.CharField(
+        max_length=300,
+        blank=True,
+        help_text=(
+            "What would make this worth reopening — a client size, a price, a "
+            "date. The difference between a decision and a dogma."
+        ),
+    )
+
+    status = models.CharField(
+        max_length=16, choices=Status.choices, default=Status.PROPOSED, db_index=True
+    )
+
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="decisions",
+        limit_choices_to={"is_staff": True},
+    )
+    # Kept alongside the FK for the ActivityLog reason: SET_NULL loses the name,
+    # and "somebody decided this" is a materially worse record than "Asha did".
+    decided_by_label = models.CharField(max_length=200, blank=True)
+    decided_on = models.DateField(null=True, blank=True)
+
+    supersedes = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="superseded_by",
+    )
+
+    # Why it was reversed. Empty on everything else. A reversal with no reason
+    # is the one entry in this register that teaches nothing.
+    reversal_reason = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-decided_on", "-created_at", "-id"]
+        indexes = [models.Index(fields=["status", "-created_at"], name="decision_status_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.reference} {self.title}"
+
+    @property
+    def is_open_to_edits(self) -> bool:
+        """Only a proposal. Everything else is superseded or reversed, never rewritten."""
+        return self.status == self.Status.PROPOSED
+
+    @property
+    def is_in_force(self) -> bool:
+        return self.status == self.Status.DECIDED
