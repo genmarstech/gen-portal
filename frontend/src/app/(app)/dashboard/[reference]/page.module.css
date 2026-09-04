@@ -503,3 +503,17 @@ a.iNumber:hover {
   background: var(--bg-sunken);
   border-radius: var(--radius);
 }
+
+/* Above the scope, not below it. "Scope changed" is the reason that matters
+   most, and the reader needs it before they start reading the scope as though
+   it were the one they agreed to. */
+.changed {
+  margin: 0 0 var(--sp-5);
+  padding: var(--sp-3) var(--sp-4);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}

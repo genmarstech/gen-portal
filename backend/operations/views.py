@@ -323,9 +323,47 @@ class OrderDetailView(StaffView):
 
     def patch(self, request, reference: str):
         order = get_object_or_404(Order, reference=reference)
+
+        # ── the fields the client agreed to ─────────────────────────────────
+        #
+        # Read BEFORE the save, because afterwards there is nothing to compare
+        # against. Charter 05 §I fixes the scope in writing, and a client whose
+        # scope changed without noticing has had that promise quietly broken —
+        # so this is the change that most needs to reach them, and the one they
+        # are least likely to go looking for.
+        #
+        # A title change counts too: it is what the order is called in every
+        # email about it.
+        before = {
+            field: getattr(order, field) for field in ("scope", "exclusions", "title")
+        }
+
         form = OrderWriteSerializer(order, data=request.data, partial=True)
         form.is_valid(raise_exception=True)
-        form.save()
+        order = form.save()
+
+        changed = [f for f, was in before.items() if getattr(order, f) != was]
+        if changed:
+            services.mark_client_notice(
+                order=order,
+                reason=(
+                    "Scope changed"
+                    if "scope" in changed or "exclusions" in changed
+                    else "Renamed"
+                ),
+            )
+            services.record(
+                actor=request.user,
+                action=ActivityLog.Action.ORDER_UPDATED,
+                subject=order.reference,
+                organisation=order.organisation,
+                summary=(
+                    f"{order.reference}: {', '.join(changed)} changed — the client "
+                    "is shown a marker"
+                ),
+                fields=changed,
+            )
+
         return Response(OrderDetailSerializer(selectors.order(reference)).data)
 
 

@@ -76,14 +76,27 @@ class OrderListSerializer(serializers.ModelSerializer):
     # ago and things still live in one undifferentiated column.
     kind_label = serializers.CharField(source="get_kind_display", read_only=True)
 
+    # What changed since this person last looked, in their words — or null.
+    # The words rather than a bare flag: a dot says there is something to find
+    # without saying whether it is worth finding, and half of them do not look.
+    unseen = serializers.SerializerMethodField()
+
     class Meta:
         model = Order
         fields = [
             "reference", "title", "status", "status_label",
             "kind", "kind_label", "started_on", "completed_on",
-            "target_date",
+            "target_date", "unseen",
         ]
         read_only_fields = fields
+
+    def get_unseen(self, order) -> str | None:
+        user = self.context.get("user")
+        if user is None:
+            return None
+        from portal import selectors
+
+        return selectors.unseen_notice(user, order)
 
 
 class ClientContractSerializer(serializers.ModelSerializer):

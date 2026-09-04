@@ -67,7 +67,9 @@ class OrderListView(APIView):
         orders = orders_for(request.user)
         return Response(
             {
-                "orders": OrderListSerializer(orders, many=True).data,
+                "orders": OrderListSerializer(
+                    orders, many=True, context={"user": request.user}
+                ).data,
                 # An account with no order is the COMMON case early on — someone
                 # signed up, nothing is agreed yet. The client renders an empty
                 # state from this, not an error.
@@ -95,7 +97,21 @@ class OrderDetailView(APIView):
             return Response(
                 {"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND
             )
-        return Response(OrderDetailSerializer(order).data)
+
+        # What changed since they last looked, read BEFORE the visit is
+        # stamped — otherwise opening the page clears the marker and the page
+        # itself never tells them what it was for.
+        unseen = selectors.unseen_notice(request.user, order)
+
+        body = OrderDetailSerializer(order).data
+        body["unseen"] = unseen
+
+        # And now they have seen it. Only from here: this is the one place
+        # somebody has demonstrably read what is on the order, where marking it
+        # from a list would clear the marker for one they scrolled past.
+        selectors.mark_order_seen(request.user, order)
+
+        return Response(body)
 
 
 class ExportView(APIView):
@@ -818,7 +834,9 @@ class DashboardView(APIView):
                 # live, in one undifferentiated column — and "is this retainer
                 # still running" was answerable only by reading every row.
                 "ongoing": OrderListSerializer(
-                    selectors.ongoing_work_for(request.user), many=True
+                    selectors.ongoing_work_for(request.user),
+                    many=True,
+                    context={"user": request.user},
                 ).data,
                 # Charter 05 §VIII. A promise that we do not hold domains
                 # hostage is worth little if the client cannot see which of

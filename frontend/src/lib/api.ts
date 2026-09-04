@@ -118,6 +118,16 @@ export type OrderSummary = {
   started_on: string | null;
   completed_on: string | null;
   target_date: string | null;
+  /**
+   * What changed since YOU last opened this order, in plain words — "Scope
+   * changed", "New progress note" — or null.
+   *
+   * The words rather than a bare flag: a dot tells somebody there is something
+   * to find without telling them whether it is worth finding, and half of them
+   * will not go looking. Per person, so a colleague opening it does not clear
+   * it for you.
+   */
+  unseen: string | null;
 };
 
 export type ProgressNote = {
@@ -426,6 +436,9 @@ export type OrderDetail = OrderSummary & {
    * going to be written, for a promise that was not in force at the time.
    */
   recorded_retrospectively: boolean;
+  /** Read before this visit was stamped, so the page can still say what the
+      marker was for on the visit that clears it. */
+  unseen: string | null;
   notes: ProgressNote[];
   milestones: Milestone[];
   /** Null while an order is still being scoped — an ordinary state, not an error. */

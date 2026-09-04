@@ -20,7 +20,7 @@ through Membership.
 
 from __future__ import annotations
 
-from django.db.models import QuerySet
+from django.db.models import Prefetch, QuerySet
 
 from accounts.models import User
 from portal.models import (
@@ -30,6 +30,7 @@ from portal.models import (
     Offer,
     Invoice,
     Order,
+    OrderSeen,
     SupportTicket,
     System,
 )
@@ -53,8 +54,53 @@ def orders_for(user: User) -> QuerySet[Order]:
     return (
         Order.objects.filter(organisation_id__in=organisation_ids_for(user))
         .select_related("organisation", "contact")
+        # Prefetched and scoped to THIS user, so the "have you seen it" check
+        # is one query for the whole list rather than one per order — and so
+        # it can never accidentally read somebody else's seen record.
+        .prefetch_related(
+            Prefetch(
+                "seen_by",
+                queryset=OrderSeen.objects.filter(user=user),
+                to_attr=None,
+            )
+        )
         .order_by("-created_at")
     )
+
+
+def unseen_notice(user: User, order: Order) -> str | None:
+    """
+    What changed on this order since this person last looked, if anything.
+
+    Returns the reason in the client's own words — "Scope changed", "New
+    progress note" — or None. The words matter: a bare dot tells somebody
+    there is something to find without telling them whether it is worth
+    finding, and half of them will not go looking.
+
+    ── AN ORDER THEY HAVE NEVER OPENED COUNTS AS UNSEEN ────────────────────────
+
+    Deliberately. A client who has never looked at an order has not seen the
+    scope on it, and that is exactly the state the marker exists for.
+    """
+    if order.client_notice_at is None:
+        return None
+    seen = next(iter(order.seen_by.all()), None)
+    if seen is not None and seen.seen_at >= order.client_notice_at:
+        return None
+    return order.client_notice_reason or "Updated"
+
+
+def mark_order_seen(user: User, order: Order) -> None:
+    """
+    Stamp that this person has now looked at it.
+
+    Only ever called from the client's own order page — the one place where
+    somebody has demonstrably read what is on it. Marking it from a list view
+    would clear the marker for an order they scrolled past.
+    """
+    from portal.models import OrderSeen
+
+    OrderSeen.objects.update_or_create(user=user, order=order)
 
 
 def order_for(user: User, reference: str) -> Order | None:

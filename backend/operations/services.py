@@ -230,6 +230,26 @@ def decide_enquiry(
     return enquiry
 
 
+def mark_client_notice(*, order: Order, reason: str) -> None:
+    """
+    Say that something changed which the client should notice.
+
+    ── CALLED FROM A HANDFUL OF PLACES, ON PURPOSE ─────────────────────────────
+
+    Not from a signal, and not from Order.save(). A signal would fire on every
+    write — including the internal ones — and we would be back to `updated_at`,
+    which is the thing this exists to avoid. The list of callers IS the
+    definition of "something a client should notice", and keeping it short is
+    what keeps the marker meaningful.
+
+    The reason is written in the CLIENT'S words, because it is shown to them.
+    "Scope changed" is a fact they can act on; "order.updated" is not.
+    """
+    order.client_notice_at = timezone.now()
+    order.client_notice_reason = reason[:120]
+    order.save(update_fields=["client_notice_at", "client_notice_reason"])
+
+
 def publish_note(*, note: ProgressNote) -> ProgressNote:
     """
     Publish a drafted weekly note, and tell the client it exists.
@@ -252,6 +272,7 @@ def publish_note(*, note: ProgressNote) -> ProgressNote:
     note.published_at = timezone.now()
     note.save(update_fields=["published_at"])
 
+    mark_client_notice(order=note.order, reason="New progress note")
     _notify_progress_note(note)
     return note
 
@@ -648,7 +669,7 @@ def issue_contract(*, order: Order, actor: User, deliverables: str = "") -> Cont
     if not text and order.service:
         text = order.service.default_deliverables
 
-    return Contract.objects.create(
+    contract = Contract.objects.create(
         order=order,
         version=version,
         title=order.title,
@@ -662,6 +683,15 @@ def issue_contract(*, order: Order, actor: User, deliverables: str = "") -> Cont
         issued_at=timezone.now(),
         issued_by=actor,
     )
+    mark_client_notice(
+        order=order,
+        reason=(
+            "Statement of work issued"
+            if version == 1
+            else f"Statement of work replaced — version {version}"
+        ),
+    )
+    return contract
 
 
 @transaction.atomic
@@ -710,6 +740,9 @@ def record_signature(
             "signature_note",
             "recorded_by",
         ]
+    )
+    mark_client_notice(
+        order=contract.order, reason="Statement of work signed"
     )
     return contract
 
@@ -1179,6 +1212,7 @@ def issue_invoice(
         milestone.status = Milestone.Status.INVOICED
         milestone.save(update_fields=["status"])
 
+    mark_client_notice(order=order, reason=f"Invoice {invoice.number} issued")
     notify_invoice_issued(invoice)
     record(
         actor=actor,

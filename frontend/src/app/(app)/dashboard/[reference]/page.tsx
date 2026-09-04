@@ -80,6 +80,23 @@ export default function OrderPage() {
         </div>
       </header>
 
+      {/*
+        ── WHAT CHANGED SINCE YOU LAST LOOKED ─────────────────────────────────
+
+        Read on the server BEFORE this visit was stamped, so the page that
+        clears the marker is also the page that says what it was for. Without
+        that, opening the order answers "something changed" with silence.
+
+        Above the scope rather than below it, because "scope changed" is the
+        reason that matters most and the reader needs it before they start
+        reading the scope as though it were the one they agreed to.
+      */}
+      {order.unseen ? (
+        <p className={styles.changed} role="status">
+          <strong>{order.unseen}</strong> since you last opened this.
+        </p>
+      ) : null}
+
       {/* ---------- what was agreed ----------
         WHEN A CONTRACT EXISTS, THIS RENDERS THE CONTRACT, NOT THE ORDER.
 

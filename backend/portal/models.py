@@ -144,6 +144,31 @@ class Order(models.Model):
         default=False,
         help_text="True for work that happened before it was entered here.",
     )
+
+    # ── something the client should notice ──────────────────────────────────
+    #
+    # ══════════════════════════════════════════════════════════════════════
+    # STAMPED EXPLICITLY, NEVER INFERRED FROM `updated_at`.
+    #
+    # `updated_at` moves when anything on this row is touched, including things
+    # no client has any reason to care about — a service reassigned, a target
+    # date corrected by a day, a status nudged from scoping to active. Using it
+    # would put a "something changed" badge in front of a client several times
+    # a week for changes that mean nothing to them, and a badge that is usually
+    # noise is a badge people stop seeing.
+    #
+    # So it is set by the handful of services that change what the client was
+    # TOLD: a progress note published, a statement of work issued or signed, an
+    # invoice raised, and — the one that matters most — the SCOPE being edited.
+    # Charter 05 §I fixes the scope in writing, and a client whose scope
+    # changed without noticing has had that promise quietly broken.
+    # ══════════════════════════════════════════════════════════════════════
+    client_notice_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    client_notice_reason = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text="What changed, in the client's words. Shown beside the marker.",
+    )
     target_date = models.DateField(
         null=True,
         blank=True,
@@ -1504,6 +1529,11 @@ class ActivityLog(models.Model):
         # would want to reconstruct later, and the log is the account of what
         # was done rather than a barrier to doing it.
         REPORT_EXPORTED = "report.exported", "Report exported"
+
+        # Scope, exclusions or the title of an order changing. Its own action
+        # because it is the edit a client is entitled to notice — Charter 05 §I
+        # fixes the scope in writing, and this is the record that it moved.
+        ORDER_UPDATED = "order.updated", "Order scope or title changed"
         HOSTING_RECORDED = "hosting.recorded", "Hosting arrangement recorded"
         HOSTING_CHANGED = "hosting.changed", "Hosting arrangement changed"
         HOSTING_RETIRED = "hosting.retired", "Hosting arrangement retired"
@@ -3455,3 +3485,37 @@ class AccessRequest(models.Model):
     @property
     def is_open(self) -> bool:
         return self.status == self.Status.PENDING
+
+
+
+class OrderSeen(models.Model):
+    """
+    When this person last looked at this order.
+
+    ── PER PERSON, NOT PER ORGANISATION ────────────────────────────────────────
+
+    Two people at a client can both have accounts, and one of them opening an
+    order says nothing about whether the other has seen it. A shared "seen"
+    flag would clear the marker for a colleague who never looked — which is
+    worse than no marker, because it produces a client who was never told and a
+    system that believes they were.
+
+    ── AND IT IS NOT AN ANALYTICS ROW ──────────────────────────────────────────
+
+    One timestamp, overwritten. No view counts, no history of when somebody
+    opened what. That would be a record of a client's reading habits, which is
+    not ours to keep and is not what this is for.
+    """
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="orders_seen"
+    )
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name="seen_by")
+    seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        unique_together = [("user", "order")]
+        indexes = [models.Index(fields=["user", "order"], name="order_seen_idx")]
+
+    def __str__(self) -> str:
+        return f"{self.user_id} saw {self.order_id} at {self.seen_at:%Y-%m-%d %H:%M}"

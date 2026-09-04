@@ -69,8 +69,25 @@ export default function DashboardPage() {
       <ul className={styles.list}>
         {orders.map((order) => (
           <li key={order.reference}>
-            <Link href={`/dashboard/${order.reference}`} className={styles.card}>
-              <span className={styles.cardRef}>{order.reference}</span>
+            <Link
+              href={`/dashboard/${order.reference}`}
+              className={`${styles.card} ${order.unseen ? styles.cardUnseen : ""}`}
+            >
+              <span className={styles.cardRef}>
+                {order.reference}
+                {/*
+                  What changed, in words, not a bare dot. A dot says there is
+                  something to find without saying whether it is worth finding,
+                  and half of them will not go looking — which for a scope
+                  change is the promise in Charter 05 §I quietly breaking.
+                */}
+                {order.unseen ? (
+                  <span className={styles.unseen}>
+                    <span className={styles.unseenDot} aria-hidden="true" />
+                    {order.unseen}
+                  </span>
+                ) : null}
+              </span>
               <span className={styles.cardTitle}>{order.title}</span>
               <span className={styles.cardMeta}>
                 <span className={`${styles.status} ${styles[order.status] ?? ""}`}>

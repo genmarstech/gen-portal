@@ -78,12 +78,53 @@
 }
 
 .cardRef {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
   overflow-wrap: anywhere;
   min-width: 0;
   font-family: var(--font-mono);
   font-size: 0.75rem;
   letter-spacing: 0.08em;
   color: var(--accent-text);
+}
+
+/*
+ * ── THE MARKER SAYS WHAT CHANGED, NOT THAT SOMETHING DID ────────────────────
+ *
+ * A bare dot tells somebody there is something to find without telling them
+ * whether it is worth finding, and half of them do not go looking. For a scope
+ * change that is Charter 05 §I quietly breaking — the client agreed to a fixed
+ * scope in writing and would never learn it moved.
+ *
+ * So the words are the marker and the dot is only punctuation.
+ */
+.unseen {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  font-family: var(--font-sans);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.unseenDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
+/* A left rule on the card as well as the pill: the pill is the detail, and
+   this is what lets somebody find the changed row while scrolling past six. */
+.cardUnseen {
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .cardTitle {
