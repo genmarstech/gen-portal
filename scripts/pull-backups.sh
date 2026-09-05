@@ -50,9 +50,39 @@ echo "==> Pulling encrypted backups from ${REMOTE}:${REMOTE_DIR}"
 # -a preserves timestamps, which is what makes the "how old is the newest copy"
 # check below mean anything. No --delete: the server prunes on a 14-day window
 # and this archive is meant to outlive that. Copies collected here are ours.
-if ! rsync -a --info=stats1 \
-       "${REMOTE}:${REMOTE_DIR}/" "${DEST}/" 2>/dev/null; then
-    echo "FATAL: could not reach ${REMOTE}. Nothing was collected." >&2
+#
+# rsync's stderr is NOT discarded, and the exit code is NOT collapsed to
+# "could not reach".
+#
+# It used to be both, and that is how this went unnoticed for three days: the
+# nightly systemd backup runs as root and writes 0600 root:root, this pull runs
+# as an ordinary user over SSH, and rsync could not open a single one of them.
+# It exited 23 — "some files were not transferred" — having successfully copied
+# the manual backups either side of them. The old code threw the reason away
+# and printed "could not reach genmars", which sends whoever reads it to look
+# at the network while every scheduled backup quietly stays on one disk.
+#
+# 23 is the code that matters here. It means the connection was fine and
+# something was skipped, which for a backup pull is worse than a clean failure,
+# because the directory afterwards looks populated.
+set +e
+rsync -a --info=stats1 "${REMOTE}:${REMOTE_DIR}/" "${DEST}/"
+rsync_status=$?
+set -e
+
+if [ "$rsync_status" -eq 23 ] || [ "$rsync_status" -eq 24 ]; then
+    echo >&2
+    echo "FATAL: rsync could not collect every file (exit ${rsync_status})." >&2
+    echo "       The errors above name them. A backup this pull cannot READ is" >&2
+    echo "       a backup that has never left the server." >&2
+    echo >&2
+    echo "       The usual cause is ownership: the nightly systemd job runs as" >&2
+    echo "       root and writes 0600 root:root, and this pull does not run as" >&2
+    echo "       root. Check with:" >&2
+    echo "         ssh ${REMOTE} ls -la ${REMOTE_DIR}" >&2
+    exit 1
+elif [ "$rsync_status" -ne 0 ]; then
+    echo "FATAL: could not reach ${REMOTE} (exit ${rsync_status}). Nothing was collected." >&2
     exit 1
 fi
 
