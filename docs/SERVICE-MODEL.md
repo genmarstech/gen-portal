@@ -66,10 +66,16 @@ the handover state is worth checking.
 
 ---
 
-## 3. The one real gap — change request classification
+## 3. Change request classification — BUILT 2026-09-05
 
-`portal/models.py` still says, in its own header, that change requests are
-deliberately not in v1. v2.0 §09 makes this the highest-value thing left.
+`ChangeRequest` now exists, with the four classifications below enforced in
+`operations/services.py` rather than in a view. What follows is why it is
+shaped the way it is; `portal/tests/test_change_requests.py` is the proof.
+
+It also closed a live defect rather than only filling a gap. The client-facing
+"ask for a change to this work" form already existed on the order page and
+raised a **support ticket** — so a scope change landed in the queue beside "my
+password does not work", unclassified, unpriced and unapproved.
 
 Every new request is classified **before any work is done on it**:
 
@@ -88,10 +94,15 @@ The dangerous ones are small. A large request is obviously a change request;
 twenty small ones get absorbed silently until the project is weeks over and
 nobody can point to why.
 
-The portal already tells clients that anything outside the signed scope is a
-change request priced and approved before it is built. It does not yet let them
-raise one, and `Milestone` already anticipates that a change request may move a
-target date. The model is the missing half.
+A client can raise one themselves, which is the point: Charter 05 §I protects
+both sides, and a change process only Genmars can start lets a request be heard
+informally, absorbed, and disputed later with no record of when it was asked
+for.
+
+`raised_at` is set once and no code path edits it. `Milestone` anticipated that
+a change request may move a target date; `decide_change_request` is what
+actually moves it, at approval — Charter 05 §II, the revised date stated at
+approval rather than discovered later.
 
 ---
 
@@ -104,7 +115,6 @@ to features too: build it when it is genuinely needed.
 |---|---|
 | Discovery brief | A paid deliverable the client owns whether or not they proceed |
 | Written acceptance | Against the proposal, item by item — stage 6 |
-| Change request | §3 above |
 | Recorded "no support plan" decision | Where no plan is bought, that decision is written down, so expectations after an incident are unambiguous. An order with no plan should say so, not show nothing |
 
 ---
@@ -132,11 +142,16 @@ portal — not so the portal can have prices of its own.
 Two price lists is how a client is quoted one number and billed another. When a
 price changes on the website, `seed_services --force` is re-run.
 
-There is an open naming conflict between the two: v2.0 §03 names the tiers
-**Foundation / Growth / Scale**, while the shipping tiers are per-offer
-(`Essential Setup`, `Basic`, `Care`, …). That is a founder decision, tracked in
-`gen-website/docs/SERVICE-MODEL.md` §3. **Do not rename tiers here first** — the
-website is authoritative and the portal copies it.
+The naming conflict is **settled as of 2026-09-05: the shipping per-offer names
+stand** (`Essential Setup`, `Basic`, `Care`, …), and v2.0 §03 is amended to
+match rather than departed from silently. `Foundation / Growth / Scale` appears
+in no client-facing copy. Reasoning is in `gen-website/docs/SERVICE-MODEL.md`
+§3.
+
+The standing rule survives the decision and matters more than it did: **do not
+rename tiers here first.** The website is authoritative and the portal copies
+it. A rename that started in the portal would give a client one number on the
+site and a different one at checkout.
 
 ---
 
