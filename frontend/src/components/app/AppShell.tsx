@@ -138,6 +138,24 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </header>
 
       <main className={styles.main}>{children}</main>
+
+      <footer className={styles.footer}>
+        {/*
+          THE POLICIES LIVE ON THE MARKETING SITE, AND THESE ARE ABSOLUTE.
+
+          Relative hrefs would resolve to app.genmars.co.ke/privacy, which does
+          not exist — the same bug the sign-up page carries a comment about.
+          One document, one address, published from the static site so it is
+          still readable when this one is down.
+        */}
+        <a href="https://genmars.co.ke/privacy/" target="_blank" rel="noreferrer">
+          Privacy policy
+        </a>
+        <span aria-hidden="true">·</span>
+        <a href="https://genmars.co.ke/terms/" target="_blank" rel="noreferrer">
+          Terms of service
+        </a>
+      </footer>
     </div>
   );
 }

@@ -43,7 +43,7 @@ and the client was given a link to the system it describes wrongly.
 | 3 | Automated Postgres backup with a **tested** restore | **Partial — restore still unproven** |
 | 4 | Error monitoring that reaches a human | **Done — untested in production** |
 | 5 | Documented deploy and rollback | **Done — exercised repeatedly** |
-| 6 | Privacy policy and terms of service published | **BLOCKED, and now overdue** |
+| 6 | Privacy policy and terms of service published | **Drafted — awaiting advocate** |
 
 ### 1 — Least privilege
 
@@ -130,36 +130,67 @@ different broken state and usually a worse one.
 No longer theoretical. The runbook was followed for every deploy on 2026-09-04,
 including two that carried migrations.
 
-### 6 — Privacy policy and terms — BLOCKED, and now overdue
+### 6 — Privacy policy and terms — DRAFTED 2026-09-05, awaiting advocate
 
-This cannot be closed by writing code, and real client data is now sitting
-behind it.
+The documents now exist. What is left is a signature, not a keyboard.
 
-- The published privacy policy says **"No accounts on this site"** and **"This
-  site holds no database and stores no personal data at rest."** Both sentences
-  are still literally true *of the marketing site*, which is a static export.
-  Neither is true of Genmars. A reader looking for how this company handles
-  their data finds that page, and it describes a company that does not hold any
-  — while `app.genmars.co.ke` holds their name, email, phone number, domain and
-  invoices. Charter 04 §IV: nothing untrue on a Genmars surface.
-- **The portal has no policy of its own.** The sentences on the marketing site
-  that point at it have nothing to point to.
-- `/terms/` is still a placeholder. The Policy Pack requires terms acceptance
-  recorded at signup for any product with accounts. There is an account. There
-  is nothing to link to and nothing recorded.
-- `privacy@genmars.co.ke` is named in the published policy as the address for
-  data requests. It has not been confirmed to exist. An address that bounces is
-  worse than none, and it is worse again now that someone might use it.
-- The controller/processor position with the ODPC (Charter 03 §V) is still
-  open, and the answer changes how the whole document frames itself.
+**Written on 2026-09-05, all four verified against the running system:**
 
-`<ReviewNotice />` remains on `/privacy/` and `robots.txt` remains
-`Disallow: /`. Both stay until an advocate has reviewed the policy, the terms,
-the Client Agreement Pack and the Ownership Term Sheet — one engagement, per
-the Policy Pack.
+| Document | Where | Covers |
+|---|---|---|
+| Privacy policy v1.0 | `genmars.co.ke/privacy/` | Two parts: the website, and the portal |
+| Terms of service v1.0 | `genmars.co.ke/terms/` | Website use and portal accounts |
+| Terms of Business v1.0 | `05-policies/` | Paid engagements |
+| Data Processing Agreement v1.0 | `05-policies/` | Personal data processed for a client |
 
-**The advocate engagement is now the only thing on the critical path that has a
-client's data on the wrong side of it.**
+`05-policies/README.md` carries the advocate brief — what to send, and the
+eight points where a non-lawyer drafting from the system is most likely to have
+got the law wrong rather than the facts.
+
+**What this closed:**
+
+- The privacy policy no longer describes a company that holds no data. Part two
+  documents the portal: what is held, why, for how long, and who else sees it.
+- `/terms/` is no longer a placeholder. This was worse than an open item: the
+  sign-up screen has said *"by creating an account you agree to the terms of
+  service"* since it shipped, linking to a page that said the document was not
+  published. Accounts were created against terms that did not exist.
+- The portal now links both documents from its own footer, absolute rather than
+  relative — a relative href resolves to `app.genmars.co.ke/privacy`, which
+  does not exist.
+- The sentences pointing at "the portal's own privacy policy" now point at
+  something. It is folded into the marketing-site document rather than
+  published separately: one controller, one policy, and it stays readable when
+  the portal is down.
+
+**Two things the drafting found that nobody had written down:**
+
+1. **Client personal data is stored in Falkenstein, Germany** (Hetzner
+   `fsn1-dc14`). Sections 48–50 of the Data Protection Act, 2019 govern
+   transfer outside Kenya, and no version of any Genmars document had ever
+   mentioned it. It is now section 12 of the privacy policy and clause 7 of the
+   DPA, both stated at the front rather than buried in an annex.
+
+2. **The internal contact log is personal data.** `ContactLogEntry` holds frank
+   notes about clients, including opinions, that clients never see. Opinions
+   about an identifiable person are reachable by a subject access request.
+   Section 6 of the privacy policy says so plainly.
+
+**Still open, and none of it is engineering's:**
+
+- **The advocate engagement.** Every document carries a visible "not reviewed"
+  notice and both pages keep `noindex`; `robots.txt` stays `Disallow: /`.
+- **`privacy@` and `security@` deliverability.** Both are named as the address
+  for statutory requests and neither has been tested from outside the domain.
+  An address that bounces is worse than none.
+- **The ODPC controller/processor position** (Charter 03 §V). The published
+  documents deliberately make no claim in either direction. Do not add one
+  until it is settled.
+- **KRA PIN.** Terms of Business clause 7.8 cannot be finalised without it.
+
+**The advocate engagement is still the only thing on the critical path with a
+client's data on the wrong side of it — but it is now a review, not a drafting
+job.**
 
 ---
 
