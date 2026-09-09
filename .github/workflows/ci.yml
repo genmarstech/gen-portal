@@ -58,6 +58,13 @@ jobs:
         working-directory: .
         run: python scripts/check_identity_boundary.py
 
+      # The image installs from requirements.lock.txt, so a version bumped in
+      # requirements.txt and not regenerated there reaches nothing — silently.
+      # Stdlib only, like the check above, so both run before dependencies.
+      - name: The lockfile matches requirements.txt
+        working-directory: .
+        run: python scripts/check_lockfile.py
+
       - run: pip install -r requirements-dev.txt
 
       # SQLite, no services needed — config/settings_test.py says why.

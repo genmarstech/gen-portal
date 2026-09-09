@@ -1,12 +1,16 @@
 # Charter 03 §I — Django/DRF, PostgreSQL, Redis, Celery. Nothing new enters the
-# stack. Pinned to majors.
+# stack.
 #
-# ⚠ THERE IS NO requirements.lock.txt. This block claimed one for months and
-#   the file has never existed — finding 4 of docs/SECURITY-AUDIT-2026-09-09.md.
-#   Until it does, these majors are resolved fresh from PyPI on every build, so
-#   two builds of one commit can install different code. Generate it or delete
-#   this note; do not leave a third state where the docs claim a control that
-#   is not there.
+# ── THIS FILE IS THE INTENT; requirements.lock.txt IS WHAT GETS INSTALLED ───
+#
+# Majors are pinned here because that is the decision a human makes. The exact
+# resolved set lives in requirements.lock.txt, which the Dockerfile installs
+# from, and which is generated in the image's own base — the command is in its
+# header. CHANGE THIS FILE, THEN REGENERATE THAT ONE; a change here alone
+# reaches nothing.
+#
+# The header used to claim that lockfile existed while it did not, for months
+# (finding 4 of docs/SECURITY-AUDIT-2026-09-09.md). It exists now.
 #
 # ── DJANGO 5.2 IS AN LTS, AND THAT IS THE POINT ─────────────────────────────
 #

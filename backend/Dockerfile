@@ -54,8 +54,18 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # requirements.txt only — NOT requirements-dev.txt. pytest and its tree have no
 # business in a production image.
-COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+# ── INSTALL FROM THE LOCKFILE, NOT THE MAJORS ───────────────────────────────
+#
+# requirements.txt pins majors (Django==5.2.*), which resolves fresh from PyPI
+# on every build: two builds of the same commit could install different code,
+# and a rollback could not restore a dependency set. requirements.lock.txt is
+# the resolved set, generated in this same base image — its header says how.
+#
+# Both are copied. The lockfile is what gets installed; requirements.txt comes
+# along because it is the file a human edits and the one the lockfile is
+# regenerated from, and having them separated across builds is how they drift.
+COPY requirements.txt requirements.lock.txt ./
+RUN pip install --no-cache-dir -r requirements.lock.txt
 
 
 # ---- runtime ----------------------------------------------------------------

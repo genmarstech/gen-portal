@@ -1,0 +1,80 @@
+# The resolved dependency set — every package that ends up in the image, at the
+# exact version, including the ones nothing asks for directly.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# THIS FILE IS GENERATED. Do not hand-edit it.
+#
+#     docker run --rm -v "$PWD/requirements.txt:/req.txt:ro" python:3.13-slim \
+#         sh -c 'pip install -q -r /req.txt && pip freeze --exclude-editable'
+#
+# Regenerate it whenever requirements.txt changes, and read the diff before
+# committing — an unexpected package appearing is exactly what this exists to
+# make visible.
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# ── WHY IT IS RESOLVED IN A CONTAINER AND NOT IN backend/.venv ──────────────
+#
+# The venv on the founder's laptop is Python 3.14; the image and CI are 3.13.
+# Dependency resolution reads the interpreter version and the platform, so a
+# freeze from the laptop can pin versions that will never be installed in
+# production and omit ones that will. python:3.13-slim IS the image's base, so
+# this is resolved in the place it will be installed.
+#
+# ── WHAT IT FIXES ───────────────────────────────────────────────────────────
+#
+# requirements.txt pins majors: Django==5.2.*, celery==5.4.*. Without this file
+# two builds of one commit a week apart could install different code, a
+# rollback could not restore a dependency set, and a bad release published
+# tonight would be in tomorrow's image with nothing to notice it. Finding 4 of
+# docs/SECURITY-AUDIT-2026-09-09.md.
+#
+# ── WHAT IT DOES NOT FIX, STATED PLAINLY ────────────────────────────────────
+#
+# There are NO HASHES here. This pins which VERSION is installed, not which
+# bytes: it stops an unexpected new release, and it does not verify that the
+# artefact PyPI serves for a pinned version is the one that was there before.
+# Hashes need `pip install --require-hashes`, which needs a hash for every
+# package, which needs pip-tools or an equivalent — a new dependency, and
+# Charter 03 §I says one enters only when what is here cannot do the job.
+#
+# Version pinning does most of the work; say so accurately and do not describe
+# this file as supply-chain verification, because it is not that yet.
+#
+# ── pip IS DELIBERATELY NOT LISTED ──────────────────────────────────────────
+#
+# The first draft of this file was generated with `pip freeze --all`, which
+# reports pip itself, and it was committed with a comment defending that. It
+# was wrong: `pip install -r` on a file that pins pip has pip upgrading itself
+# mid-install, which is a needless way for a build to fail. The generation
+# command above omits --all, and a second independent resolve agreed with this
+# file on all 29 real packages once that flag was dropped.
+#
+amqp==5.3.1
+argon2-cffi==23.1.0
+argon2-cffi-bindings==26.1.0
+asgiref==3.12.1
+billiard==4.2.4
+celery==5.4.0
+cffi==2.1.1
+click==8.5.0
+click-didyoumean==0.3.1
+click-plugins==1.1.1.2
+click-repl==0.3.0
+Django==5.2.17
+django-environ==0.11.2
+django-ratelimit==4.1.0
+djangorestframework==3.16.1
+gunicorn==23.0.0
+kombu==5.6.2
+packaging==26.3
+prompt_toolkit==3.0.53
+psycopg==3.2.13
+psycopg-binary==3.2.13
+pycparser==3.0
+python-dateutil==2.9.0.post0
+redis==5.2.1
+six==1.17.0
+sqlparse==0.6.0
+tzdata==2026.3
+vine==5.1.0
+wcwidth==0.8.3

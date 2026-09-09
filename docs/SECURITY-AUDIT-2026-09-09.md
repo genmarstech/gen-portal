@@ -24,12 +24,12 @@ because no STK push has ever been fired.
 | # | Finding | Severity | Fixable by us |
 |---|---|---|---|
 | 1 | Django 5.1 has been end-of-life since 2025-12-03 | **High** | **Resolved same day** |
-| 2 | The Django admin login bypasses the lockout and every throttle | **High** | Yes |
+| 2 | The Django admin login bypasses the lockout and every throttle | **High** | **Resolved same day** |
 | 3 | `ops.genmars.co.ke` ships almost no security headers | Medium-high | **Resolved same day** (CSP still open) |
-| 4 | The lockfile the build claims to use does not exist | Medium | Yes |
+| 4 | The lockfile the build claims to use does not exist | Medium | **Resolved same day** |
 | 5 | Four nightly backups are stranded on the one disk | Medium | **Resolved same day** |
-| 6 | The API container has a writable root filesystem | Low-medium | Yes |
-| 7 | `postcss` HIGH advisory in all three frontends | Low | Yes, one command |
+| 6 | The API container has a writable root filesystem | Low-medium | **Resolved same day** |
+| 7 | `postcss` HIGH advisory in all three frontends | Low | **No — needs a Next major** |
 
 Nothing found is being actively exploited as far as anything visible shows, and
 nothing found exposes client data to the internet today. Findings 1 and 2 are
@@ -80,7 +80,25 @@ Check the Python pin at the same time. `backend/Dockerfile` and CI pin 3.13
 because Django 5.1 breaks on 3.14; whether 5.2 changes that is worth
 establishing during the upgrade rather than assumed either way.
 
-## 2. The admin login bypasses the lockout and every throttle — HIGH
+## 2. The admin login bypasses the lockout and every throttle — HIGH — RESOLVED 2026-09-09
+
+> **Closed the same day, both halves.** `AUTHENTICATION_BACKENDS` now names a
+> single `IdentityBackend` that routes the admin's password check through
+> `accounts/identity.py`, so the admin shares the API's lockout — the same
+> counter, not a second one. And `django-ratelimit`, a dependency carried for a
+> year and imported nowhere, finally earns its place: 10 POSTs a minute per
+> address on the login view, which covers what a per-account lockout cannot —
+> one password sprayed across forty addresses never trips a five-attempt
+> counter. Twelve tests, six of which fail on the previous commit.
+>
+> Two things fell out of it that were not in this finding. Five views hardcoded
+> the old backend path into `login()`, which stamps it into the session, so
+> changing the setting signed the entire suite out — a stale value there does
+> not raise, it just reads as signed out. And writing the rate limit exposed
+> that the cache was never checked: settings now refuse to boot outside DEBUG
+> on the local-memory cache, because unshared counters mean each gunicorn
+> worker enforces its own copy.
+
 
 `https://api.genmars.co.ke/admin/login/` returns 200 to the internet.
 
@@ -152,7 +170,26 @@ scripts for hydration, so a CSP written without testing takes the dashboard
 down, and it deserves its own change with a rollback path rather than being
 bundled in with headers that cannot break anything.
 
-## 4. There is no lockfile — MEDIUM
+## 4. There is no lockfile — MEDIUM — RESOLVED 2026-09-09
+
+> **Closed the same day.** `requirements.lock.txt` exists, the Dockerfile
+> installs from it, and `scripts/check_lockfile.py` runs in CI so a version
+> bumped in `requirements.txt` and not regenerated fails the build instead of
+> silently reaching nothing.
+>
+> It is resolved inside `python:3.13-slim` — the image's own base — rather than
+> from the founder's 3.14 venv, because resolution reads the interpreter
+> version and a laptop freeze can pin what production will never install. Two
+> independent resolves were compared and agreed on all 29 packages; the one
+> difference was `pip` itself, which the first run included via `--all` and
+> which has been removed, because a requirements file that pins pip has pip
+> upgrading itself mid-install.
+>
+> **It pins versions, not hashes**, and its header says so rather than letting
+> it be mistaken for supply-chain verification. Hashes need `--require-hashes`,
+> which needs pip-tools — a new dependency, which Charter 03 §I does not admit
+> while what is here does the job.
+
 
 `backend/requirements.txt` opens with:
 
@@ -214,7 +251,16 @@ This is the easy half, and it has been outstanding for four days.
 `chown` what is stuck, and a `chown --reference` in `backup.sh` when it runs as
 root so it stops recurring.
 
-## 6. The API container has a writable root filesystem — LOW-MEDIUM
+## 6. The API container has a writable root filesystem — LOW-MEDIUM — RESOLVED 2026-09-09
+
+> **Closed the same day.** `read_only: true` with a `noexec` tmpfs at `/tmp`.
+> The compose file had documented a decision *against* this, on two grounds —
+> Python bytecode caches and gunicorn's scratch dir — and both had stopped
+> being true: `PYTHONDONTWRITEBYTECODE=1` is set twice in the Dockerfile, and
+> gunicorn's scratch defaults to `/tmp`. Confirmed rather than argued:
+> `docker diff` on the running container listed three paths, all of them mount
+> points, and no written file.
+
 
 ```
 genmars-portal-api  user=10002  readonly=false  caps=[ALL dropped]
@@ -234,10 +280,25 @@ larger part of the work and is done.
 `</style>` in stringify output; arbitrary file read) and one moderate (`next`,
 via the same) in each of the three frontends. A fix is available in all three.
 
-Reachability is poor: postcss processes CSS we author, at build time, and
-there is no path by which an attacker supplies stylesheet input. It is a
-maintenance item rather than an exposure — but it is one command, and a
-permanently non-empty `npm audit` is how the next advisory gets skimmed past.
+**Correction, made the same day: "one command" was wrong.** `npm audit fix`
+changes nothing here. The only remedy npm offers is `next@16.3.4`, a
+**semver-major** upgrade from the 15.5.x these three run — which `audit fix`
+declines without `--force`, correctly. This is a framework upgrade across three
+applications, not a maintenance command, and it should be planned rather than
+done as a drive-by.
+
+Reachability is poor, and worth stating precisely because "poor" is doing real
+work here. All four advisories require postcss to *process* attacker-influenced
+CSS — an unescaped `</style>` in stringify output, or a `sourceMappingURL`
+comment pointing at a file to read. postcss runs at **build** time on CSS from
+our own source tree; there is no path by which anybody else supplies stylesheet
+input. It is present in the standalone runtime bundle (Next ships its
+dependency tree) but the server does not invoke it: CSS is compiled to static
+chunks at build. gen-website has no node process in production at all.
+
+So it stays open, with a note rather than a rushed upgrade — and a permanently
+non-empty `npm audit` is still how the next advisory gets skimmed past, which
+is the argument for scheduling the Next 16 move rather than leaving it.
 
 ---
 
@@ -295,12 +356,17 @@ not exist**:
    call carried `--batch`, so it could only ever fail, and it failed by
    announcing the encryption key was lost.
 3. `requirements.lock.txt` — named in `requirements.txt` as the lockfile. Never
-   created (finding 4, still open).
+   created (finding 4, now closed, with a CI check that it stays true).
+
+A fourth turned up while fixing the third: a comment in the new rate-limit code
+claiming the deploy check asserted Redis. It did not. That one was caught before
+it was committed, by the author re-reading his own comment and checking — which
+is the only reason it is a footnote rather than a fifth entry.
 
 Each was written in good faith as a description of what *should* be true. The
-failure mode is identical in all three: **a documented control that nothing
+failure mode is identical in all of them: **a documented control that nothing
 tests reads exactly like a working one**, and it stops the next person looking.
-The first two were fixed on 2026-09-09.
+All four were fixed on 2026-09-09.
 
 A rule worth adopting: a control gets a test, or it comes out of the
 documentation. There is no third state worth keeping.
@@ -309,17 +375,22 @@ documentation. There is no third state worth keeping.
 
 ## Recommended order
 
-Findings 1, 3 and 5 were closed on the day of the audit. What is left, in the
-order worth taking it:
+Findings 1 through 6 were closed on the day of the audit. What is left:
 
-1. **The admin login** (finding 2) — now the largest open exposure. An edge
-   rate-limit is an hour's work and removes most of the risk while the backend
-   fix is written.
-2. **The lockfile** (finding 4) — and it is now the only one of the three
-   "documented control that does not exist" cases still standing.
-3. **A CSP for operations** (the open half of finding 3) — needs writing,
-   reloading and walking the app, with the previous file kept to roll back to.
-4. **The read-only filesystem** (6) and **`npm audit fix`** (7).
+1. **Finish the CSP** (the open half of finding 3). It is deployed
+   **Report-Only**, which measures without blocking. Somebody has to open the
+   dashboard with the console visible and walk every screen — a CSV export, the
+   search palette, the theme toggle — then rename the header to
+   `Content-Security-Policy` and reload. Until that happens it is a
+   measurement, not a control, and `deploy/ops.caddy` says so in those words.
+2. **Next 16** (finding 7). A major upgrade across three applications, for
+   advisories that are not reachable in any of them. Schedule it; do not rush
+   it.
+
+Three of the four "documented control that does not exist" cases are now
+closed — the identity boundary check, the restore drill, and the lockfile. The
+fourth was found while fixing the third: a comment claiming the deploy check
+asserted Redis, which it did not, and now does.
 
 ## Related
 
