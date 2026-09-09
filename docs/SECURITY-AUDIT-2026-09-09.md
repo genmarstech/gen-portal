@@ -98,6 +98,34 @@ establishing during the upgrade rather than assumed either way.
 > that the cache was never checked: settings now refuse to boot outside DEBUG
 > on the local-memory cache, because unshared counters mean each gunicorn
 > worker enforces its own copy.
+>
+> **The first version of the rate limit was wrong, and testing the live control
+> is what found it.** `django-ratelimit`'s `key="ip"` reads `REMOTE_ADDR`, which
+> behind Caddy is the Docker gateway — `172.28.0.1` for the entire internet — so
+> the limit was one shared budget rather than per address. It failed safe
+> (spraying still hit the wall) but one attacker holding it open would have
+> denied the founder the admin, and the code called it "per-IP". Fixed in
+> `c13c7a2` with `RATELIMIT_IP_META_KEY` pointing at a callable that prefers
+> `X-Real-IP` and falls back to `REMOTE_ADDR`; a bare header name raises
+> `ImproperlyConfigured` — a 500 — whenever the header is absent.
+>
+> `accounts/throttling.py` had already solved this for DRF with `NUM_PROXIES = 1`
+> and warned about it in as many words. The warning was read hours earlier and
+> the trap was walked into anyway, with a different library.
+>
+> Verified in the deployed process on 2026-09-09, not inferred:
+>
+> ```
+> RATELIMIT_IP_META_KEY = accounts.auth_backends.client_ip
+> proxied request resolves to: 102.210.25.155   (the real caller)
+> no header, falls back to:    172.28.0.1       (no 500)
+> attacker 203.0.113.77 after 12: should_limit True
+> founder  198.51.100.9 after  1: should_limit False
+> ```
+>
+> **Still unverified in production: the account lockout half.** Confirming it
+> means locking a real staff account, so it rests on 12 tests and the wiring
+> check. A throwaway staff account, locked and deleted, would settle it.
 
 
 `https://api.genmars.co.ke/admin/login/` returns 200 to the internet.
