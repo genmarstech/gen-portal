@@ -150,6 +150,31 @@ if [ -n "$BACKUP_RECIPIENT" ]; then
     fi
     chmod 600 "${OFFSITE_DIR}/${name}.gpg"
 
+    # ── HAND THE ENCRYPTED COPY TO THE SAME OWNER AS THE DUMP ──────────────
+    #
+    # The dump is chowned twenty lines above with the reasoning spelled out:
+    # "works only when run by root" is the kind of thing discovered during an
+    # incident. That reasoning was never applied to THIS file, and it is the
+    # one that has to leave the building.
+    #
+    # gpg writes it as whoever runs this script. Under the systemd timer that
+    # is root, mode 600 makes it root-only, and scripts/pull-backups.sh runs as
+    # edwin — so every nightly copy became uncollectable the moment it was
+    # made. Found on 2026-09-09: four nights of backups existed in exactly one
+    # place, and that place was the machine the backups are for. The pull did
+    # not fail loudly; it simply skipped them.
+    #
+    # $owner is the owner of BACKUP_DIR, already resolved for the dump. Same
+    # source of truth, so the two files cannot drift apart.
+    chown "$owner" "${OFFSITE_DIR}/${name}.gpg" 2>/dev/null || true
+
+    # Every copy, not just tonight's — the same argument as the dumps above,
+    # and it makes this self-healing: one run as root repairs whatever earlier
+    # runs stranded, instead of needing somebody to notice and chown by hand.
+    chown "$owner" "$OFFSITE_DIR" 2>/dev/null || true
+    find "$OFFSITE_DIR" -maxdepth 1 -name 'portal-*.dump.gpg' -type f \
+        -exec chown "$owner" {} + 2>/dev/null || true
+
     # ── prove it is addressed to the key we think it is ─────────────────────
     #
     # gpg encrypting "successfully" to the wrong key looks identical to
