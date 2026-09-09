@@ -285,3 +285,50 @@ def test_production_refuses_to_boot_on_an_unshared_cache():
         import config.settings
 
         importlib.reload(config.settings)
+
+
+def test_the_limit_counts_per_caller_not_per_proxy(client, staff):
+    """
+    The defect this was shipped with on 2026-09-09, stated as behaviour.
+
+    django-ratelimit's key="ip" reads REMOTE_ADDR, which behind Caddy is the
+    Docker gateway for every request on the internet. The limit was therefore
+    one shared budget: it still stopped spraying, but one attacker could hold
+    it open and deny the founder the admin, and the code called it "per-IP".
+
+    Exhausting one address must not spend another's. This fails without
+    RATELIMIT_IP_META_KEY, because both clients below look identical to it.
+    """
+    attacker = {"HTTP_X_REAL_IP": "203.0.113.10"}
+    founder = {"HTTP_X_REAL_IP": "198.51.100.20"}
+
+    last = None
+    for _ in range(ADMIN_LOGIN_ATTEMPTS + 2):
+        last = client.post(
+            ADMIN_LOGIN,
+            {"username": "spray@example.invalid", "password": "x"},
+            **attacker,
+        )
+    assert last.status_code == 403, "the attacker's own budget must run out"
+
+    # The founder, from a different address, is unaffected.
+    mine = client.post(
+        ADMIN_LOGIN,
+        {"username": EMAIL, "password": PASSWORD, "next": "/admin/"},
+        **founder,
+    )
+    assert mine.status_code != 403, (
+        "one address exhausting the limit locked out a different address — "
+        "the limit is counting the proxy, not the caller"
+    )
+
+
+def test_a_missing_forwarded_header_does_not_500(client, staff):
+    """
+    RATELIMIT_IP_META_KEY set to a bare header name raises ImproperlyConfigured
+    when the header is absent, which is a 500 on the login form. The callable
+    falls back to REMOTE_ADDR instead — this is the test client, which sends no
+    X-Real-IP at all.
+    """
+    response = _attempt(client, EMAIL, "wrong-password")
+    assert response.status_code == 200

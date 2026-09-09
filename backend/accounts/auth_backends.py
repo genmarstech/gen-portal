@@ -114,7 +114,8 @@ class IdentityBackend(ModelBackend):
 # once each against forty staff addresses never trips a five-attempt counter,
 # because no counter ever reaches two.
 #
-# So the address doing the trying is limited as well. Ten POSTs a minute: an
+# So the address doing the trying is limited as well — genuinely per address,
+# via client_ip below, and not per proxy. Ten POSTs a minute: an
 # order of magnitude above any honest use of a login form — nobody signs into
 # the admin ten times a minute — and far below the rate that makes spraying
 # worth doing.
@@ -135,6 +136,21 @@ class IdentityBackend(ModelBackend):
 # multiplying the real limit by the worker count. settings.CACHES is Redis
 # whenever REDIS_URL is set; the deploy check asserts it, so this is not a
 # silent degradation waiting to happen.
+#
+# ── AND IT COUNTS AGAINST THE CALLER, NOT AGAINST CADDY ────────────────────
+#
+# django-ratelimit's `key="ip"` reads REMOTE_ADDR, and behind the proxy EVERY
+# request arrives from the Docker gateway — 172.28.0.1, the same value for the
+# whole internet. Shipped that way on 2026-09-09, the limit was global: ten
+# admin sign-in attempts a minute for everybody combined. It still stopped
+# password spraying, so it failed safe, but it also meant one attacker could
+# deny the founder the admin by holding the budget open, and the comments here
+# called it "per-IP" when it was nothing of the sort.
+#
+# accounts/throttling.py had already solved this for DRF, with NUM_PROXIES = 1
+# and a docstring warning in as many words: "Getting this wrong would throttle
+# the proxy rather than the caller, which means one attacker locks out
+# everyone." A second library needed telling separately.
 
 from django.contrib.auth.views import LoginView  # noqa: E402
 from django_ratelimit.decorators import ratelimit  # noqa: E402
@@ -142,9 +158,42 @@ from django_ratelimit.decorators import ratelimit  # noqa: E402
 ADMIN_LOGIN_RATE = "10/m"
 
 
+def client_ip(request) -> str:
+    """
+    The address the request actually came from.
+
+    Wired up as RATELIMIT_IP_META_KEY, which django-ratelimit calls for every
+    `key="ip"` rule.
+
+    ── WHY A CALLABLE AND NOT THE HEADER NAME ─────────────────────────────────
+    #
+    RATELIMIT_IP_META_KEY accepts a plain META key, and setting it to
+    "HTTP_X_REAL_IP" would be shorter — and would raise ImproperlyConfigured,
+    i.e. a 500, on any request that arrives without the header. Every request
+    through Caddy has one; a request made directly against the container while
+    debugging does not, and neither would anything after a proxy change. A
+    login form that 500s because a header is missing is a worse failure than
+    the one being fixed.
+
+    ⚠ THE TRUST HERE COMES FROM THE PROXY, NOT FROM THE HEADER.
+
+    A client can send any X-Real-IP it likes. This is only safe because
+    deploy/genmars-portal.caddy sets `header_up X-Real-IP {remote_host}`, which
+    REPLACES whatever arrived, and because compose.yaml publishes the API on
+    127.0.0.1 only, so nothing reaches gunicorn without passing through Caddy.
+    Break either of those and this becomes an unlimited-attempts header that an
+    attacker rotates at will. Do not copy this pattern to a service that is
+    directly reachable.
+    """
+    return request.META.get("HTTP_X_REAL_IP") or request.META.get(
+        "REMOTE_ADDR", ""
+    )
+
+
 def rate_limited_admin_login(view):
     """
-    Wrap the admin's login view in a per-IP rate limit.
+    Wrap the admin's login view in a rate limit, counted per calling
+    address — see client_ip above for how that address is established.
 
     `block=True` returns 403 rather than letting the request through with a
     flag set. A login form is the one place where failing closed is

@@ -100,6 +100,16 @@ AUTH_USER_MODEL = "accounts.User"
 # the next line down.
 AUTHENTICATION_BACKENDS = ["accounts.auth_backends.IdentityBackend"]
 
+# Where django-ratelimit reads the caller's address from.
+#
+# Without this it uses REMOTE_ADDR, which behind Caddy is the Docker gateway
+# for every request on the internet — so a "per-IP" limit is really one shared
+# budget, and one attacker holding it open denies the admin to everyone.
+# DRF's throttles avoid the same trap with NUM_PROXIES below; this is the same
+# fix for the other library. The callable, and the proxy assumptions it rests
+# on, are documented in accounts/auth_backends.py.
+RATELIMIT_IP_META_KEY = "accounts.auth_backends.client_ip"
+
 # Argon2 first. Django ships PBKDF2 as the default; Argon2 is the stronger
 # choice and is what argon2-cffi is in requirements.txt for. PBKDF2 stays in the
 # list so hashes written before this change still verify and get upgraded on the
