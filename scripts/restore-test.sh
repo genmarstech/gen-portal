@@ -82,10 +82,23 @@ case "$dump_name" in
 *.gpg)
     echo "==> Decrypting (this is the half of the test that proves the key works)"
     decrypted="${BACKUP_DIR}/.restore-check-$$.dump"
-    if ! gpg --batch --yes --quiet --output "$decrypted" --decrypt "$dump_path"; then
+    # NO --batch. The private key is passphrase-protected, and --batch tells
+    # gpg never to prompt — so the drill this branch exists for failed with
+    # "No passphrase given" and a message announcing the key was lost. It was
+    # not; nobody had been asked for it. Without --batch, gpg uses the agent,
+    # prompting once and caching for the rest of the session.
+    if ! gpg --yes --quiet --output "$decrypted" --decrypt "$dump_path"; then
         echo "FATAL: could not decrypt ${dump_name}." >&2
-        echo "       Every backup since encryption was switched on is unreadable" >&2
-        echo "       until the private key is restored. This is the emergency." >&2
+        echo >&2
+        # Ordered by likelihood, not by drama. The first two are ordinary and
+        # fixable in a minute; only the third is the emergency, and announcing
+        # the emergency for a mistyped passphrase is how a real one gets
+        # disbelieved later.
+        echo "  1. Wrong or unentered passphrase — try again." >&2
+        echo "  2. This machine does not hold the private key. Check with:" >&2
+        echo "       gpg --list-secret-keys ${BACKUP_RECIPIENT:-413CB8DF5FECF5F4}" >&2
+        echo "  3. If the key is genuinely gone, THAT is the emergency: every" >&2
+        echo "     backup since encryption was switched on is unreadable." >&2
         exit 1
     fi
     chmod 600 "$decrypted"
