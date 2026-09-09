@@ -23,11 +23,11 @@ because no STK push has ever been fired.
 
 | # | Finding | Severity | Fixable by us |
 |---|---|---|---|
-| 1 | Django 5.1 has been end-of-life since 2025-12-03 | **High** | Yes — 5.2 LTS |
+| 1 | Django 5.1 has been end-of-life since 2025-12-03 | **High** | **Resolved same day** |
 | 2 | The Django admin login bypasses the lockout and every throttle | **High** | Yes |
-| 3 | `ops.genmars.co.ke` ships almost no security headers | Medium-high | Yes, today |
+| 3 | `ops.genmars.co.ke` ships almost no security headers | Medium-high | **Resolved same day** (CSP still open) |
 | 4 | The lockfile the build claims to use does not exist | Medium | Yes |
-| 5 | Four nightly backups are stranded on the one disk | Medium | Yes, two commands |
+| 5 | Four nightly backups are stranded on the one disk | Medium | **Resolved same day** |
 | 6 | The API container has a writable root filesystem | Low-medium | Yes |
 | 7 | `postcss` HIGH advisory in all three frontends | Low | Yes, one command |
 
@@ -37,7 +37,17 @@ the two that would matter most in the hands of somebody trying.
 
 ---
 
-## 1. Django 5.1 is out of security support — HIGH
+## 1. Django 5.1 is out of security support — HIGH — RESOLVED 2026-09-09
+
+> **Closed the same day.** Django **5.2.17** and DRF **3.16.1**, both pinned in
+> `requirements.txt`; 867 tests pass, no missing migrations, `check --deploy`
+> clean, no deprecation warnings. Two things fell out of it: DRF had to move
+> too (3.15.2 declared support for Django 4.2 and 5.0 only, so it had been
+> running against 5.1 untested by anyone upstream for a year), and Django 5.2
+> fixed the `BaseContext.__copy__` defect that made Python 3.14 unusable — the
+> `conftest.py` shim is gone. The finding is left below as written, because an
+> audit that edits away what it found stops being a record of anything.
+
 
 `requirements.txt` pins `Django==5.1.*`. The installed version is **5.1.15**,
 which is the *final* release of that series.
@@ -105,7 +115,13 @@ already paid for under Charter 03 §I, and unused.
    happens to be well written — which is the same argument the identity
    boundary already makes.
 
-## 3. Operations ships almost no security headers — MEDIUM-HIGH
+## 3. Operations ships almost no security headers — MEDIUM-HIGH — RESOLVED 2026-09-09
+
+> **Closed the same day** except the CSP, which is deliberately still open —
+> see the note at the end of this section. `X-Frame-Options: DENY`, nosniff,
+> `Referrer-Policy`, COOP, CORP and `Permissions-Policy` are live on
+> `ops.genmars.co.ke`, and the `Server` header is stripped.
+
 
 Measured on 2026-09-09:
 
@@ -164,7 +180,17 @@ it in the Dockerfile, and let CI fail when it drifts. Or delete the sentence.
 The sentence being there while the file is not is the worst of the three
 states, because it stops anyone looking.
 
-## 5. Four nightly backups are stranded on one disk — MEDIUM
+## 5. Four nightly backups are stranded on one disk — MEDIUM — RESOLVED 2026-09-09
+
+> **Closed the same day, cause and all.** The stranded files were chowned, and
+> `scripts/backup.sh` now hands the encrypted copy to the owner of the backup
+> directory the same way it has always handed over the plaintext dump — so the
+> nightly root run stops recreating the problem. All 15 copies were pulled
+> off-box, and one was decrypted end to end on the laptop that holds the key:
+> 249,997 bytes beginning `PGDMP`. That is the first proof this project has
+> that an *encrypted* backup is readable; the weekly server-side test uses the
+> plaintext dump and structurally cannot show it.
+
 
 ```
 -rw------- 1 root  root  portal-20260906-021658.dump.gpg
@@ -283,15 +309,17 @@ documentation. There is no third state worth keeping.
 
 ## Recommended order
 
-1. **Django 5.2 LTS** (finding 1) — the largest exposure, and the clock has
-   been running nine months.
-2. **The admin login** (finding 2) — an edge rate-limit is an hour's work and
-   removes most of the risk while the backend fix is written.
-3. **The ops headers** (finding 3) — everything except CSP is safe to ship
-   immediately.
-4. **The backup ownership** (finding 5) — two commands, four days overdue.
-5. **The lockfile** (finding 4), then the read-only filesystem (6) and
-   `npm audit fix` (7).
+Findings 1, 3 and 5 were closed on the day of the audit. What is left, in the
+order worth taking it:
+
+1. **The admin login** (finding 2) — now the largest open exposure. An edge
+   rate-limit is an hour's work and removes most of the risk while the backend
+   fix is written.
+2. **The lockfile** (finding 4) — and it is now the only one of the three
+   "documented control that does not exist" cases still standing.
+3. **A CSP for operations** (the open half of finding 3) — needs writing,
+   reloading and walking the app, with the previous file kept to roll back to.
+4. **The read-only filesystem** (6) and **`npm audit fix`** (7).
 
 ## Related
 

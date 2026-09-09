@@ -1,7 +1,32 @@
 # Charter 03 §I — Django/DRF, PostgreSQL, Redis, Celery. Nothing new enters the
-# stack. Pinned to majors; lockfile is requirements.lock.txt.
-Django==5.1.*
-djangorestframework==3.15.*
+# stack. Pinned to majors.
+#
+# ⚠ THERE IS NO requirements.lock.txt. This block claimed one for months and
+#   the file has never existed — finding 4 of docs/SECURITY-AUDIT-2026-09-09.md.
+#   Until it does, these majors are resolved fresh from PyPI on every build, so
+#   two builds of one commit can install different code. Generate it or delete
+#   this note; do not leave a third state where the docs claim a control that
+#   is not there.
+#
+# ── DJANGO 5.2 IS AN LTS, AND THAT IS THE POINT ─────────────────────────────
+#
+# 5.1 reached end of life on 2025-12-03 and this ran nine months past it with
+# no security patches available to take. 5.1.15 was the final release of the
+# series, so the `5.1.*` pin — written to prevent surprise upgrades — had
+# become a pin against supported ones.
+#
+# 5.2 is supported until 2028-04-30. Do not move to 6.x on the next audit:
+# 6.1 buys fifteen months where this buys nineteen, and costs two majors of
+# churn to get there.
+Django==5.2.*
+
+# ── DRF MOVES WITH IT, NOT AFTER IT ─────────────────────────────────────────
+#
+# 3.15.2 declared support for Django 4.2 and 5.0 only. It had been running
+# against 5.1 unsupported for a year — working, but with nobody upstream
+# testing that combination. 3.16 declares 4.2, 5.0, 5.1 and 5.2, so this is
+# the first time in a while the pair is one somebody else also runs.
+djangorestframework==3.16.*
 psycopg[binary]==3.2.*
 django-environ==0.11.*
 gunicorn==23.0.*
