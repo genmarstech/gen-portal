@@ -252,10 +252,35 @@ services:
     cap_drop:
       - ALL
 
-    # NOT read_only. Python writes bytecode caches and gunicorn needs a
-    # scratch dir; forcing read-only here would buy very little and cost a class
-    # of confusing boot failures. The container is non-root with no capabilities,
-    # which is where the real protection is.
+    # ── READ-ONLY ROOT FILESYSTEM ───────────────────────────────────────────
+    #
+    # This said "NOT read_only" for months, on two grounds: Python writes
+    # bytecode caches, and gunicorn needs a scratch dir. Both were true when
+    # written and neither is true now, which is why the decision is reversed
+    # rather than merely overruled:
+    #
+    #   · PYTHONDONTWRITEBYTECODE=1 is set in backend/Dockerfile (twice — build
+    #     stage and runtime), so no .pyc is ever written.
+    #   · gunicorn's scratch dir defaults to /tmp, which the tmpfs below
+    #     provides — writable, in memory, and gone when the container stops.
+    #
+    # Checked rather than assumed: `docker diff genmars-portal-api` on the
+    # running container listed three paths, all of them mount points, and no
+    # written file at all.
+    #
+    # What it buys: an attacker who achieves execution cannot modify the image
+    # filesystem, so nothing they leave behind survives a restart. The container
+    # was already non-root with every capability dropped — this closes
+    # persistence, which those two do not.
+    #
+    # Uploads are unaffected. /app/media is a named volume and stays writable;
+    # read_only governs the image's own filesystem, not mounts.
+    #
+    # noexec on the tmpfs deliberately: /tmp is the obvious place to drop a
+    # binary and run it, and nothing here needs to execute out of it.
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777,noexec,nosuid,nodev
 
     deploy:
       resources:
