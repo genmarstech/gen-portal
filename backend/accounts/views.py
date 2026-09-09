@@ -31,6 +31,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import emails, identity
+from .auth_backends import SESSION_BACKEND
 from .models import EmailCode, Membership, User
 from .throttling import (
     CodeThrottle,
@@ -258,7 +259,7 @@ class SignInView(APIView):
         # login() cycles the session key, which is the session-fixation defence:
         # a key an attacker planted before sign-in is not the key that ends up
         # authenticated.
-        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+        login(request, user, backend=SESSION_BACKEND)
 
         # Signing in to an unverified account has to SEND the code, not just
         # route to the screen that asks for one. Without this you land on
@@ -296,7 +297,7 @@ class SignUpView(APIView):
             return _fail(e, status.HTTP_400_BAD_REQUEST)
 
         _issue_and_send(user, EmailCode.Purpose.VERIFY)
-        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+        login(request, user, backend=SESSION_BACKEND)
         return Response({"next": _verify_url(email)})
 
 
@@ -343,7 +344,7 @@ class VerifyView(APIView):
             return _fail(e, status.HTTP_400_BAD_REQUEST)
 
         if not request.user.is_authenticated:
-            login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+            login(request, user, backend=SESSION_BACKEND)
 
         # _destination, not a hard-coded DASHBOARD. Verifying an address is the
         # step BEFORE onboarding, so for most people finishing here the next
@@ -388,7 +389,7 @@ class ResetView(APIView):
 
         # Sign them in on the new password. They proved control of the inbox,
         # which is the same evidence sign-in would have asked for.
-        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+        login(request, user, backend=SESSION_BACKEND)
 
         # Signing in to an unverified account has to SEND the code, not just
         # route to the screen that asks for one. Without this you land on
@@ -429,7 +430,7 @@ class AcceptInviteView(APIView):
         except identity.AuthError as e:
             return _fail(e, status.HTTP_400_BAD_REQUEST)
 
-        login(request, user, backend="django.contrib.auth.backends.ModelBackend")
+        login(request, user, backend=SESSION_BACKEND)
         return Response({"next": _destination(user)})
 
 

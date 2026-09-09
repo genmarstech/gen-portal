@@ -27,6 +27,13 @@ PRODUCTION = {
     "CSRF_TRUSTED_ORIGINS": "https://app.genmars.co.ke",
     "EMAIL_BACKEND": "django.core.mail.backends.smtp.EmailBackend",
     "EMAIL_HOST_PASSWORD": "an-app-specific-password",
+    # Not about mail, but this dict is "what a correct production environment
+    # looks like" and a correct one has Redis: settings refuses to boot on the
+    # local-memory cache outside DEBUG, because unshared rate-limit counters
+    # are worth N times what they claim. Without this every test in the file
+    # would trip that guard and fail for a reason that has nothing to do with
+    # mail.
+    "REDIS_URL": "redis://redis:6379/0",
 }
 
 

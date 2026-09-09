@@ -84,6 +84,22 @@ DATABASES = {"default": env.db("DATABASE_URL", default="sqlite:///dev.sqlite3")}
 
 AUTH_USER_MODEL = "accounts.User"
 
+# ── EVERY DOOR GETS THE SAME LOCK ───────────────────────────────────────────
+#
+# This was unset, which means Django used the stock ModelBackend, which knows
+# nothing about User.locked_until. The consequence was not theoretical: the API
+# sign-in endpoint enforced a five-attempt lockout and a 10/min throttle while
+# /admin/login/ enforced neither, on the same accounts with the same passwords
+# — and the accounts that can use the admin are staff and superusers, which
+# read across every organisation. Argon2's cost was the only thing bounding an
+# attempt rate there. Finding 2 of docs/SECURITY-AUDIT-2026-09-09.md.
+#
+# ONE entry, not two. Listing ModelBackend after this one would restore exactly
+# what was wrong: Django tries each backend in turn and takes the first that
+# returns a user, so a locked account refused here would be waved through by
+# the next line down.
+AUTHENTICATION_BACKENDS = ["accounts.auth_backends.IdentityBackend"]
+
 # Argon2 first. Django ships PBKDF2 as the default; Argon2 is the stronger
 # choice and is what argon2-cffi is in requirements.txt for. PBKDF2 stays in the
 # list so hashes written before this change still verify and get upgraded on the
@@ -258,6 +274,29 @@ CACHES = {
         else {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}
     )
 }
+
+# ── AND IT IS CHECKED, BECAUSE THE FALLBACK FAILS SILENTLY ──────────────────
+#
+# The comment above has said "locmem is a development fallback only" since the
+# cache was configured. Nothing enforced it. A production boot with REDIS_URL
+# unset would come up healthy, serve every page, pass the smoke test — and
+# quietly give each gunicorn worker its own private set of counters, so every
+# throttle and the admin login limit would permit N times what they say, where
+# N is the worker count, and a redeploy would reset all of them to zero.
+#
+# That is worse than a limit that is switched off, because it reads as one that
+# is on. Same reasoning as the CSRF_TRUSTED_ORIGINS guard above: refuse to boot
+# rather than ship a control that only appears to be there.
+#
+# Written on 2026-09-09 alongside the admin login limit, which is the thing
+# that made an unshared counter unacceptable rather than merely untidy.
+if not DEBUG and "locmem" in CACHES["default"]["BACKEND"]:
+    raise ImproperlyConfigured(
+        "REDIS_URL is not set, so the cache is per-process local memory. "
+        "Rate limits and throttle counters live in the cache: unshared, each "
+        "worker would enforce its own copy and every limit would be worth N "
+        "times what it claims. Set REDIS_URL."
+    )
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Locale

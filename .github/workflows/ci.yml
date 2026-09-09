@@ -77,6 +77,11 @@ jobs:
           CSRF_TRUSTED_ORIGINS: https://app.genmars.co.ke,https://api.genmars.co.ke,https://ops.genmars.co.ke
           EMAIL_BACKEND: accounts.mail_backends.ResendBackend
           RESEND_API_KEY: re_ci_placeholder_not_a_real_key
+          # Nothing connects to it here — settings only reads the value to
+          # decide the cache backend. Without it the boot guard fires, which
+          # is the guard working: production on a per-process cache would give
+          # every worker its own rate-limit counter.
+          REDIS_URL: redis://redis:6379/0
         run: python manage.py check --deploy --fail-level WARNING
 
       # Migrations that exist but were never generated for a model change are a
