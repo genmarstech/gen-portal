@@ -233,6 +233,12 @@ REST_FRAMEWORK = {
         # this is the one endpoint reachable with a token rather than a session,
         # and a leaked key should not be able to fill the events table.
         "system": "120/min",
+        # Handing a signed-in person off to a sibling application. Fires once
+        # per sign-in, from a caller who is already authenticated.
+        "auth_sign_on": "30/min",
+        # A sibling's server swapping a code for an identity. Per client_id —
+        # see SignOnClientThrottle for why not per IP.
+        "auth_sign_on_token": "60/min",
         # Per-EMAIL, so rotating IPs does not buy an attacker more attempts at
         # one account, and nobody can be mail-bombed via the forgot form.
         "auth_email": "8/hour",

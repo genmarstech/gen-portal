@@ -77,6 +77,27 @@ urlpatterns = [
     path("ops/tiers/<int:pk>/price", views.TierPriceView.as_view(), name="ops-tier-price"),
     path("ops/activity", views.ActivityView.as_view(), name="ops-activity"),
 
+    # ---- engineering: which sibling applications may sign our people in ----
+    #
+    # Read by any staff account — the client_id and the registered addresses
+    # are public, and an engineer wiring up a sibling needs them. Every write
+    # is founder-only; see SignOnListView.
+    path(
+        "ops/engineering/sign-on",
+        views.SignOnListView.as_view(),
+        name="ops-sign-on",
+    ),
+    path(
+        "ops/engineering/sign-on/<int:pk>",
+        views.SignOnDetailView.as_view(),
+        name="ops-sign-on-detail",
+    ),
+    path(
+        "ops/engineering/sign-on/<int:pk>/secret",
+        views.SignOnSecretView.as_view(),
+        name="ops-sign-on-secret",
+    ),
+
     # ---- offers and internal work ----
     path("ops/offers", views.OfferListView.as_view(), name="ops-offers"),
     path("ops/offers/<int:pk>/action", views.OfferActionView.as_view(), name="ops-offer-action"),

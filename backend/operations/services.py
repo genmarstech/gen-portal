@@ -14,6 +14,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 
@@ -4564,3 +4565,150 @@ def close_change_request(
         order=change.order.reference,
     )
     return change
+
+
+# ── sibling sign-on ──────────────────────────────────────────────────────────
+#
+# Registering an application that can sign people in with a company account.
+# The flow itself is in accounts/identity.py; this is only the configuration
+# behind it, and it is founder-only for the reason CanManageAccess gives:
+# whoever decides which applications may authenticate our people is deciding
+# who has access to what, one step removed.
+
+
+def _clean_redirect_uris(values) -> list[str]:
+    """
+    Validate every address and reject duplicates.
+
+    Each one is checked individually so the message names the offending
+    address — a form that says "one of these is wrong" is a form somebody
+    fixes by deleting all of them.
+    """
+    from portal.models import validate_live_https_url
+
+    if not isinstance(values, list):
+        raise OperationsError("Redirect addresses must be a list.", "redirect_uris")
+
+    cleaned: list[str] = []
+    for raw in values:
+        uri = str(raw or "").strip()
+        try:
+            validate_live_https_url(uri)
+        except DjangoValidationError as exc:
+            raise OperationsError(" ".join(exc.messages), "redirect_uris") from None
+        if uri in cleaned:
+            raise OperationsError(f"{uri} is listed twice.", "redirect_uris")
+        cleaned.append(uri)
+    return cleaned
+
+
+@transaction.atomic
+def register_sign_on(*, actor: User, system) -> "SignOnApp":
+    """
+    Give a registered system a sign-on client_id. Off, and with no secret.
+
+    Deliberately inert on creation: a founder registers the application, then
+    adds where it lives, then issues a secret, then turns it on. Four steps
+    that could be one — but the one-step version means a half-configured app is
+    briefly a working door, and the failure mode of that is silent.
+    """
+    from portal.models import SignOnApp
+
+    existing = SignOnApp.objects.filter(system=system).first()
+    if existing is not None:
+        raise OperationsError(f"{system.name} is already registered for sign-on.")
+
+    app = SignOnApp.objects.create(
+        system=system,
+        client_id=identity.new_client_id(),
+        created_by=actor,
+    )
+    record(
+        actor=actor,
+        action=ActivityLog.Action.SIGN_ON_CONFIGURED,
+        subject=system.name,
+        summary=f"{system.name} registered for Genmars sign-in, turned off.",
+        system=system.slug,
+        client_id=app.client_id,
+    )
+    return app
+
+
+@transaction.atomic
+def configure_sign_on(*, actor: User, app, values: dict) -> "SignOnApp":
+    """
+    Change where an app may send people, who may go, and whether it is on.
+
+    Turning it ON is refused while it is not usable. The alternative is an
+    enabled app that still fails every sign-in, and an engineer reading
+    "enabled: true" while it does not work.
+    """
+    changed: list[str] = []
+
+    if "redirect_uris" in values:
+        cleaned = _clean_redirect_uris(values["redirect_uris"])
+        if cleaned != list(app.redirect_uris or []):
+            app.redirect_uris = cleaned
+            changed.append("redirect addresses")
+
+    if "audience" in values and values["audience"] != app.audience:
+        app.audience = values["audience"]
+        changed.append("audience")
+
+    if "is_enabled" in values and bool(values["is_enabled"]) != app.is_enabled:
+        wanted = bool(values["is_enabled"])
+        # "turned off" is filtered out because that is the very thing being
+        # changed; what blocks the change is anything ELSE still missing.
+        missing = [m for m in app.why_not_usable() if m != "turned off"]
+        if wanted and missing:
+            raise OperationsError(
+                f"{app.system.name} cannot be turned on yet: {', '.join(missing)}.",
+                "is_enabled",
+            )
+        app.is_enabled = wanted
+        changed.append("turned on" if wanted else "turned off")
+
+    if not changed:
+        return app
+
+    app.save()
+
+    turned_off = "turned off" in changed
+    record(
+        actor=actor,
+        action=(
+            ActivityLog.Action.SIGN_ON_DISABLED
+            if turned_off
+            else ActivityLog.Action.SIGN_ON_CONFIGURED
+        ),
+        subject=app.system.name,
+        summary=f"{app.system.name} sign-in: {', '.join(changed)}.",
+        system=app.system.slug,
+        # The addresses are not secret — they are public endpoints of the
+        # sibling — and knowing WHICH address was added is the whole value of
+        # the entry when a redirect turns up that nobody remembers approving.
+        redirect_uris=list(app.redirect_uris or []),
+        audience=app.audience,
+        enabled=app.is_enabled,
+    )
+    return app
+
+
+def issue_sign_on_secret(*, actor: User, app) -> str:
+    """
+    Mint a new secret and return it ONCE. The old one stops working now.
+
+    The plaintext is returned to exactly one caller and must not be logged,
+    stored, or put in anything cached. The log line below records that a secret
+    was issued and by whom — never the secret, and never its prefix, which
+    would be a free head start on it.
+    """
+    issued = identity.issue_client_secret(app)
+    record(
+        actor=actor,
+        action=ActivityLog.Action.SIGN_ON_SECRET_ISSUED,
+        subject=app.system.name,
+        summary=f"A new sign-in secret was issued for {app.system.name}.",
+        system=app.system.slug,
+    )
+    return issued.secret

@@ -14,4 +14,15 @@ urlpatterns = [
     path("auth/reset", views.ResetView.as_view(), name="reset"),
     path("auth/accept-invite", views.AcceptInviteView.as_view(), name="accept-invite"),
     path("auth/change-password", views.ChangePasswordView.as_view(), name="change-password"),
+
+    # Signing in to a sibling application with a Genmars account. See the
+    # section at the foot of views.py for which of these a browser calls and
+    # which one a sibling's server calls.
+    path("auth/sign-on/app", views.SignOnAppView.as_view(), name="sign-on-app"),
+    path(
+        "auth/sign-on/authorize",
+        views.SignOnAuthorizeView.as_view(),
+        name="sign-on-authorize",
+    ),
+    path("auth/sign-on/token", views.SignOnTokenView.as_view(), name="sign-on-token"),
 ]

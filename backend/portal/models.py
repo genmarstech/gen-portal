@@ -18,11 +18,13 @@ own release.
 
 from __future__ import annotations
 
+import ipaddress
 from datetime import date, timedelta
 from pathlib import Path
 from decimal import Decimal
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
@@ -1552,6 +1554,14 @@ class ActivityLog(models.Model):
         CHANGE_DECIDED = "change.decided", "Change request approved or declined"
         CHANGE_CLOSED = "change.closed", "Change request closed"
 
+        # Which sibling application may sign people in with a company account,
+        # and who holds the secret that lets it. Configuration only — an
+        # individual sign-in is a SignOnGrant row, which is a better record of
+        # it than a log line, and writing both would be writing it twice.
+        SIGN_ON_CONFIGURED = "sign_on.configured", "Sibling sign-on configured"
+        SIGN_ON_SECRET_ISSUED = "sign_on.secret_issued", "Sibling sign-on secret issued"
+        SIGN_ON_DISABLED = "sign_on.disabled", "Sibling sign-on turned off"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -2264,6 +2274,347 @@ class SystemEvent(models.Model):
 
     def __str__(self) -> str:
         return f"{self.system.slug}: {self.message[:60]}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Signing in to a sibling application with a Genmars account
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# See SignOnApp below for what this is and, more importantly, what it is not.
+# The flow itself lives in accounts/identity.py, behind the identity boundary
+# with every other authentication operation in this project.
+
+
+LOCAL_HOSTNAMES = frozenset(
+    {"localhost", "ip6-localhost", "ip6-loopback", "broadcasthost"}
+)
+
+# RFC 6761 and RFC 6762 reserve these. None of them can be a live service.
+RESERVED_TLDS = frozenset(
+    {"local", "localhost", "test", "invalid", "example", "internal", "home", "lan"}
+)
+
+
+def validate_live_https_url(value: str) -> None:
+    """
+    A sign-on redirect must be a LIVE address, not a developer's laptop.
+
+    ══════════════════════════════════════════════════════════════════════════
+    WHY LOCALHOST IS REFUSED RATHER THAN DISCOURAGED
+
+    A redirect URI is where this portal sends a person holding a one-time code
+    that becomes their identity. `http://localhost:3000/callback` registered on
+    a production app means anyone who can make a browser follow that redirect
+    on their own machine — a different person's machine — receives the code.
+    The address is not a place; it is "wherever the victim is".
+
+    Plain http is refused for the same class of reason: the code would cross
+    the network in clear, and so would every later session cookie the sibling
+    sets against it.
+
+    So this is a hard validator on the model, not advice in a help string. A
+    developer testing a sibling application registers a real https host, or
+    exercises the flow against a test app they registered with one.
+    ══════════════════════════════════════════════════════════════════════════
+
+    Refused, and why:
+
+      not https              the code and everything after it would be readable
+      no host                nothing to send anyone to
+      an IP literal          a live service has a name; an IP is a machine that
+                             moves, and certificates for one are rare enough
+                             that this is nearly always a dev shortcut
+      localhost / 127.0.0.1  "wherever the victim is", as above
+      .local .test          reserved for local and testing use (RFC 6761/6762)
+      .localhost .internal
+      .example .invalid
+      no dot in the host     a bare name resolves differently on every network
+      a query or a fragment  the code is appended as the query, so the result
+                             must be unambiguous — see `redirect_with`
+      userinfo in the URL    https://a:b@host is a phishing shape, not an app
+    """
+    from urllib.parse import urlsplit
+
+    raw = (value or "").strip()
+    if not raw:
+        raise ValidationError("A redirect address is required.")
+    if len(raw) > 500:
+        raise ValidationError("That redirect address is too long.")
+
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        raise ValidationError("That is not a valid web address.") from None
+
+    if parts.scheme != "https":
+        raise ValidationError(
+            f"{raw} must start with https://. A sign-on link carries a code "
+            "that becomes somebody's identity, and http would send it in clear."
+        )
+
+    if parts.username or parts.password:
+        raise ValidationError("A redirect address must not contain a username or password.")
+
+    if parts.query or parts.fragment:
+        raise ValidationError(
+            f"{raw} must have no query string and no #fragment — the one-time "
+            "code is appended as the query, and it has to be unambiguous."
+        )
+
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise ValidationError("That address has no host.")
+
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        raise ValidationError(
+            f"{raw} points at an IP address. Register the hostname the service "
+            "is actually reached by — an address is a machine, not a service."
+        )
+
+    if host in LOCAL_HOSTNAMES or host.split(".")[-1] in RESERVED_TLDS:
+        raise ValidationError(
+            f"{raw} is a local or reserved address ({host}). A sibling "
+            "application has to be registered against the live https address "
+            "people really use."
+        )
+
+    if "." not in host:
+        raise ValidationError(
+            f"{raw} has no domain ({host}). A bare hostname resolves to "
+            "something different on every network it is typed into."
+        )
+
+
+class SignOnApp(models.Model):
+    """
+    A sibling application allowed to sign people in with their Genmars account.
+
+    ══════════════════════════════════════════════════════════════════════════
+    ONE SET OF COMPANY ACCOUNTS. THE SIBLINGS DO NOT KEEP THEIR OWN.
+
+    business-os and anything after it must not grow a users table, a password
+    column, or a signup form. A person has a Genmars account or they do not get
+    in — and if they do not have one, they are sent here to make one, not
+    given a second identity somewhere else.
+
+    That is what makes deactivating somebody mean something. `is_active` on one
+    User row ends their access to every company application at once. With a
+    second account store, revoking access becomes a checklist, and a checklist
+    is how a leaver keeps a login for eight months.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHAT A SIBLING GETS, AND WHAT IT DOES NOT ───────────────────────────────
+
+    It gets ONE answer to ONE question: "who is the person holding this code?"
+    Delivered once, in exchange for a code that dies on use, over a call it
+    makes from its own server with its own secret.
+
+    It does not get a token it can keep, a way to read anything from the
+    portal, a way to act as the person, or a way to ask about anybody else.
+    There is no refresh, no scope parameter and no API behind this — because
+    the moment a sibling can hold a credential that keeps working, a compromise
+    of the smallest application in the company becomes a compromise of the
+    accounts system.
+
+    This mirrors the direction of trust already stated on `System`: what flows
+    is inward. `SystemKey` lets a child report on itself; this lets a child ask
+    one question about a person standing in front of it. Neither reaches in.
+
+    ── DELIBERATELY NOT HERE ───────────────────────────────────────────────────
+
+    A sibling is told who somebody is at the moment they sign in, and nothing
+    afterwards. If that person is deactivated an hour later, the sibling's own
+    session keeps working until it expires. Fixing that needs the sibling to
+    re-ask on a timer, or a revocation feed it subscribes to; neither is worth
+    building before a second sibling exists. Until then, session lifetimes in
+    the siblings must be short enough that this is survivable, and that is a
+    thing to state when one is registered rather than discover afterwards.
+    """
+
+    class Audience(models.TextChoices):
+        """
+        Who may sign in. NEITHER option admits a stranger.
+
+        The rule the founder asked for is the floor, not the ceiling: an
+        account in the company accounts system comes first, always. This only
+        decides whether client accounts also reach a given sibling.
+        """
+
+        STAFF = "staff", "Genmars staff only"
+        ANY = "any", "Any verified account, staff or client"
+
+    system = models.OneToOneField(
+        System,
+        on_delete=models.CASCADE,
+        related_name="sign_on",
+        help_text=(
+            "The registered system this signs people in to. Registering it as "
+            "a system first is deliberate: an application nobody owns and "
+            "nobody monitors should not be issuing our identities."
+        ),
+    )
+
+    # Public. Travels in a URL, appears in logs, is not a secret and must never
+    # be treated as one.
+    client_id = models.CharField(max_length=64, unique=True, db_index=True)
+
+    # Secret. Same treatment as SystemKey: Argon2 through the configured
+    # hashers, a short clear prefix kept only so a presented secret can be
+    # looked up without hashing against every row, and shown exactly once.
+    secret_prefix = models.CharField(max_length=12, db_index=True, blank=True)
+    secret_hashed = models.CharField(max_length=255, blank=True)
+    secret_set_at = models.DateTimeField(null=True, blank=True)
+
+    redirect_uris = models.JSONField(
+        default=list,
+        blank=True,
+        help_text=(
+            "Exact https addresses this app may be sent back to. Matched "
+            "whole, never by prefix — a prefix match on https://app.example/ "
+            "also matches https://app.example.attacker.com/."
+        ),
+    )
+
+    audience = models.CharField(
+        max_length=8, choices=Audience.choices, default=Audience.STAFF
+    )
+
+    is_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Off until a founder turns it on. A newly registered app with no "
+            "secret and no redirect address should not be a working door."
+        ),
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="sign_on_apps_made",
+        limit_choices_to={"is_staff": True},
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["system__name"]
+
+    def __str__(self) -> str:
+        return f"sign-on: {self.system.slug}"
+
+    @property
+    def has_secret(self) -> bool:
+        return bool(self.secret_hashed)
+
+    @property
+    def is_usable(self) -> bool:
+        """
+        Enabled, holding a secret, and knowing where to send people.
+
+        All three, because each one alone produces a different confusing
+        failure at a different moment — and the operations screen shows this
+        rather than three green ticks a person has to combine themselves.
+        """
+        return bool(self.is_enabled and self.has_secret and self.redirect_uris)
+
+    def why_not_usable(self) -> list[str]:
+        """The missing pieces, in the words the screen shows."""
+        missing = []
+        if not self.redirect_uris:
+            missing.append("no redirect address registered")
+        if not self.has_secret:
+            missing.append("no secret issued")
+        if not self.is_enabled:
+            missing.append("turned off")
+        return missing
+
+    def admits(self, user) -> bool:
+        """
+        Whether this person may sign in to this application.
+
+        Three conditions, and the account one is not configurable:
+
+          · a real, active account in the company accounts system
+          · a verified email address — an identity we hand to another
+            application must be one somebody proved they own
+          · the audience rule, which only decides whether CLIENTS get in
+        """
+        if not (user and user.is_authenticated and user.is_active):
+            return False
+        if not user.is_email_verified:
+            return False
+        if self.audience == self.Audience.STAFF:
+            return bool(user.is_staff)
+        return True
+
+    def allows_redirect(self, uri: str) -> bool:
+        """
+        Exact match against the registered list.
+
+        Whole-string on purpose. Prefix matching is the classic way this goes
+        wrong: allowing anything under https://app.example/ also allows
+        https://app.example.attacker.test/, which is a different site.
+        """
+        return (uri or "").strip() in set(self.redirect_uris or [])
+
+
+class SignOnGrant(models.Model):
+    """
+    A one-time code standing in for "this person, just now, for that app".
+
+    ══════════════════════════════════════════════════════════════════════════
+    SHORT-LIVED, SINGLE-USE, HASHED, AND BOUND TO ONE REDIRECT ADDRESS.
+
+    All four, because this row is briefly worth as much as a password:
+
+      hashed          a database dump or a backup on a laptop must not contain
+                      anything that can be replayed
+      single-use      a code in a browser history, a referrer header or a
+                      server log is spent before anyone finds it there
+      short-lived     it is redeemed by a server that already has the code,
+                      seconds after being issued. Ninety seconds is generous.
+      bound           redeeming it requires naming the same redirect address it
+                      was issued for, so a code intercepted for one app cannot
+                      be spent at another
+    ══════════════════════════════════════════════════════════════════════════
+
+    Rows are kept after use rather than deleted. "This account signed in to
+    business-os at 14:02" is exactly what somebody reconstructing an incident
+    needs, and a table that empties itself cannot answer it.
+    """
+
+    app = models.ForeignKey(SignOnApp, on_delete=models.CASCADE, related_name="grants")
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sign_on_grants"
+    )
+
+    code_prefix = models.CharField(max_length=12, db_index=True)
+    code_hashed = models.CharField(max_length=255)
+
+    redirect_uri = models.CharField(max_length=500)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["app", "-created_at"], name="signon_grant_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.app.system.slug} ← {self.user_id}"
+
+    def is_redeemable(self, *, now=None) -> bool:
+        moment = now or timezone.now()
+        return self.used_at is None and moment < self.expires_at
 
 
 class SupportTicket(models.Model):

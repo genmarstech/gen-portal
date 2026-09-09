@@ -15,7 +15,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from django.db import models
-from django.http import HttpResponse
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404
 from rest_framework.parsers import FormParser, MultiPartParser
 from django.utils import timezone
@@ -47,6 +47,7 @@ from portal.models import (
     ProgressNote,
     Service,
     ServiceTier,
+    SignOnApp,
     System,
     SystemEvent,
     SecurityCheck,
@@ -121,6 +122,7 @@ from .serializers import (
     ServiceSerializer,
     ServiceWriteSerializer,
     SignatureSerializer,
+    SignOnConfigSerializer,
     VoidSerializer,
     InviteSerializer,
     MembershipSerializer,
@@ -2838,3 +2840,168 @@ class ChangeCloseView(StaffView):
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(ChangeRequestSerializer(change).data)
+
+
+# ── engineering: which sibling applications may sign our people in ───────────
+
+
+def _sign_on_row(system, app) -> dict:
+    """
+    One registered system, and its sign-on state if it has one.
+
+    Systems WITHOUT sign-on are listed too. A screen that shows only the
+    configured ones answers "what is set up" but not "what could be", and the
+    second question is the one somebody arrives with.
+    """
+    row = {
+        "system": {
+            "slug": system.slug,
+            "name": system.name,
+            "kind": system.get_kind_display(),
+            "status": system.status,
+            "url": system.url,
+        },
+        "registered": app is not None,
+    }
+    if app is None:
+        return row
+
+    last = app.grants.order_by("-created_at").first()
+    row["sign_on"] = {
+        "id": app.pk,
+        # Public. It travels in the sign-in URL; showing it is how an engineer
+        # configures the sibling without asking anyone.
+        "client_id": app.client_id,
+        "redirect_uris": list(app.redirect_uris or []),
+        "audience": app.audience,
+        "audience_label": app.get_audience_display(),
+        "is_enabled": app.is_enabled,
+        "has_secret": app.has_secret,
+        "secret_set_at": app.secret_set_at,
+        "is_usable": app.is_usable,
+        "why_not_usable": app.why_not_usable(),
+        "last_sign_in_at": last.created_at if last else None,
+        "sign_ins_30d": app.grants.filter(
+            used_at__isnull=False,
+            created_at__gte=timezone.now() - timedelta(days=30),
+        ).count(),
+    }
+    return row
+
+
+class SignOnListView(StaffView):
+    """
+    Every registered system, and whether it may sign people in.
+
+    ── READ IS STAFF, WRITE IS FOUNDER ────────────────────────────────────────
+
+    Read, because an engineer wiring up a sibling needs the client_id and the
+    registered addresses, and none of that is secret.
+
+    Write is CanManageAccess — founder only, and the same permission as
+    changing roles rather than a new one. Deciding which application may
+    authenticate our people is deciding who gets access to what, one step
+    removed, and it is the permission that can grant every other permission.
+    """
+
+    def get(self, request):
+        apps = {
+            app.system_id: app
+            for app in SignOnApp.objects.select_related("system").all()
+        }
+        systems = System.objects.exclude(status=System.Status.RETIRED).order_by(
+            "name"
+        )
+        return Response(
+            {
+                "may_edit": CanManageAccess().has_permission(request, self),
+                "systems": [_sign_on_row(s, apps.get(s.pk)) for s in systems],
+            }
+        )
+
+    def post(self, request):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        slug = str(request.data.get("system", "")).strip()
+        system = System.objects.filter(slug=slug).first()
+        if system is None:
+            # 404 rather than 400: the slug came from a list this caller can
+            # already read, so a miss means it is gone, not malformed.
+            return Response(
+                {"detail": "No such system."}, status=http.HTTP_404_NOT_FOUND
+            )
+
+        try:
+            app = services.register_sign_on(actor=request.user, system=system)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(
+            _sign_on_row(system, app), status=http.HTTP_201_CREATED
+        )
+
+
+class SignOnDetailView(StaffView):
+    """Change where an app may send people, who may go, and whether it is on."""
+
+    def patch(self, request, pk: int):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        app = SignOnApp.objects.select_related("system").filter(pk=pk).first()
+        if app is None:
+            raise Http404
+
+        form = SignOnConfigSerializer(data=request.data, partial=True)
+        form.is_valid(raise_exception=True)
+        try:
+            app = services.configure_sign_on(
+                actor=request.user, app=app, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(_sign_on_row(app.system, app))
+
+
+class SignOnSecretView(StaffView):
+    """
+    Mint a new client secret and return it exactly once.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE ONLY RESPONSE IN THE OPERATIONS API THAT CONTAINS A CREDENTIAL.
+
+    It is returned once, never stored in a form that can produce it again, and
+    never logged. The screen must show it, say plainly that it will not be
+    shown again, and not put it anywhere it persists.
+
+    Rotation has no overlap window — the old secret stops working the moment
+    this returns. That is deliberate: two live secrets is a state somebody
+    forgets to leave, and the old one then keeps working for a year.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    def post(self, request, pk: int):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        app = SignOnApp.objects.select_related("system").filter(pk=pk).first()
+        if app is None:
+            raise Http404
+
+        secret = services.issue_sign_on_secret(actor=request.user, app=app)
+        body = _sign_on_row(app.system, app)
+        body["secret"] = secret
+        body["secret_notice"] = (
+            "Copy it now — it is hashed here and cannot be shown again. "
+            "The previous secret stopped working when this one was issued."
+        )
+        return Response(body, status=http.HTTP_201_CREATED)

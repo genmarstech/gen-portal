@@ -654,6 +654,51 @@ export const auth = {
     post<{ ok: true }>("/auth/change-password", { current_password, new_password }),
 };
 
+/**
+ * Signing in to a sibling application with this Genmars account.
+ *
+ * ── WHAT THIS SCREEN IS FOR ─────────────────────────────────────────────────
+ * A sibling — business-os, and whatever follows it — sends someone here rather
+ * than asking them for a password of its own. There is ONE set of company
+ * accounts; the siblings do not keep their own, which is what makes turning an
+ * account off mean something everywhere at once.
+ *
+ * ── THE CODE IS NOT A SESSION ───────────────────────────────────────────────
+ * `describe` needs no session, so the page can name the application to someone
+ * who has not signed in yet. `authorize` needs one, and returns an address to
+ * navigate to. The code in that address lives ninety seconds and is spent by
+ * the sibling's SERVER — this browser never sees anything it can reuse.
+ */
+export type SignOnApp = {
+  client_id: string;
+  name: string;
+  purpose: string;
+  audience: "staff" | "any";
+  audience_label: string;
+  redirect_uri: string;
+  you: {
+    authenticated: boolean;
+    email: string;
+    admitted: boolean;
+    blocked_because: string;
+  };
+};
+
+export const signOn = {
+  describe: (client_id: string, redirect_uri: string) =>
+    get<SignOnApp>(
+      `/auth/sign-on/app?client_id=${encodeURIComponent(client_id)}` +
+        `&redirect_uri=${encodeURIComponent(redirect_uri)}`,
+    ),
+
+  authorize: (client_id: string, redirect_uri: string, state: string) =>
+    post<{ redirect_to: string }>("/auth/sign-on/authorize", {
+      client_id,
+      redirect_uri,
+      state,
+    }),
+};
+
 /* ── mock ─────────────────────────────────────────────────────────────────── */
 
 async function mock<T>(path: string, body: unknown): Promise<T> {

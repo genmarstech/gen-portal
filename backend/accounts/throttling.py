@@ -112,3 +112,48 @@ class EnquiryThrottle(ClientIPThrottle):
 
     scope = "enquiry"
     rate = "12/hour"
+
+
+class SignOnThrottle(ClientIPThrottle):
+    """
+    Handing a signed-in person off to a sibling application.
+
+    Per-IP and generous: this fires once per sign-in, and the caller is already
+    authenticated, so the abuse it guards against is a script minting codes in
+    a loop rather than an attacker guessing anything.
+    """
+
+    scope = "auth_sign_on"
+
+
+class SignOnTokenIPThrottle(ClientIPThrottle):
+    """
+    The per-address floor under SignOnClientThrottle.
+
+    Needed as its own class rather than by setting `throttle_scope` on the
+    view: DRF resolves the RATE from `self.scope` at construction time and only
+    the cache KEY from the view, so a bare ClientIPThrottle here would look for
+    an "auth" rate that does not exist and fail the request outright.
+    """
+
+    scope = "auth_sign_on_token"
+
+
+class SignOnClientThrottle(SimpleRateThrottle):
+    """
+    Redeeming a code, keyed on the APPLICATION rather than the address.
+
+    A sibling calls this from its own server. Behind NAT or a shared host, one
+    per-IP bucket would let a busy application throttle every other one. Keying
+    on the presented client_id gives each application its own budget — and an
+    attacker spraying a made-up client_id gets its own bucket too, which is the
+    point rather than a hole: the per-IP limit still applies underneath.
+    """
+
+    scope = "auth_sign_on_token"
+
+    def get_cache_key(self, request, view):
+        client_id = (request.data.get("client_id") or "").strip()[:64]
+        if not client_id:
+            return None  # nothing to key on; the IP throttle still applies
+        return f"throttle:sign_on:{client_id}"

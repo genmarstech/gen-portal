@@ -37,6 +37,7 @@ from portal.models import (
     Service,
     ServiceTier,
     Shift,
+    SignOnApp,
     System,
     SystemEvent,
     SupportMessage,
@@ -1589,3 +1590,23 @@ class ClassifyChangeSerializer(serializers.Serializer):
     )
     timeline_impact_days = serializers.IntegerField(required=False, allow_null=True)
     risk_note = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class SignOnConfigSerializer(serializers.Serializer):
+    """
+    Partial by design — the screen saves one thing at a time.
+
+    `redirect_uris` is validated in `services._clean_redirect_uris` rather than
+    here, so the https rule has exactly one implementation and the message
+    names the address that broke it.
+    """
+
+    redirect_uris = serializers.ListField(
+        child=serializers.CharField(max_length=500, allow_blank=True),
+        required=False,
+        max_length=10,
+    )
+    audience = serializers.ChoiceField(
+        choices=SignOnApp.Audience.choices, required=False
+    )
+    is_enabled = serializers.BooleanField(required=False)

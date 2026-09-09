@@ -23,6 +23,7 @@ password" hands an attacker a free account-enumeration oracle.
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -370,3 +371,195 @@ def attach_organisation(user: User, organisation_name: str) -> Organisation:
         user=user, organisation=org, role=Membership.Role.OWNER
     )
     return org
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Signing in to a sibling application
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# THIS IS HERE BECAUSE IT IS AN IDENTITY OPERATION, NOT A PORTAL FEATURE.
+#
+# Redeeming a grant tells another application who somebody is. That is the same
+# class of act as signing them in, and it belongs behind the same boundary as
+# `authenticate` — one module to audit, one module to move the day identity
+# leaves this codebase.
+#
+# The models live in portal/models.py, beside the system registry they hang off.
+# They are imported inside the functions: portal imports accounts, so importing
+# portal at the top of this file would close the loop.
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# The shape, once:
+#
+#   1. A sibling sends a person here with its client_id and a redirect address.
+#   2. They sign in normally, or already are. NO ACCOUNT MEANS NO ENTRY — they
+#      are sent to sign up here, not given an account over there.
+#   3. They see which application is asking and agree.
+#   4. We hand the browser back with a code that lives ninety seconds.
+#   5. The sibling's SERVER swaps that code, plus its own secret, for one answer
+#      to one question: who was that. It gets nothing else and nothing lasting.
+
+SIGN_ON_GRANT_LIFETIME = timedelta(seconds=90)
+
+# Recognisable on sight. A credential found in a paste, a log or a repository
+# should announce what it is and where to revoke it — the hours between a leak
+# and someone realising what they are looking at are the expensive ones.
+CLIENT_ID_PREFIX = "gsso_"
+CLIENT_SECRET_PREFIX = "gsec_"
+GRANT_CODE_PREFIX = "gsc_"
+
+# Enough entropy that guessing is not a strategy, and a clear prefix kept only
+# as a lookup index — the same trade SystemKey documents at length.
+SECRET_BYTES = 32
+PREFIX_LENGTH = 12
+
+# One message for every way redemption can fail. A sibling learning that its
+# secret was right but its code was stale is learning which half to attack, and
+# the legitimate caller does not need the distinction — it retries the whole
+# flow either way.
+GRANT_REFUSED = "That sign-in could not be completed. Start again."
+
+
+@dataclass(frozen=True)
+class IssuedSecret:
+    """A freshly minted client secret. The plaintext exists only here."""
+
+    secret: str
+    prefix: str
+
+
+def new_client_id() -> str:
+    """Public, not secret. Travels in a URL and appears in logs."""
+    return CLIENT_ID_PREFIX + secrets.token_urlsafe(12)
+
+
+def issue_client_secret(app) -> IssuedSecret:
+    """
+    Replace the app's secret and return the new one ONCE.
+
+    Rotation is destructive on purpose: there is no second live secret and no
+    overlap window. A sibling is one deploy, and two valid secrets is a state
+    somebody forgets to leave — the old one then keeps working for a year.
+    """
+    secret = CLIENT_SECRET_PREFIX + secrets.token_urlsafe(SECRET_BYTES)
+    app.secret_prefix = secret[:PREFIX_LENGTH]
+    app.secret_hashed = make_password(secret)
+    app.secret_set_at = timezone.now()
+    app.save(update_fields=["secret_prefix", "secret_hashed", "secret_set_at", "updated_at"])
+    return IssuedSecret(secret=secret, prefix=app.secret_prefix)
+
+
+def find_sign_on_app(client_id: str):
+    """
+    Resolve a client_id to an app, or None. Does not check whether it is usable.
+
+    Used by the consent screen, which must be able to say "that link is not
+    valid" without a session — so it deliberately reveals only that a client_id
+    is or is not known, which is public information by construction.
+    """
+    from portal.models import SignOnApp
+
+    client_id = (client_id or "").strip()
+    if not client_id.startswith(CLIENT_ID_PREFIX):
+        return None
+    return (
+        SignOnApp.objects.select_related("system")
+        .filter(client_id=client_id)
+        .first()
+    )
+
+
+@transaction.atomic
+def issue_grant(*, app, user: User, redirect_uri: str) -> str:
+    """
+    Mint the one-time code. Returns it; it is never recoverable afterwards.
+
+    The caller has already established that this app is usable, that this
+    redirect address is registered, and that this user is admitted. This
+    function does not re-decide those — it records the decision.
+    """
+    from portal.models import SignOnGrant
+
+    code = GRANT_CODE_PREFIX + secrets.token_urlsafe(SECRET_BYTES)
+    SignOnGrant.objects.create(
+        app=app,
+        user=user,
+        code_prefix=code[:PREFIX_LENGTH],
+        code_hashed=make_password(code),
+        redirect_uri=redirect_uri,
+        expires_at=timezone.now() + SIGN_ON_GRANT_LIFETIME,
+    )
+    return code
+
+
+def redeem_grant(*, client_id: str, client_secret: str, code: str, redirect_uri: str) -> User:
+    """
+    Swap a code for the person it stands for. Raises AuthError on any failure.
+
+    Called by a sibling's SERVER, never by a browser.
+
+    ── WHY THE ORDER OF CHECKS IS THIS ORDER ───────────────────────────────────
+
+    The secret is verified BEFORE the code is looked up. A caller who cannot
+    prove it is the application never reaches the code table at all, so the
+    endpoint cannot be used to probe which codes exist.
+
+    ── WHY A CODE IS BURNED WHEN IT MATCHES BUT SOMETHING ELSE DOES NOT ─────────
+
+    A code that has been presented is spent, even if the presentation was
+    wrong. Otherwise a code intercepted in a log could be tried against every
+    registered redirect address until one worked.
+
+    ── THE ROLLBACK TRAP ───────────────────────────────────────────────────────
+
+    Same one `redeem_code` documents above: the burn must COMMIT before the
+    refusal is raised. Raising inside the atomic block would roll back the very
+    write that makes the code single-use, and single-use is most of the point.
+    """
+    from portal.models import SignOnGrant
+
+    refused = AuthError("sign_on_refused", GRANT_REFUSED)
+
+    app = find_sign_on_app(client_id)
+    if app is None or not app.is_usable:
+        raise refused
+
+    if not app.secret_hashed or not check_password(client_secret or "", app.secret_hashed):
+        raise refused
+
+    presented = (code or "").strip()
+    if not presented.startswith(GRANT_CODE_PREFIX):
+        raise refused
+
+    burned = False
+    grant = None
+
+    with transaction.atomic():
+        candidates = (
+            SignOnGrant.objects.select_for_update()
+            .select_related("user")
+            .filter(app=app, code_prefix=presented[:PREFIX_LENGTH], used_at__isnull=True)
+        )
+        match = next(
+            (g for g in candidates if check_password(presented, g.code_hashed)), None
+        )
+
+        if match is not None:
+            now = timezone.now()
+            match.used_at = now
+            match.save(update_fields=["used_at"])
+
+            usable = now < match.expires_at
+            same_place = match.redirect_uri == (redirect_uri or "").strip()
+            still_allowed = app.admits(match.user)
+            if usable and same_place and still_allowed:
+                grant = match
+            else:
+                burned = True
+
+    if grant is None:
+        # Outside the block, so the burn above is already committed.
+        raise AuthError("sign_on_refused_burned" if burned else "sign_on_refused", GRANT_REFUSED)
+
+    return grant.user
