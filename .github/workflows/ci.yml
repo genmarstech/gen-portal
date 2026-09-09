@@ -49,6 +49,15 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements-dev.txt
 
+      # Before pip install, because it imports nothing but the standard
+      # library and a boundary breach should fail in seconds rather than after
+      # a dependency resolution. accounts/identity.py has claimed since it was
+      # written that this check runs here; until 2026-09-09 the script did not
+      # exist, and two files had quietly started creating accounts of their own.
+      - name: The identity boundary holds
+        working-directory: .
+        run: python scripts/check_identity_boundary.py
+
       - run: pip install -r requirements-dev.txt
 
       # SQLite, no services needed — config/settings_test.py says why.

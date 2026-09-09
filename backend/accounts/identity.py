@@ -152,6 +152,54 @@ def create_account(email: str, password: str, full_name: str = "") -> User:
     )
 
 
+@transaction.atomic
+def create_invited_account(
+    email: str,
+    full_name: str = "",
+    *,
+    is_staff: bool = False,
+    staff_role: str = "",
+) -> User:
+    """
+    Create an account somebody else is bringing into being, with NO password.
+
+    ── WHY THIS EXISTS SEPARATELY FROM create_account ──────────────────────────
+
+    An invite inverts who chooses the password. `create_account` is a person
+    signing themselves up and choosing one; this is staff adding a colleague or
+    a client contact, and the invitee sets theirs by redeeming the code. There
+    is no moment at which anyone but the account holder knows the password —
+    which is the property that makes an invite safe to send by email.
+
+    Until then the account holds an UNUSABLE password: not an empty one, not a
+    guessable placeholder, a hash no input can ever match. `create_user` with
+    `password=None` already produces one; `set_unusable_password` after it is
+    belt and braces against that behaviour changing under us, because the whole
+    guarantee rests on it. Both call sites used to carry that pair themselves —
+    which is exactly the sprawl this module exists to prevent, since a third
+    call site that copied only the first half would create an account nobody
+    can sign into and nobody can tell is broken.
+
+    Callers are expected to have already refused duplicates with a message
+    suited to their own screen; the check here is the backstop, and it is
+    deliberately the same "email_taken" AuthError create_account raises.
+    """
+    email = (email or "").strip().lower()
+    if User.objects.filter(email=email).exists():
+        raise AuthError("email_taken", "That address already has an account.")
+
+    user = User.objects.create_user(
+        email=email,
+        password=None,
+        full_name=(full_name or "").strip(),
+        is_staff=is_staff,
+        staff_role=staff_role,
+    )
+    user.set_unusable_password()
+    user.save(update_fields=["password"])
+    return user
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Codes — email verification and password reset
 # ─────────────────────────────────────────────────────────────────────────────

@@ -501,14 +501,10 @@ def invite_to_organisation(
 
     invited = False
     if user is None:
-        user = User.objects.create_user(
-            email=email, password=None, full_name=(full_name or "").strip()
-        )
-        # create_user with password=None already produces an unusable password;
-        # this is belt and braces against that changing under us, because the
-        # whole guarantee rests on it.
-        user.set_unusable_password()
-        user.save(update_fields=["password"])
+        # Through identity, not User.objects: creating an account is an
+        # authentication operation, and the unusable-password guarantee an
+        # invite rests on lives with it rather than being re-typed here.
+        user = identity.create_invited_account(email=email, full_name=full_name)
         invited = True
 
     membership = Membership.objects.create(
@@ -817,13 +813,9 @@ def invite_staff(
     if user and user.is_staff:
         raise OperationsError(f"{email} is already on the team.", field="email")
 
-    user = User.objects.create_user(
-        email=email, password=None, full_name=(full_name or "").strip()
+    user = identity.create_invited_account(
+        email=email, full_name=full_name, is_staff=True, staff_role=role
     )
-    user.is_staff = True
-    user.staff_role = role
-    user.set_unusable_password()
-    user.save(update_fields=["is_staff", "staff_role", "password"])
 
     issued = identity.issue_code(user, EmailCode.Purpose.INVITE)
     emails.send_staff_invite(

@@ -157,6 +157,67 @@ def test_create_account_does_not_create_an_order(user):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Invited accounts
+#
+# An invite inverts who chooses the password: staff bring the account into
+# being, the invitee sets the secret. The property that makes that safe is that
+# there is no interval during which the account can be signed into — not by the
+# person who created it, not by anyone who guesses what a placeholder might be.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_invited_account_has_no_usable_password():
+    u = identity.create_invited_account("invited@example.com", "Invited Person")
+    assert not u.has_usable_password()
+
+
+@pytest.mark.parametrize("attempt", ["", "None", "null", "password", PASSWORD])
+def test_nothing_signs_in_to_an_invited_account(attempt):
+    """
+    The guarantee stated as an attacker would test it. An unusable password is
+    a hash no input matches, so the empty string and the obvious placeholders
+    are refused exactly like any other wrong password — and refused with the
+    same message, so the attempt cannot be used to tell an invited account
+    apart from a registered one.
+    """
+    identity.create_invited_account("invited@example.com")
+    with pytest.raises(identity.AuthError) as e:
+        identity.authenticate("invited@example.com", attempt)
+    assert e.value.safe_message == identity.GENERIC_SIGN_IN_FAILURE
+
+
+def test_invited_account_starts_unverified():
+    u = identity.create_invited_account("invited@example.com")
+    assert not u.is_email_verified
+
+
+def test_invited_staff_account_carries_its_role():
+    u = identity.create_invited_account(
+        "colleague@genmars.co.ke", "A Colleague", is_staff=True, staff_role="delivery"
+    )
+    assert u.is_staff
+    assert u.staff_role == "delivery"
+    assert not u.has_usable_password()
+
+
+def test_invited_client_account_is_not_staff():
+    u = identity.create_invited_account("invited@example.com")
+    assert not u.is_staff
+    assert u.staff_role == ""
+
+
+def test_inviting_an_existing_address_is_rejected(user):
+    with pytest.raises(identity.AuthError) as e:
+        identity.create_invited_account(EMAIL)
+    assert e.value.reason == "email_taken"
+
+
+def test_invited_address_is_normalised():
+    u = identity.create_invited_account("  Invited@Example.COM  ")
+    assert u.email == "invited@example.com"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Codes
 # ─────────────────────────────────────────────────────────────────────────────
 
