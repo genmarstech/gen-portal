@@ -4704,3 +4704,142 @@ def issue_sign_on_secret(*, actor: User, app) -> str:
         system=app.system.slug,
     )
     return issued.secret
+
+
+# ── public documentation ─────────────────────────────────────────────────────
+#
+# The only content in this database that strangers read. See portal.models.Doc.
+#
+# ── WHY PUBLISHING IS THE ONLY LOGGED ACT ────────────────────────────────────
+#
+# Drafting is ordinary work and there is a lot of it. Publishing changes what
+# the world can read about this company, and withdrawing changes it back. Those
+# two are worth being able to reconstruct months later; the eleven saves in
+# between are noise that would bury them.
+
+
+def _first_error(error: DjangoValidationError) -> tuple[str, str]:
+    """
+    Turn a model's ValidationError into the (field, message) a form can show.
+
+    full_clean raises everything at once, keyed by field. The screen highlights
+    one input, so this takes the first — with the field name, which is the part
+    that decides where the message appears. A message under the wrong input is
+    read as a bug in the form rather than as a correction.
+    """
+    if hasattr(error, "error_dict"):
+        field, errors = next(iter(error.error_dict.items()))
+        return ("" if field == "__all__" else field), " ".join(
+            e.message % (e.params or {}) if e.params else e.message for e in errors
+        )
+    return "", " ".join(error.messages)
+
+
+def _stamp_status(doc, values: dict) -> bool:
+    """
+    Has the team's account of where this project is actually changed?
+
+    Returns True when the status or the note moved, so the caller can date it.
+    An ordinary edit — fixing a typo in the body, reordering — must NOT touch
+    the date, because the date is what tells a reader whether to believe the
+    progress note. Re-dating it on every save would make every note look fresh
+    and the field worthless.
+    """
+    moved = False
+    if "status" in values and values["status"] != doc.status:
+        moved = True
+    if "status_note" in values and values["status_note"] != doc.status_note:
+        moved = True
+    return moved
+
+
+@transaction.atomic
+def save_doc(*, actor: User, doc=None, values: dict):
+    """
+    Create or update a document. Returns (doc, published_changed).
+
+    Validation runs through full_clean rather than field by field: the slug
+    uniqueness, the URL rules and the field lengths are all declared on the
+    model, and a second copy of them here is a second copy to keep in step.
+    """
+    from portal.models import Doc
+
+    creating = doc is None
+    if creating:
+        doc = Doc()
+
+    was_published = doc.is_published if not creating else False
+    status_moved = _stamp_status(doc, values) if not creating else bool(
+        values.get("status_note") or values.get("status")
+    )
+
+    for field, value in values.items():
+        setattr(doc, field, value)
+
+    if status_moved:
+        doc.status_changed_at = timezone.now()
+
+    # First publication is dated once and never again. Re-dating on every
+    # subsequent publish would turn "published in March" into "published
+    # today" after a typo fix, which is the sort of quiet inaccuracy Charter
+    # 04 §IV is about.
+    if doc.is_published and doc.published_at is None:
+        doc.published_at = timezone.now()
+
+    doc.updated_by = actor
+
+    try:
+        doc.full_clean()
+    except DjangoValidationError as error:
+        field, message = _first_error(error)
+        raise OperationsError(message, field) from None
+
+    doc.save()
+
+    if doc.is_published != was_published:
+        record(
+            actor=actor,
+            action=(
+                ActivityLog.Action.DOC_PUBLISHED
+                if doc.is_published
+                else ActivityLog.Action.DOC_UNPUBLISHED
+            ),
+            subject=doc.title,
+            summary=(
+                f"{doc.title} will be on genmars.co.ke{doc.path} from the next "
+                "website deploy."
+                if doc.is_published
+                else f"{doc.title} is withdrawn and leaves the site at the "
+                "next website deploy."
+            ),
+            slug=doc.slug,
+            category=doc.category,
+        )
+
+    return doc, doc.is_published != was_published
+
+
+@transaction.atomic
+def delete_doc(*, actor: User, doc) -> None:
+    """
+    Remove a document entirely.
+
+    Withdrawing is `is_published = False` and is what people usually want; this
+    is for something that should never have existed. Logged as a withdrawal
+    when it was live, because from a reader's side that is what happened.
+    """
+    was_published = doc.is_published
+    title, slug, path = doc.title, doc.slug, doc.path
+    doc.delete()
+
+    if was_published:
+        record(
+            actor=actor,
+            action=ActivityLog.Action.DOC_UNPUBLISHED,
+            subject=title,
+            summary=(
+                f"{title} was deleted. genmars.co.ke{path} disappears at the "
+                "next website deploy, and any link to it will 404."
+            ),
+            slug=slug,
+        )

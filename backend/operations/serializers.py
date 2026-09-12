@@ -23,6 +23,7 @@ from portal.models import (
     Contract,
     Decision,
     DeliveryGate,
+    Doc,
     HostingArrangement,
     Enquiry,
     Incident,
@@ -1610,3 +1611,28 @@ class SignOnConfigSerializer(serializers.Serializer):
         choices=SignOnApp.Audience.choices, required=False
     )
     is_enabled = serializers.BooleanField(required=False)
+
+
+class DocSerializer(serializers.Serializer):
+    """
+    What a founder may set on a public document.
+
+    Partial on update so a screen can save one field. Every constraint that
+    matters — slug uniqueness, the GitHub host rule, the field lengths — lives
+    on the model and is enforced by full_clean in services.save_doc, so this
+    validates shape and nothing else. Two copies of a rule is one copy that
+    will be forgotten.
+    """
+
+    slug = serializers.SlugField(max_length=80, required=False)
+    title = serializers.CharField(max_length=120, required=False)
+    summary = serializers.CharField(max_length=240, required=False)
+    category = serializers.ChoiceField(choices=Doc.Category.choices, required=False)
+    body = serializers.CharField(required=False, allow_blank=True)
+    repo_url = serializers.CharField(max_length=300, required=False, allow_blank=True)
+    order = serializers.IntegerField(min_value=0, max_value=32767, required=False)
+    is_published = serializers.BooleanField(required=False)
+    status = serializers.ChoiceField(choices=Doc.Status.choices, required=False)
+    status_note = serializers.CharField(
+        max_length=200, required=False, allow_blank=True
+    )

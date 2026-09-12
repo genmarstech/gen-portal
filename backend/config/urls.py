@@ -22,6 +22,12 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     # Caddy routes /api/* here; everything else goes to Next.js on :3010.
     path("api/health", lambda r: JsonResponse({"status": "ok"}), name="health"),
+    # ── PUBLIC, UNAUTHENTICATED ─────────────────────────────────────────────
+    # Published documentation, read by the marketing site when it builds.
+    # Held apart from /api/ for the same reason /api/ops/ is: one segment of
+    # difference, and nothing under it is scoped to a caller. Everything it
+    # can reach is in portal/public_api.py, which is the whole file.
+    path("api/public/", include("portal.public_urls")),
     path("api/", include("accounts.urls")),
     path("api/", include("portal.urls")),
     # /api/ops/* — staff only, enforced per view by operations.permissions.IsStaff.

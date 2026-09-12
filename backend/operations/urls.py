@@ -82,6 +82,10 @@ urlpatterns = [
     # Read by any staff account — the client_id and the registered addresses
     # are public, and an engineer wiring up a sibling needs them. Every write
     # is founder-only; see SignOnListView.
+    # Public documentation on genmars.co.ke. Staff read it, the founder writes
+    # it — every word is a public statement (Charter 02 §I).
+    path("ops/docs", views.DocListView.as_view(), name="ops-docs"),
+    path("ops/docs/<int:pk>", views.DocDetailView.as_view(), name="ops-doc"),
     path(
         "ops/engineering/sign-on",
         views.SignOnListView.as_view(),

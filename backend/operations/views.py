@@ -47,6 +47,7 @@ from portal.models import (
     ProgressNote,
     Service,
     ServiceTier,
+    Doc,
     SignOnApp,
     System,
     SystemEvent,
@@ -122,6 +123,7 @@ from .serializers import (
     ServiceSerializer,
     ServiceWriteSerializer,
     SignatureSerializer,
+    DocSerializer,
     SignOnConfigSerializer,
     VoidSerializer,
     InviteSerializer,
@@ -3005,3 +3007,138 @@ class SignOnSecretView(StaffView):
             "The previous secret stopped working when this one was issued."
         )
         return Response(body, status=http.HTTP_201_CREATED)
+
+
+# ── public documentation ─────────────────────────────────────────────────────
+
+
+def _doc_row(doc) -> dict:
+    """
+    One document as operations shows it.
+
+    Includes `path` and `status_is_stale`, which the public payload does not:
+    the first so somebody can check the address before publishing, the second
+    because a progress note nobody has confirmed in six weeks is the failure
+    this screen exists to prevent. The body is sent in full — this is an
+    editor, and a truncated body in an edit form is how content gets lost.
+    """
+    return {
+        "id": doc.pk,
+        "slug": doc.slug,
+        "title": doc.title,
+        "summary": doc.summary,
+        "category": doc.category,
+        "category_label": doc.get_category_display(),
+        "body": doc.body,
+        "repo_url": doc.repo_url,
+        "order": doc.order,
+        "is_published": doc.is_published,
+        "status": doc.status,
+        "status_label": doc.get_status_display(),
+        "status_note": doc.status_note,
+        "status_changed_at": doc.status_changed_at,
+        "status_is_stale": doc.status_is_stale,
+        "published_at": doc.published_at,
+        "updated_at": doc.updated_at,
+        "path": doc.path,
+    }
+
+
+class DocListView(StaffView):
+    """
+    The documentation published on genmars.co.ke.
+
+    ── READ IS STAFF, WRITE IS FOUNDER ────────────────────────────────────────
+
+    Read, because anybody in operations may need to check what the company says
+    in public — and the answer to "does our documentation claim this" should
+    not need a founder.
+
+    Write is CanManageAccess, the same founder-only permission the sign-on
+    screen uses. Charter 02 §I puts public statements with the founder, and
+    every word here is a public statement about what our software does. This is
+    not a new permission because it is not a new kind of authority.
+    """
+
+    def get(self, request):
+        docs = Doc.objects.all().order_by("category", "order", "title")
+        return Response(
+            {
+                "may_edit": CanManageAccess().has_permission(request, self),
+                "docs": [_doc_row(d) for d in docs],
+                "categories": [
+                    {"key": k, "label": v} for k, v in Doc.Category.choices
+                ],
+                "statuses": [{"key": k, "label": v} for k, v in Doc.Status.choices],
+                # Publishing is a deploy, so the screen has to say so rather
+                # than implying a save reaches the public.
+                "published_count": sum(1 for d in docs if d.is_published),
+            }
+        )
+
+    def post(self, request):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        serializer = DocSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        for required in ("slug", "title", "summary", "body"):
+            if not values.get(required):
+                return Response(
+                    {"detail": f"A {required} is required.", "field": required},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+        try:
+            doc, _ = services.save_doc(actor=request.user, values=values)
+        except services.OperationsError as error:
+            return Response(
+                {"detail": error.message, "field": error.field},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+        return Response(_doc_row(doc), status=http.HTTP_201_CREATED)
+
+
+class DocDetailView(StaffView):
+    """One document: edit, publish, withdraw or delete. Founder only to write."""
+
+    def patch(self, request, pk: int):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        doc = Doc.objects.filter(pk=pk).first()
+        if doc is None:
+            raise Http404
+
+        serializer = DocSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            doc, _ = services.save_doc(
+                actor=request.user, doc=doc, values=dict(serializer.validated_data)
+            )
+        except services.OperationsError as error:
+            return Response(
+                {"detail": error.message, "field": error.field},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+        return Response(_doc_row(doc))
+
+    def delete(self, request, pk: int):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        doc = Doc.objects.filter(pk=pk).first()
+        if doc is None:
+            raise Http404
+
+        services.delete_doc(actor=request.user, doc=doc)
+        return Response(status=http.HTTP_204_NO_CONTENT)

@@ -1562,6 +1562,12 @@ class ActivityLog(models.Model):
         SIGN_ON_SECRET_ISSUED = "sign_on.secret_issued", "Sibling sign-on secret issued"
         SIGN_ON_DISABLED = "sign_on.disabled", "Sibling sign-on turned off"
 
+        # Public documentation. Only the acts that change what a STRANGER can
+        # read are logged: an edit to a draft is ordinary work, and logging
+        # every keystroke of it would bury the two entries that matter.
+        DOC_PUBLISHED = "doc.published", "Documentation published"
+        DOC_UNPUBLISHED = "doc.unpublished", "Documentation withdrawn"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -3851,6 +3857,291 @@ class AccessRequest(models.Model):
     def is_open(self) -> bool:
         return self.status == self.Status.PENDING
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public documentation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+# How long a progress note stays credible before operations asks somebody to
+# re-confirm it. Six weeks is roughly a sprint and a half: long enough not to
+# nag, short enough that "in development" cannot quietly mean last year.
+STATUS_STALE_AFTER = timedelta(days=42)
+
+
+def validate_github_repo_url(value: str) -> None:
+    """
+    A repository link must point at a GitHub repository, over https.
+
+    ── WHY THIS DOES NOT CALL validate_live_https_url ──────────────────────────
+
+    The two checks overlap and the messages do not. That validator exists for
+    sign-on redirect addresses and says so in every refusal — "A redirect
+    address is required", "the one-time code" — which is baffling advice for
+    somebody who has just mistyped a repository link on a documentation form.
+    A wrong error message costs more than fifteen duplicated lines.
+
+    ── WHY THE HOST IS PINNED ──────────────────────────────────────────────────
+
+    The field is labelled GitHub and published as a link to source. A field
+    that says GitHub and accepts anything is a small untruth of exactly the
+    kind Charter 04 §IV is about, and the person who finds out is a reader who
+    clicked expecting code.
+    """
+    from urllib.parse import urlsplit
+
+    raw = (value or "").strip()
+    if not raw:
+        return
+
+    if len(raw) > 300:
+        raise ValidationError("That repository address is too long.")
+
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        raise ValidationError("That is not a valid web address.") from None
+
+    if parts.scheme != "https":
+        raise ValidationError(f"{raw} must start with https://.")
+
+    if parts.username or parts.password:
+        raise ValidationError(
+            "A repository address must not contain a username or password."
+        )
+
+    if (parts.hostname or "").lower() not in {"github.com", "www.github.com"}:
+        raise ValidationError(
+            f"{raw} is not a GitHub address. This is published as a link to "
+            "source — point it at github.com, or leave it empty."
+        )
+
+    # github.com/<owner>/<repo>. The bare org page is a real address and a
+    # useless one here: the link is offered as "the source for this", and
+    # sending somebody to a list of repositories to guess which is not that.
+    segments = [seg for seg in parts.path.split("/") if seg]
+    if len(segments) < 2:
+        raise ValidationError(
+            f"{raw} points at an owner rather than a repository. Use the full "
+            "address, e.g. https://github.com/genmarstech/gen-portal."
+        )
+
+
+class Doc(models.Model):
+    """
+    A published document about software Genmars has built.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS THE ONLY MODEL IN THIS FILE THAT STRANGERS READ.
+
+    Every other table here is reached through a session and scoped by
+    portal/selectors.py. A published Doc is served to anybody who asks, with no
+    account, and rendered into static HTML on genmars.co.ke. So the rules are
+    different in both directions:
+
+      · Nothing on a Doc may reference a client, a price that is not already
+        public, an internal hostname, or anything from the contact log. It is
+        marketing copy about OUR software, held in the operations database
+        because that is where staff already work — not because it is internal.
+
+      · Charter 04 §IV applies to every word. A document describing a
+        capability the software does not have is the same offence as an invented
+        uptime figure, and harder to spot because it reads like documentation.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY PUBLISHING IS A DEPLOY AND NOT A SAVE ───────────────────────────────
+
+    `is_published` puts a document into the payload the marketing site fetches
+    WHEN IT BUILDS. It does not put it on the internet — the next deploy does.
+
+    That is deliberate, and it is the reason genmars.co.ke stays a static
+    export: the public site makes no request to this API at runtime, so /docs
+    cannot break when the API is down, cannot leak a session cookie to the
+    marketing origin, and is indexable HTML rather than something a crawler has
+    to execute JavaScript to see. The cost is that a correction takes a deploy.
+
+    ── ORDERING IS EXPLICIT BECAUSE ALPHABETICAL IS A LIE ──────────────────────
+
+    Documentation has a reading order — what the thing is, then how to use it,
+    then the details. Sorting by title puts "Architecture" before "A first
+    request" and teaches nobody anything.
+    """
+
+    class Category(models.TextChoices):
+        PLATFORM = "platform", "Platform"
+        INTEGRATION = "integration", "Integrations"
+        GUIDE = "guide", "Guides"
+        STANDARD = "standards", "Engineering standards"
+
+    class Status(models.TextChoices):
+        """
+        How far along the thing being documented is.
+
+        The wording matches what /services/ already shows a visitor, so the
+        two surfaces cannot disagree about the same product. PLANNED is not
+        "coming soon" — Charter 04 §IV — it means decided and not started.
+        """
+
+        PLANNED = "planned", "Planned"
+        BUILDING = "building", "In development"
+        BETA = "beta", "In beta"
+        LIVE = "live", "Live"
+
+    slug = models.SlugField(
+        max_length=80,
+        unique=True,
+        help_text=(
+            "The address this appears at: /docs/<slug>/. Changing it after "
+            "publication breaks every link anybody has saved."
+        ),
+    )
+    title = models.CharField(max_length=120)
+    summary = models.CharField(
+        max_length=240,
+        help_text=(
+            "One sentence. It is the card on the index and the meta "
+            "description in a search result, so it is a promise to somebody "
+            "who has not clicked yet."
+        ),
+    )
+    category = models.CharField(
+        max_length=16, choices=Category.choices, default=Category.PLATFORM
+    )
+
+    body = models.TextField(
+        help_text=(
+            "A restricted subset of Markdown: headings, paragraphs, lists, "
+            "links, inline code and fenced code blocks. Raw HTML is not "
+            "rendered — it is shown as text, on purpose."
+        )
+    )
+
+    # ── WHERE THE WORK ACTUALLY IS ──────────────────────────────────────────
+    #
+    # /services/ already carries an IN DEVELOPMENT badge on the Business
+    # Platform and the industry solutions, and that badge says nothing about
+    # how far along they are. A prospect reading it cannot tell a project that
+    # starts next quarter from one in beta with three clients on it.
+    #
+    # ⚠ THIS IS THE FIELD ON THIS MODEL MOST LIKELY TO BECOME A LIE.
+    #
+    # A capability claim ages slowly; a progress claim ages in weeks. "Reports
+    # and inventory are working, permissions are next" is true in March and
+    # misleading by June, and nobody notices because it still reads fine.
+    # Charter 04 §IV does not have an exception for statements that used to be
+    # true.
+    #
+    # So status_changed_at is stamped when the STATUS or the NOTE changes and
+    # never by an ordinary edit, and both the public page and operations show
+    # the date beside the words. A stale note then looks stale instead of
+    # looking current. Operations flags anything past STATUS_STALE_AFTER.
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.BUILDING,
+    )
+    status_note = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text=(
+            "One line from the team on where this actually is — what works "
+            "now, what is next. Published with the date it was written, so "
+            "say something specific enough to be worth dating."
+        ),
+    )
+    status_changed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Stamped when the status or the note changes. Not on other edits.",
+    )
+
+    repo_url = models.URLField(
+        blank=True,
+        default="",
+        validators=[validate_github_repo_url],
+        help_text="Optional. A public GitHub repository this documents.",
+    )
+
+    order = models.PositiveSmallIntegerField(
+        default=100,
+        help_text="Low numbers first, within a category.",
+    )
+    is_published = models.BooleanField(
+        default=False,
+        help_text=(
+            "Included in the next website build. Not the same as live — the "
+            "deploy after this is what publishes it."
+        ),
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    published_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="First time this was marked published. Not touched by edits.",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="docs_edited",
+    )
+
+    class Meta:
+        ordering = ["category", "order", "title"]
+        indexes = [
+            models.Index(fields=["is_published", "category", "order"], name="doc_public_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return self.title
+
+    def save(self, *args, **kwargs):
+        """
+        A progress note never reaches the public without its date.
+
+        operations.services.save_doc already stamps the date when the status or
+        the note CHANGES, which is the rule that keeps the date meaningful. But
+        that is one code path, and rows also arrive through the Django admin, a
+        data migration and the shell — each of which would otherwise write a
+        note with `status_changed_at` empty, and the site would then print the
+        team's account of where a project stands with nothing to say when it
+        was written.
+
+        The invariant belongs with the data, so it is enforced here as well:
+        a note with no date gets dated now. This does not re-date anything —
+        an existing date is left exactly as it is, because deciding when a note
+        stopped being current is the service's job, not the ORM's.
+        """
+        if self.status_note and self.status_changed_at is None:
+            self.status_changed_at = timezone.now()
+        super().save(*args, **kwargs)
+
+    @property
+    def path(self) -> str:
+        """Where it lives on the marketing site, trailing slash and all."""
+        return f"/docs/{self.slug}/"
+
+    @property
+    def status_is_stale(self) -> bool:
+        """
+        Has nobody confirmed where this project is in a long time?
+
+        Shown in operations, never on the public page — a visitor gets the
+        date and their own judgement, which is the honest version. What would
+        be dishonest is quietly hiding a note because it got old while the
+        page still implies it is current.
+        """
+        if self.status == self.Status.LIVE:
+            # A shipped thing stays shipped. Nothing decays here.
+            return False
+        if not self.status_changed_at:
+            return bool(self.status_note)
+        return timezone.now() - self.status_changed_at > STATUS_STALE_AFTER
 
 
 class OrderSeen(models.Model):
