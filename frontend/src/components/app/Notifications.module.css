@@ -48,7 +48,7 @@
   padding: 0 4px;
   border-radius: 999px;
   background: var(--accent);
-  color: var(--bg);
+  color: var(--on-accent);
   font-size: 0.625rem;
   font-weight: 650;
   line-height: 17px;
