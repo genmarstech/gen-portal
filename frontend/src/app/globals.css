@@ -83,6 +83,27 @@
   /* Accent for large display / non-text marks. Always Ignition. */
   --accent: #db7b51;
 
+  /*
+   * ── INK FOR TEXT SITTING *ON* --accent. NOT --accent-text. ──────────────
+   *
+   * --accent-text is accent-COLOURED text, for a word tinted on the page
+   * ground. --on-accent is what goes on top of the accent when the accent is
+   * the background. Pairing the first two produces mahogany on ignition at
+   * 2.19:1 in this theme and, in dark, ignition on ignition at 1.00:1 — a
+   * button whose label is not there at all. That shipped on the sign-on
+   * consent screen, which is the one page a stranger sees before they have an
+   * account.
+   *
+   * One value for both themes, deliberately: --accent is always Ignition, so
+   * an ink that reads on it here reads on it everywhere. 5.38:1 — AA for
+   * normal text, not just for large.
+   *
+   * ⚠ Anything with `background: var(--accent)` takes its colour from THIS.
+   *   var(--bg) happened to work in dark and failed at 2.64:1 in light, which
+   *   is how five more of these went unnoticed.
+   */
+  --on-accent: #221f28;
+
   --mark-g: #8b5a48;
   --mark-orbit: #db7b51;
   --wordmark-ink: #2e2b34;
@@ -483,7 +504,7 @@ kbd {
 :root[data-theme="dark"] .btn:hover {
   background: var(--ignition);
   border-color: var(--ignition);
-  color: #221f28;
+  color: var(--on-accent);
 }
 
 .btn:active {

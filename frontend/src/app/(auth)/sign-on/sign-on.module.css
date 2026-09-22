@@ -101,7 +101,7 @@
   padding: 0 var(--sp-5);
   border-radius: var(--radius);
   background: var(--accent);
-  color: var(--accent-text);
+  color: var(--on-accent);
   font-weight: 600;
   text-decoration: none;
   transition: filter 140ms var(--ease);
