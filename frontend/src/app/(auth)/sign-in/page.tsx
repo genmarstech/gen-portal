@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AuthShell } from "@/components/auth/AuthShell";
 import {
   Divider,
@@ -11,9 +11,10 @@ import {
   FormError,
   PasswordField,
   Secondary,
+  SecondaryLink,
   Submit,
 } from "@/components/auth/Form";
-import { ApiError, auth } from "@/lib/api";
+import { ApiError, auth, session } from "@/lib/api";
 import { ReturnNotice } from "@/components/auth/ReturnNotice";
 import { advance, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "../auth.module.css";
@@ -40,6 +41,36 @@ export default function SignInPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  // Offered only if the server would honour it. Asked rather than compiled in,
+  // so the button cannot outlive the configuration — see session().
+  const [googleOffered, setGoogleOffered] = useState(false);
+  useEffect(() => {
+    session()
+      .then((s) => setGoogleOffered(Boolean(s.google_sign_in)))
+      .catch(() => setGoogleOffered(false));
+  }, []);
+
+  /*
+   * The Google callback sends people back here with ?error=google when it
+   * refuses. Read from the URL in an effect, matching useReturnTo — reading
+   * search params during render would need a Suspense boundary this page does
+   * not otherwise want.
+   *
+   * ONE MESSAGE FOR EVERY REFUSAL, and it must stay that way. The callback
+   * cannot say whether the address is unknown, deactivated, locked, or simply
+   * unverified at Google without handing back the enumeration oracle the
+   * password path is careful to close.
+   */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("error") === "google") {
+      setError(
+        "We could not sign you in with Google. If you have a Genmars account, " +
+          "sign in with your email address and password.",
+      );
+    }
+  }, []);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -101,6 +132,15 @@ export default function SignInPage() {
           <Submit pending={pending}>Continue</Submit>
 
           <Divider />
+
+          {/* A plain navigation to Django, which redirects on to Google. No
+              Google script runs on this page and no SDK is loaded — Charter
+              03 §I, and it keeps the CSP free of another origin. */}
+          {googleOffered && (
+            <SecondaryLink href="/api/auth/google/start">
+              Continue with Google
+            </SecondaryLink>
+          )}
 
           {/* Phone sign-in is not built. Saying so plainly beats a control that
               looks live and does nothing — Charter 04 §III, admit limits early. */}

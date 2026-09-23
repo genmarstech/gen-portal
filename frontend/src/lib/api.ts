@@ -62,6 +62,14 @@ export async function session(): Promise<{
    * place that can tell them apart.
    */
   needs_onboarding?: boolean;
+  /**
+   * Whether Google sign-in is configured on the server.
+   *
+   * Asked of the server rather than read from a NEXT_PUBLIC_ flag, because a
+   * second switch eventually disagrees with the first and the symptom — a
+   * button that 404s — reads as a broken deploy rather than a missing setting.
+   */
+  google_sign_in?: boolean;
 }> {
   if (MOCK) return { authenticated: false };
   const res = await fetch("/api/auth/session", { credentials: "same-origin" });

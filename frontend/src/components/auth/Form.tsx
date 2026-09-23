@@ -318,6 +318,26 @@ export function Secondary({
   );
 }
 
+/**
+ * A navigation dressed as a secondary button.
+ *
+ * An anchor and not a button, deliberately. Starting an OAuth flow IS a
+ * top-level navigation — the person leaves for Google and comes back — and a
+ * button with an onClick that assigns location would break middle-click, open
+ * in new tab, and the status bar that tells somebody where they are about to
+ * be sent, all to look the same.
+ */
+export function SecondaryLink({
+  children,
+  ...props
+}: React.AnchorHTMLAttributes<HTMLAnchorElement>) {
+  return (
+    <a className={styles.secondaryLink} {...props}>
+      {children}
+    </a>
+  );
+}
+
 export function Divider({ children = "or" }: { children?: string }) {
   return (
     <div className={styles.divider}>
