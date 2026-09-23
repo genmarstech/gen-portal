@@ -8,6 +8,7 @@ import {
   Field,
   Fields,
   FormError,
+  MultiChoiceField,
   Submit,
   TextareaField,
 } from "@/components/auth/Form";
@@ -46,7 +47,72 @@ import styles from "./page.module.css";
  * Only the problem is required. Someone who does not know their budget still
  * has a real problem, and a required field with no honest answer produces a
  * dishonest one.
+ *
+ * ── AND WHY THEY ARE NOW MOSTLY TICKED, NOT TYPED ───────────────────────────
+ * The questions are unchanged; what changed is the cost of answering them.
+ * This screen used to demand a written paragraph before it would finish an
+ * account, and that is where people stopped — not for want of a problem, but
+ * because writing one up is work, and it sat between them and what they came
+ * for. An abandoned account tells us nothing; a ticked box tells us something.
+ *
+ * The prose box is still here and still reaches the same field. It is now the
+ * place for anything the list missed, rather than the gate.
+ *
+ * ⚠ THE OPTIONS ARE AN OFFER, WHETHER OR NOT THEY ARE WORDED AS ONE. A list of
+ *   problems on a Genmars form reads as a list of problems Genmars solves, so
+ *   every one of them has to map to something in seed_services.py. Charter 04
+ *   §IV. Adding a line we cannot answer would be advertising by checkbox.
  */
+
+/*
+ * ── WHY THIS IS A LIST AND NOT A WRITING TASK ───────────────────────────────
+ *
+ * This screen used to require a written paragraph before it would finish an
+ * account, and people stopped at it. Not because they had nothing to say —
+ * because putting a business problem into prose is work, and it was work
+ * standing between somebody and the thing they actually came for. An account
+ * left half-finished tells us nothing at all, which is strictly worse than a
+ * ticked box.
+ *
+ * ⚠ THESE MUST STAY THINGS GENMARS ACTUALLY DOES. Charter 04 §IV — nothing
+ *   untrue on a Genmars surface. A list is read as an offer: every line here
+ *   is a problem the services in seed_services.py genuinely address, and
+ *   adding one we cannot answer would be advertising by checkbox.
+ *
+ * The free-text box below them is still there for anyone who wants it. It is
+ * simply no longer the toll gate.
+ */
+const PROBLEMS = [
+  "Work is tracked in spreadsheets, WhatsApp or on paper",
+  "Payments and invoices are reconciled by hand",
+  "Our systems do not talk to each other",
+  "Stock or inventory counts cannot be trusted",
+  "We cannot see what is happening across branches",
+  "Reports take days to put together",
+  "We have software, but nobody maintains it",
+  "We need a website or an app for our customers",
+] as const;
+
+/* Ticking this makes the description required — it is the one option that
+   carries no information on its own, so it has to be followed by something. */
+const SOMETHING_ELSE = "Something else";
+
+/*
+ * Bands rather than a text box.
+ *
+ * "Roughly what does it cost per month" was free text and optional, and it was
+ * the second thing on this screen that asked somebody to do arithmetic before
+ * they could continue. A band is answerable in a second and is as much as
+ * anybody needs from it at this stage — the real number comes up in the
+ * conversation, from someone who can ask a follow-up.
+ */
+const MONTHLY_COSTS = [
+  "Under KES 50,000",
+  "KES 50,000 – 200,000",
+  "KES 200,000 – 500,000",
+  "Over KES 500,000",
+  "I have not worked it out",
+] as const;
 
 const TIMELINES = [
   "As soon as possible",
@@ -78,6 +144,7 @@ export default function OnboardingPage() {
 
   const [fullName, setFullName] = useState("");
   const [organisation, setOrganisation] = useState("");
+  const [problems, setProblems] = useState<string[]>([]);
   const [problem, setProblem] = useState("");
   const [monthlyCost, setMonthlyCost] = useState("");
   const [timeline, setTimeline] = useState("");
@@ -151,12 +218,51 @@ export default function OnboardingPage() {
     }
   }
 
+  /**
+   * The ticks and the writing, as one paragraph.
+   *
+   * The API takes a single `problem` string and operations reads it as prose,
+   * so the shape of the request does not change — only how somebody produces
+   * it. Composing here rather than adding a field to the serializer keeps one
+   * description of the problem instead of two that can disagree.
+   */
+  function composeProblem(): string {
+    const ticked = problems.filter((p) => p !== SOMETHING_ELSE);
+    const written = problem.trim();
+
+    const parts: string[] = [];
+    if (ticked.length) parts.push(ticked.join("; ") + ".");
+    if (written) parts.push(written);
+    return parts.join("\n\n");
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
 
+    const chose = problems.length > 0;
+    const wrote = problem.trim().length > 0;
+
+    if (!chose && !wrote) {
+      setFieldErrors({
+        problems: "Tick whatever is true, or describe it below.",
+      });
+      return;
+    }
+
+    // "Something else" is the one option that says nothing by itself.
+    if (problems.includes(SOMETHING_ELSE) && !wrote) {
+      setFieldErrors({
+        problem: "Tell us what the something else is.",
+      });
+      return;
+    }
+
     // Mirrors the server's rule so the failure arrives before the round trip,
-    // not instead of it — the server still enforces this.
-    if (problem.trim().length < 20) {
+    // not instead of it — the server still enforces this. Any single ticked
+    // option clears twenty characters on its own, so this is only reachable
+    // by someone who wrote a very short description and ticked nothing.
+    const composed = composeProblem();
+    if (composed.length < 20) {
       setFieldErrors({
         problem:
           "Tell us a little more — a sentence or two about what is going wrong.",
@@ -171,7 +277,7 @@ export default function OnboardingPage() {
       const { next } = await portal.onboarding({
         full_name: fullName.trim(),
         organisation_name: organisation.trim(),
-        problem: problem.trim(),
+        problem: composed,
         monthly_cost: monthlyCost.trim(),
         timeline,
         budget_range: budget,
@@ -277,19 +383,31 @@ export default function OnboardingPage() {
           ) : null}
 
           <Fields>
+            <MultiChoiceField
+              label="What is happening today? Tick whatever is true."
+              options={[...PROBLEMS, SOMETHING_ELSE]}
+              values={problems}
+              onChange={setProblems}
+              hint={
+                fieldErrors.problems ??
+                "As many as apply. None of them exactly right? Tick Something else and say so below."
+              }
+            />
             <TextareaField
-              label="What is happening today that prompted this?"
-              placeholder="We reconcile M-Pesa payments against invoices by hand, and it takes two days a week."
-              hint="Plain language is fine. You do not need to know the solution."
+              label="Anything you want to add"
+              placeholder="Optional. We reconcile M-Pesa payments against invoices by hand, and it takes two days a week."
+              hint="Plain language is fine, and you do not need to know the solution. Leave it blank if the boxes covered it."
               value={problem}
               error={fieldErrors.problem}
               onChange={(e) => setProblem(e.target.value)}
             />
-            <Field
-              label="Roughly what does it cost per month?"
-              placeholder="Staff time, lost revenue, a rough figure — or leave it blank"
+            <ChoiceField
+              label="Roughly what is it costing per month?"
+              name="monthly-cost"
+              options={MONTHLY_COSTS}
               value={monthlyCost}
-              onChange={(e) => setMonthlyCost(e.target.value)}
+              onChange={setMonthlyCost}
+              hint="Staff time, lost revenue, a rough sense of it. Skip it if you would rather."
             />
             <ChoiceField
               label="When would you want this working?"
