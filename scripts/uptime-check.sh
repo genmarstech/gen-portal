@@ -33,14 +33,49 @@ set -uo pipefail
 FAILURES=0
 REPORT=""
 
+# ── ONE RETRY BEFORE ANYTHING IS CALLED A FAILURE ───────────────────────────
+#
+# This paged at 20:45 on 2026-09-23 for clipsserenityspa.co.ke — a LIVE CLIENT
+# SITE — and nothing was wrong. Caddy had not restarted in three months, the
+# container had been up two weeks, the certificate had sixty-two days left and
+# the load average was 0.09. The next run, fifteen minutes later, passed. It
+# was one dropped connection on a loopback through the public address.
+#
+# The timer's own comment already argues this: "a flaky network into a mail
+# flood, and an alert channel people learn to ignore is worse than no alert
+# channel at all." It defended against that with frequency and not with
+# retries, which leaves a single blip able to page.
+#
+# So: one retry, three seconds later. A real outage fails both attempts and
+# still pages within the same run; a blip does not page at all. When the retry
+# is what saved it, the report SAYS SO — a check that quietly passes on the
+# second attempt hides genuine flakiness, which is the opposite of the
+# problem being fixed.
+RETRY_PAUSE="${RETRY_PAUSE:-3}"
+
 check() {
     local label="$1" url="$2" want="$3"
-    local got
-    got=$(curl -sS -o /dev/null -m 15 -w "%{http_code}" "$url" 2>/dev/null || echo "000")
+    local got note=""
+
+    # NO `|| echo "000"`. curl -w always PRINTS a status — "000" when it could
+    # not connect — and then exits non-zero, so the fallback appended a second
+    # one and the alert read "got 000000, wanted 200". Six digits where three
+    # were meant sends whoever reads it looking for an exotic status code
+    # instead of a dropped connection.
+    got=$(curl -sS -o /dev/null -m 15 -w "%{http_code}" "$url" 2>/dev/null)
+    [ -n "$got" ] || got="000"
+
+    if [ "$got" != "$want" ]; then
+        sleep "$RETRY_PAUSE"
+        got=$(curl -sS -o /dev/null -m 15 -w "%{http_code}" "$url" 2>/dev/null)
+        [ -n "$got" ] || got="000"
+        note=" (first attempt failed)"
+    fi
+
     if [ "$got" = "$want" ]; then
-        REPORT+=$(printf "  ok    %-34s %s\n" "$label" "$got")
+        REPORT+=$(printf "  ok    %-34s %s%s\n" "$label" "$got" "$note")
     else
-        REPORT+=$(printf "  FAIL  %-34s got %s, wanted %s\n" "$label" "$got" "$want")
+        REPORT+=$(printf "  FAIL  %-34s got %s, wanted %s (twice)\n" "$label" "$got" "$want")
         FAILURES=$((FAILURES + 1))
     fi
     REPORT+=$'\n'
@@ -67,7 +102,14 @@ check "ops api refuses anon"   "https://ops.genmars.co.ke/api/ops/overview" 403
 # Caddy renews automatically, so this is a check that automation is WORKING
 # rather than a reminder to do it by hand. Fourteen days is enough warning to
 # fix a broken renewal before anyone sees a browser warning.
-for host in genmars.co.ke app.genmars.co.ke api.genmars.co.ke ops.genmars.co.ke; do
+#
+# clipsserenityspa.co.ke is in this list and was not. Its 200 check above would
+# catch an EXPIRED certificate, but only on the day browsers start refusing —
+# with no warning window at all. It is a live client site on somebody else's
+# domain, which is the one where fourteen days' notice matters most, because
+# fixing it may need them to do something.
+for host in genmars.co.ke app.genmars.co.ke api.genmars.co.ke ops.genmars.co.ke \
+            clipsserenityspa.co.ke; do
     end=$(echo | openssl s_client -connect "$host:443" -servername "$host" 2>/dev/null \
         | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
     if [ -z "$end" ]; then
