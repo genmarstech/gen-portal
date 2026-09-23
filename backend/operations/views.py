@@ -224,6 +224,12 @@ class OverviewView(StaffView):
                 # here loads, and the failure it reports is one that cannot be
                 # reported by email — see accounts/mail_health.py.
                 "mail": mail_health(),
+                # What has happened lately, merged from the tables it actually
+                # lives in rather than from ActivityLog — see the note on
+                # selectors.recent_activity. It rides on the overview because
+                # this is the one screen everybody here loads, and because a
+                # second request for twelve rows is a second request.
+                "activity": selectors.recent_activity(),
             }
         )
 

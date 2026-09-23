@@ -767,3 +767,91 @@ def client_record(organisation: Organisation) -> dict:
             .order_by("-created_at")
         ),
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The overview's activity strip
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def recent_activity(limit: int = 12) -> list[dict]:
+    """
+    What has happened lately, across the things that are not the same table.
+
+    ═══════════════════════════════════════════════════════════════════════════
+    WHY THIS IS COMPOSED HERE AND NOT READ FROM ActivityLog.
+
+    ActivityLog records what STAFF did — an invoice issued, an enquiry
+    converted, a role changed. Every one of its actions has an actor inside
+    the company, and that is the right shape for an audit trail.
+
+    The three things somebody wants to see on opening the dashboard are not
+    that. A client signing up, an enquiry arriving, an order being placed on
+    the board are things that happened TO us, mostly with no staff actor at
+    all. Writing them into ActivityLog to get them onto one screen would put
+    rows with no actor into an audit trail whose whole value is that every row
+    has one.
+
+    So this reads the source tables and merges. It costs three queries and it
+    leaves the log alone.
+    ═══════════════════════════════════════════════════════════════════════════
+
+    ⚠ EVERY ITEM CARRIES A URL, AND THAT IS THE POINT OF THE FEATURE. A strip
+      that says "new enquiry from Client Co" and leaves somebody to go and find
+      it has moved the work rather than removed it. The url lands on the screen
+      where they can read what the client wrote AND reach them — for an
+      enquiry that is the queue with the enquiry open, which is also where the
+      mailto link lives.
+    """
+    from accounts.models import User
+
+    items: list[dict] = []
+
+    for e in (
+        Enquiry.objects.select_related("organisation", "submitted_by")
+        .order_by("-created_at")[:limit]
+    ):
+        items.append(
+            {
+                "kind": "enquiry",
+                "at": e.created_at,
+                "title": f"{e.organisation.name} asked for help",
+                # What they wrote at onboarding, which is the thing worth
+                # reading before replying and the reason this row exists.
+                "detail": (e.problem or "")[:180],
+                "organisation": e.organisation.name,
+                "url": f"/?enquiry={e.pk}",
+            }
+        )
+
+    for o in Order.objects.select_related("organisation").order_by("-created_at")[:limit]:
+        items.append(
+            {
+                "kind": "order",
+                "at": o.created_at,
+                "title": f"{o.organisation.name} — {o.reference}",
+                "detail": o.title or "",
+                "organisation": o.organisation.name,
+                "url": f"/orders/{o.reference}",
+            }
+        )
+
+    # Client accounts only. A new staff account is not news to the people who
+    # created it, and it would push the thing this strip is for off the list.
+    for u in (
+        User.objects.filter(is_staff=False)
+        .order_by("-date_joined")[:limit]
+    ):
+        items.append(
+            {
+                "kind": "account",
+                "at": u.date_joined,
+                "title": f"{u.full_name or u.email} created an account",
+                "detail": u.email,
+                "organisation": "",
+                "url": "/clients",
+            }
+        )
+
+    items.sort(key=lambda i: i["at"], reverse=True)
+    return items[:limit]
