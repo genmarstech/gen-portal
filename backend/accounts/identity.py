@@ -129,78 +129,115 @@ def _clear_failures(user: User) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Signing in with Google
+# Signing in with Google, and signing up with it
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # ═══════════════════════════════════════════════════════════════════════════════
 # GOOGLE SAYS WHO SOMEBODY IS. IT DOES NOT SAY WHETHER THEY MAY COME IN.
 #
-# Every gate `authenticate` applies still applies here: locked accounts stay
-# locked, deactivated accounts stay out. Google having verified an address is
-# not a reason to skip the checks a password sign-in cannot skip — is_active is
-# how access ends everywhere at once, and an alternative door that ignored it
-# would quietly make that untrue.
+# Every gate `authenticate` applies still applies: locked accounts stay locked,
+# deactivated accounts stay out. Google having verified an address is not a
+# reason to skip the checks a password sign-in cannot skip — is_active is how
+# access ends everywhere at once, and an alternative door that ignored it would
+# quietly make that untrue.
 #
-# ⚠ AN UNKNOWN ADDRESS IS REFUSED. IT DOES NOT CREATE AN ACCOUNT.
-#   Signing up here is an invitation or a deliberate registration, and both
-#   attach an organisation and a role. A Google login that silently minted an
-#   account would route somebody around all of that, and the first anyone knew
-#   of it would be an orphan row with no membership.
+# ── THIS CREATES ACCOUNTS. IT DID NOT, AND THE CHANGE IS DELIBERATE. ─────────
 #
-# ⚠ email_verified IS LOAD-BEARING, NOT A FORMALITY. Without it, anyone able to
-#   create a Google account asserting an address they do not own could sign in
-#   as that person here. It is the whole basis for trusting the address, and
-#   the reason the refusal below is not merely tidy.
+# The first version refused an unknown address, on the reasoning that
+# registration attaches an organisation and a role and a Google login would
+# route around both. The second half of that was wrong: a Google signup lands
+# in exactly the same place a password signup does — onboarding — and
+# onboarding is where the organisation is attached. Nothing is routed around,
+# because the step that matters happens after the account exists either way.
+#
+# What the refusal actually bought was a portal nobody could join without being
+# invited, which was never the rule for the password form standing beside it.
+#
+# ⚠ WHAT A NEW ACCOUNT GETS, AND WHAT IT MUST NOT GET:
+#     · no usable password — set_password(None). They sign in with Google, or
+#       they set one through the forgot-password flow, which works because it
+#       verifies the address before setting anything.
+#     · is_staff FALSE. create_user defaults it, and nothing here overrides it.
+#       A Google signup must never mint a Genmars staff account: staff is what
+#       reads across every organisation.
+#     · no organisation. Onboarding attaches that, and the destination sends
+#       them there.
+#
+# ⚠ email_verified IS LOAD-BEARING, NOT A FORMALITY, and it matters MORE now
+#   that this creates accounts. Without it, anyone able to make a Google
+#   account asserting an address they do not own could not merely sign in as
+#   that person — they could bring the account into existence and own it before
+#   the real holder ever arrives.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-GOOGLE_SIGN_IN_FAILURE = (
-    "We could not sign you in with Google. If you have a Genmars account, "
-    "sign in with your email address and password."
+GOOGLE_SIGN_IN_FAILURE = "We could not sign you in with Google. Try again."
+
+GOOGLE_EMAIL_UNVERIFIED = (
+    "Google has not verified the email address on that account, so we cannot "
+    "use it to identify you. Verify it with Google, or sign up with an email "
+    "address and password."
+)
+
+GOOGLE_ACCOUNT_INACTIVE = (
+    "That account has been deactivated. Get in touch if you think that is "
+    "wrong."
 )
 
 
-def authenticate_google(*, email: str, email_verified: bool) -> User:
+@transaction.atomic
+def sign_in_or_create_with_google(
+    *, email: str, email_verified: bool, full_name: str = ""
+) -> tuple[User, bool]:
     """
-    Turn Google's claim about an address into a signed-in user, or refuse.
+    Turn Google's claim about an address into a signed-in user.
 
-    The caller has already established that the claim genuinely came from
-    Google. This function does not re-decide that — it decides what the claim
-    entitles somebody to, which is a different question and the one that
-    belongs behind this boundary.
+    Returns (user, created). The caller has already established that the claim
+    genuinely came from Google; this decides what the claim entitles somebody
+    to, which is the question that belongs behind this boundary.
+
+    Atomic because the create path writes a User and stamps its verification,
+    and half of that is an account nobody can sign into and nothing will fix.
     """
     email = (email or "").strip().lower()
 
     if not email_verified:
-        raise AuthError("google_email_unverified", GOOGLE_SIGN_IN_FAILURE)
+        raise AuthError("google_email_unverified", GOOGLE_EMAIL_UNVERIFIED)
 
     user = User.objects.filter(email=email).first()
+
     if user is None:
-        # No timing equaliser here, and none is needed: reaching this point
-        # requires actually holding the Google account for the address, so
-        # there is no oracle to protect — an attacker can only ask about
-        # addresses they already control.
-        raise AuthError("google_no_such_account", GOOGLE_SIGN_IN_FAILURE)
+        user = User.objects.create_user(
+            email=email,
+            # Unusable, not blank and not random. They have no password, which
+            # is the true state — `check_password` refuses every string against
+            # it, so this cannot become a guessable account.
+            password=None,
+            full_name=(full_name or "").strip(),
+            # Google verified the address. Making them verify it again by
+            # email would be asking them to prove something already proved,
+            # and would strand them on /verify with no way forward.
+            email_verified_at=timezone.now(),
+        )
+        return user, True
 
     if user.is_locked:
         raise AccountLocked(user.locked_until)
 
     if not user.is_active:
-        raise AuthError("google_inactive_account", GOOGLE_SIGN_IN_FAILURE)
+        raise AuthError("google_inactive_account", GOOGLE_ACCOUNT_INACTIVE)
 
     # A successful sign-in by any route clears the count, exactly as a password
     # sign-in does. Leaving it would let a stale run of typos lock an account
     # that has just proved itself.
     _clear_failures(user)
 
-    # Google has verified the address, so the account has too. This is the one
-    # thing a Google sign-in may change about an account, and it only ever
-    # moves a user forward — an already-verified address is left alone rather
-    # than re-stamped with today's date.
+    # Only ever forward. An already-verified address keeps the date it was
+    # verified on, rather than being restamped with today's sign-in.
     if not user.is_email_verified:
         user.email_verified_at = timezone.now()
         user.save(update_fields=["email_verified_at"])
 
-    return user
+    return user, False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

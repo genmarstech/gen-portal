@@ -9,9 +9,10 @@ THE THREE CLAIMS WORTH DEFENDING, AND THE TESTS THAT WOULD CATCH THEM BREAKING.
    ends everywhere at once, and a second sign-in path that ignored it would
    make that quietly untrue.
 
-2. An unknown address is refused, never created. Registration attaches an
-   organisation and a role; a Google login that minted accounts would route
-   around both and leave orphan rows nobody asked for.
+2. An unknown address CREATES an account — and the account it creates has no
+   usable password, is not staff, and has no organisation. It lands on
+   onboarding, exactly where a password signup lands, which is why creating it
+   here routes around nothing.
 
 3. email_verified is the entire basis for trusting the address. Without it,
    anyone who can make a Google account asserting an address they do not own
@@ -41,6 +42,11 @@ pytestmark = pytest.mark.django_db
 PASSWORD = "correct-horse-battery"
 CLIENT_ID = "test-client-id.apps.googleusercontent.com"
 CALLBACK = "https://app.genmars.co.ke/api/auth/google/callback"
+
+# The vague fallback. Each specific refusal has its own code below, and a test
+# asserting this one where a specific code is expected is a test that would
+# pass while the person got no useful message.
+SIGN_IN_FAILED = "/sign-in?error=google"
 
 
 @pytest.fixture(autouse=True)
@@ -146,7 +152,7 @@ def test_a_callback_with_no_state_in_the_session_is_refused(client, monkeypatch)
 
     response = client.get(reverse("google-callback"), {"code": "x", "state": "made-up"})
 
-    assert response["Location"] == "/sign-in?error=google"
+    assert response["Location"] == "/sign-in?error=expired"
     assert not _signed_in(client)
 
 
@@ -159,7 +165,7 @@ def test_a_mismatched_state_is_refused(client, monkeypatch):
         reverse("google-callback"), {"code": "x", "state": "not-the-one"}
     )
 
-    assert response["Location"] == "/sign-in?error=google"
+    assert response["Location"] == "/sign-in?error=expired"
     assert not _signed_in(client)
 
 
@@ -173,11 +179,11 @@ def test_a_state_cannot_be_used_twice(client, monkeypatch):
     state = _start(client)
 
     first = client.get(reverse("google-callback"), {"code": "x", "state": state})
-    assert first["Location"] != "/sign-in?error=google"
+    assert not first["Location"].startswith("/sign-in")
 
     client.logout()
     second = client.get(reverse("google-callback"), {"code": "x", "state": state})
-    assert second["Location"] == "/sign-in?error=google"
+    assert second["Location"] == "/sign-in?error=expired"
     assert not _signed_in(client)
 
 
@@ -190,7 +196,7 @@ def test_pressing_cancel_at_google_is_not_an_error(client):
 def test_a_callback_with_no_code_is_refused(client):
     state = _start(client)
     response = client.get(reverse("google-callback"), {"state": state})
-    assert response["Location"] == "/sign-in?error=google"
+    assert response["Location"] == SIGN_IN_FAILED
 
 
 # ── who may come in ─────────────────────────────────────────────────────────
@@ -223,15 +229,73 @@ def test_an_account_with_an_organisation_lands_on_the_dashboard(client, monkeypa
     assert response["Location"] == "/dashboard"
 
 
-def test_an_unknown_address_is_refused_and_creates_nothing(client, monkeypatch):
-    _answers(monkeypatch, email="stranger@example.com")
+def test_an_unknown_address_creates_an_account_and_signs_in(client, monkeypatch):
+    _answers(monkeypatch, email="stranger@example.com", name="A Stranger")
     state = _start(client)
 
     response = client.get(reverse("google-callback"), {"code": "x", "state": state})
 
-    assert response["Location"] == "/sign-in?error=google"
-    assert not _signed_in(client)
-    assert not User.objects.filter(email="stranger@example.com").exists()
+    user = User.objects.get(email="stranger@example.com")
+    assert _signed_in(client)
+    assert user.full_name == "A Stranger"
+    # Onboarding, not the dashboard: the account exists and has no
+    # organisation yet, which is the same state a password signup reaches.
+    assert response["Location"] == "/onboarding"
+
+
+def test_a_created_account_has_no_usable_password(client, monkeypatch):
+    """
+    Not blank and not random — unusable. check_password refuses every string
+    against it, so this cannot become a guessable account, and the person can
+    still set one later through the forgot-password flow.
+    """
+    _answers(monkeypatch, email="stranger@example.com")
+    state = _start(client)
+    client.get(reverse("google-callback"), {"code": "x", "state": state})
+
+    user = User.objects.get(email="stranger@example.com")
+    assert not user.has_usable_password()
+    assert not user.check_password("")
+    assert not user.check_password("password")
+
+
+def test_a_created_account_is_not_staff_and_has_no_organisation(client, monkeypatch):
+    """
+    The two things a Google signup must never hand out. is_staff reads across
+    every organisation; an organisation is what onboarding is for.
+    """
+    _answers(monkeypatch, email="stranger@example.com")
+    state = _start(client)
+    client.get(reverse("google-callback"), {"code": "x", "state": state})
+
+    user = User.objects.get(email="stranger@example.com")
+    assert user.is_staff is False
+    assert user.is_superuser is False
+    assert user.staff_role == ""
+    assert not identity.has_organisation(user)
+
+
+def test_a_created_account_does_not_have_to_verify_its_address_again(
+    client, monkeypatch
+):
+    """Google already proved it. Asking again strands them on /verify."""
+    _answers(monkeypatch, email="stranger@example.com")
+    state = _start(client)
+    client.get(reverse("google-callback"), {"code": "x", "state": state})
+
+    assert User.objects.get(email="stranger@example.com").is_email_verified
+
+
+def test_signing_in_twice_does_not_create_a_second_account(client, monkeypatch):
+    """The falsifiability partner: creation must be conditional, not automatic."""
+    _answers(monkeypatch, email="stranger@example.com")
+
+    for _ in range(2):
+        client.logout()
+        state = _start(client)
+        client.get(reverse("google-callback"), {"code": "x", "state": state})
+
+    assert User.objects.filter(email="stranger@example.com").count() == 1
 
 
 def test_an_unverified_google_address_is_refused(client, monkeypatch):
@@ -246,7 +310,7 @@ def test_an_unverified_google_address_is_refused(client, monkeypatch):
 
     response = client.get(reverse("google-callback"), {"code": "x", "state": state})
 
-    assert response["Location"] == "/sign-in?error=google"
+    assert response["Location"] == "/sign-in?error=unverified"
     assert not _signed_in(client)
 
 
@@ -260,7 +324,7 @@ def test_a_deactivated_account_cannot_come_in_this_way(client, monkeypatch):
 
     response = client.get(reverse("google-callback"), {"code": "x", "state": state})
 
-    assert response["Location"] == "/sign-in?error=google"
+    assert response["Location"] == "/sign-in?error=inactive"
     assert not _signed_in(client)
 
 
@@ -274,7 +338,7 @@ def test_a_locked_account_cannot_come_in_this_way(client, monkeypatch):
 
     response = client.get(reverse("google-callback"), {"code": "x", "state": state})
 
-    assert response["Location"] == "/sign-in?error=google"
+    assert response["Location"] == "/sign-in?error=locked"
     assert not _signed_in(client)
 
 
@@ -289,7 +353,10 @@ def test_google_cannot_be_reached_is_not_a_sign_in(client, monkeypatch):
 
     response = client.get(reverse("google-callback"), {"code": "x", "state": state})
 
-    assert response["Location"] == "/sign-in?error=google"
+    # "unavailable", not the vague code: our server could not reach Google,
+    # and telling somebody to check their Google account would send them
+    # looking in the wrong place.
+    assert response["Location"] == "/sign-in?error=unavailable"
     assert not _signed_in(client)
 
 
@@ -335,22 +402,20 @@ def test_a_successful_sign_in_clears_failed_attempts(client, monkeypatch):
     assert user.failed_sign_ins == 0
 
 
-def test_an_unverified_account_is_sent_to_verify_not_the_dashboard(
-    client, monkeypatch
-):
+def test_nobody_is_ever_routed_to_verify(client, monkeypatch):
     """
-    A Google sign-in verifies the address, so the destination is the dashboard
-    — but only because the verification above actually happened. This is the
-    falsifiability partner for that test: if the stamping were removed, this
-    would fail too rather than silently routing people to /verify forever.
+    The falsifiability partner for the stamping tests. If the verification
+    stamp were dropped, these would land on /verify with an empty inbox and no
+    way forward — a dead end rather than a visible failure.
     """
-    User.objects.create_user(email="new@example.com", password=PASSWORD)
-    _answers(monkeypatch, email="new@example.com")
-    state = _start(client)
+    User.objects.create_user(email="existing@example.com", password=PASSWORD)
 
-    response = client.get(reverse("google-callback"), {"code": "x", "state": state})
-
-    assert response["Location"] in ("/dashboard", "/onboarding")
+    for email in ("existing@example.com", "brand-new@example.com"):
+        client.logout()
+        _answers(monkeypatch, email=email)
+        state = _start(client)
+        response = client.get(reverse("google-callback"), {"code": "x", "state": state})
+        assert not response["Location"].startswith("/verify"), email
 
 
 # ── reading the ID token ────────────────────────────────────────────────────
@@ -435,3 +500,31 @@ def test_a_payload_that_is_not_json_is_refused():
     payload = base64.urlsafe_b64encode(b"not json at all").decode().rstrip("=")
     with pytest.raises(google.GoogleError):
         google._claims(f"header.{payload}.signature")
+
+
+# ── the way out of a passwordless account ───────────────────────────────────
+
+
+def test_a_google_account_can_set_a_password_through_forgot(client, monkeypatch):
+    """
+    The escape hatch a created account depends on, tested rather than assumed.
+
+    An account made through Google has no usable password. If the reset flow
+    refused it — and refusing accounts with unusable passwords is a real thing
+    frameworks do — the person would be locked to Google for good, with no
+    route back and nothing saying so.
+    """
+    _answers(monkeypatch, email="stranger@example.com")
+    state = _start(client)
+    client.get(reverse("google-callback"), {"code": "x", "state": state})
+    client.logout()
+
+    user = User.objects.get(email="stranger@example.com")
+    assert not user.has_usable_password()
+
+    issued = identity.issue_code(user, EmailCode.Purpose.RESET)
+    identity.complete_password_reset(user.email, issued.code, "correct-horse-battery-2")
+
+    user.refresh_from_db()
+    assert user.has_usable_password()
+    assert identity.authenticate(user.email, "correct-horse-battery-2") == user

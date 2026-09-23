@@ -4,7 +4,15 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AuthShell } from "@/components/auth/AuthShell";
-import { Field, Fields, FormError, PasswordField, Submit } from "@/components/auth/Form";
+import {
+  Divider,
+  Field,
+  Fields,
+  FormError,
+  PasswordField,
+  SecondaryLink,
+  Submit,
+} from "@/components/auth/Form";
 import { ReturnNotice } from "@/components/auth/ReturnNotice";
 import { ApiError, auth, session } from "@/lib/api";
 import { advance, readReturnTo, useReturnTo, withReturnTo } from "@/lib/returnTo";
@@ -67,6 +75,19 @@ export default function SignUpPage() {
     };
   }, []);
 
+  /*
+   * Offered only if the server would honour it — see session(). Its own
+   * effect rather than the one above, which returns early when there is no
+   * ?return= and would otherwise leave the button hidden for everybody
+   * arriving here directly.
+   */
+  const [googleOffered, setGoogleOffered] = useState(false);
+  useEffect(() => {
+    session()
+      .then((s) => setGoogleOffered(Boolean(s.google_sign_in)))
+      .catch(() => setGoogleOffered(false));
+  }, []);
+
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -125,6 +146,26 @@ export default function SignUpPage() {
           />
 
           <Submit pending={pending}>Create account</Submit>
+
+          {/*
+            Signing up with Google is the same endpoint as signing in with it:
+            the server creates the account if the address is new and signs
+            them in if it is not. Two buttons pointing at one route, because
+            the person does not know which of the two they are doing and
+            should not have to.
+
+            Placed ABOVE the terms paragraph so "By continuing" covers this
+            button too. Moving it below would put the agreement after the
+            control that accepts it.
+          */}
+          {googleOffered && (
+            <>
+              <Divider />
+              <SecondaryLink href="/api/auth/google/start">
+                Continue with Google
+              </SecondaryLink>
+            </>
+          )}
 
           {/*
             ABSOLUTE, and plain <a> rather than next/link.

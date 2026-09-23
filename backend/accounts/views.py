@@ -746,11 +746,38 @@ class SignOnTokenView(APIView):
 
 SIGN_IN = "/sign-in"
 
-# Enough for the sign-in page to say something true, and not enough to tell an
-# attacker which half of the flow they broke.
-SIGN_IN_FAILED = SIGN_IN + "?error=google"
-
 STATE_SESSION_KEY = "google_oauth_state"
+
+# ── WHY THESE ARE NOW DISTINCT, WHEN SIGN-IN'S ARE NOT ──────────────────────
+#
+# The password form answers unknown-address and wrong-password identically,
+# because telling them apart is a free account-enumeration oracle.
+#
+# Nothing here is reachable without already holding the Google account for the
+# address, so there is no oracle to protect: an attacker can only ever ask
+# about addresses they control, and about those they learn nothing they did not
+# already know. What one message cost instead was a person stuck on a screen
+# that would not say whether the problem was their Google account, their
+# Genmars account, or our server — with no route to fixing any of them.
+#
+# The one that stays vague is the fallback. An unrecognised reason means
+# something changed that this map has not caught up with, and guessing at a
+# cause would be worse than admitting there is one.
+GOOGLE_ERROR_CODES = {
+    "google_email_unverified": "unverified",
+    "google_inactive_account": "inactive",
+    "account_locked": "locked",
+    # Not from an AuthError — the state check raises nothing, so the callback
+    # passes this reason in by hand.
+    "expired": "expired",
+    "unavailable": "unavailable",
+}
+
+
+def _google_failed(reason: str = "") -> HttpResponseRedirect:
+    return HttpResponseRedirect(
+        f"{SIGN_IN}?error=" + GOOGLE_ERROR_CODES.get(reason, "google")
+    )
 
 
 class GoogleStartView(APIView):
@@ -801,12 +828,12 @@ class GoogleCallbackView(APIView):
             # Login CSRF, a stale tab, or a session that expired mid-flow.
             # They are indistinguishable from here and the remedy is the same.
             log.warning("google sign-in state mismatch")
-            return HttpResponseRedirect(SIGN_IN_FAILED)
+            return _google_failed("expired")
 
         code = request.GET.get("code") or ""
         if not code:
             log.warning("google sign-in callback with no code")
-            return HttpResponseRedirect(SIGN_IN_FAILED)
+            return _google_failed()
 
         try:
             claims = google.exchange_code(code)
@@ -814,19 +841,35 @@ class GoogleCallbackView(APIView):
             # The reason is ours. redirect_uri_mismatch in particular is hours
             # of guessing without it, and it is not a secret from us.
             log.warning("google token exchange failed: %s", e)
-            return HttpResponseRedirect(SIGN_IN_FAILED)
+            return _google_failed("unavailable")
 
         try:
-            user = identity.authenticate_google(
-                email=claims.email, email_verified=claims.email_verified
+            user, created = identity.sign_in_or_create_with_google(
+                email=claims.email,
+                email_verified=claims.email_verified,
+                full_name=claims.full_name,
             )
         except identity.AuthError as e:
-            log.info("google sign-in refused: %s", e.reason)
-            return HttpResponseRedirect(SIGN_IN_FAILED)
+            # The address is logged on a REFUSAL only, and deliberately.
+            #
+            # Without it "Google sign-in does not work" is undiagnosable: the
+            # reason alone cannot distinguish the person who used their
+            # Workspace account from the one whose address really is
+            # deactivated, and the first real report of this cost a round trip
+            # to find out which. It is an internal log and not a response, so
+            # it is not an enumeration oracle — and reaching this line at all
+            # requires holding the Google account for the address.
+            log.info("google sign-in refused for %s: %s", claims.email, e.reason)
+            return _google_failed(e.reason)
 
         # Same session-fixation defence as the password path: login() cycles
         # the session key, so a key planted before sign-in is not the key that
         # ends up authenticated.
         login(request, user, backend=SESSION_BACKEND)
 
+        log.info("google sign-%s: %s", "up" if created else "in", user.email)
+
+        # A new account has no organisation, so _destination sends it to
+        # onboarding — the same screen a password signup reaches, and the
+        # reason creating accounts here routes around nothing.
         return HttpResponseRedirect(_destination(user))
