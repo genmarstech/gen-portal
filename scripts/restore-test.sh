@@ -100,18 +100,73 @@ case "$dump_name" in
     # "No passphrase given" and a message announcing the key was lost. It was
     # not; nobody had been asked for it. Without --batch, gpg uses the agent,
     # prompting once and caching for the rest of the session.
-    if ! gpg --yes --quiet --output "$decrypted" --decrypt "$dump_path"; then
+    #
+    # ── gpg's OWN WORDS ARE CAPTURED AND THEN READ ──────────────────────────
+    #
+    # Branching on them is the difference between naming the cause and listing
+    # suspects. The list below has already been wrong once, in business-os: it
+    # blamed a passphrase and then a lost key for what was a missing
+    # directory. Its third suspect is "every backup you have is unreadable" —
+    # a sentence to spend only when it is true, or it will not be believed on
+    # the day it is.
+    #
+    # pinentry prompts on the TTY, not stderr, so capturing stderr does not
+    # swallow the passphrase prompt.
+    if ! gpg_message="$(gpg --yes --quiet --output "$decrypted" --decrypt "$dump_path" 2>&1)"; then
+        [ -n "$gpg_message" ] && printf '%s\n' "$gpg_message" >&2
+        echo >&2
         echo "FATAL: could not decrypt ${dump_name}." >&2
         echo >&2
-        # Ordered by likelihood, not by drama. The first two are ordinary and
-        # fixable in a minute; only the third is the emergency, and announcing
-        # the emergency for a mistyped passphrase is how a real one gets
-        # disbelieved later.
-        echo "  1. Wrong or unentered passphrase — try again." >&2
-        echo "  2. This machine does not hold the private key. Check with:" >&2
-        echo "       gpg --list-secret-keys ${BACKUP_RECIPIENT:-413CB8DF5FECF5F4}" >&2
-        echo "  3. If the key is genuinely gone, THAT is the emergency: every" >&2
-        echo "     backup since encryption was switched on is unreadable." >&2
+
+        case "$gpg_message" in
+        *Timeout*|*"Inappropriate ioctl"*|*"no terminal"*|*"No pinentry"*)
+            # THE CASE THAT LOOKS LIKE A LOST KEY AND IS NOT.
+            #
+            # gpg could not ASK for the passphrase. That happens whenever this
+            # runs without a terminal — cron, a systemd unit, an editor task,
+            # an agent — and also when the agent's own prompt expired while
+            # nobody was looking.
+            #
+            # Nothing is wrong with the key or the file. Reading this as
+            # "wrong passphrase" sends somebody to retype a correct one;
+            # reading it as "the key is gone" starts an incident that is not
+            # happening.
+            echo "  gpg could not ASK for your passphrase — it timed out or had" >&2
+            echo "  no terminal to prompt on." >&2
+            echo >&2
+            echo "  NOTHING IS WRONG WITH THE KEY OR THE BACKUP. Run this again" >&2
+            echo "  in a terminal you are sitting at:" >&2
+            echo "    cd $(pwd) && ${0} ${dump_path}" >&2
+            echo >&2
+            echo "  If you need it unattended, the passphrase has to reach the" >&2
+            echo "  agent some other way — a decision about where that" >&2
+            echo "  passphrase then lives, not a flag to add here." >&2
+            ;;
+        *"No secret key"*)
+            echo "  This machine does not hold the private key for this file." >&2
+            echo >&2
+            echo "  Check which keys are here:" >&2
+            echo "    gpg --list-secret-keys" >&2
+            echo >&2
+            echo "  If it is simply the wrong machine, that is all this is. If" >&2
+            echo "  the key existed here and no longer does, that is the" >&2
+            echo "  emergency: every backup since encryption was switched on" >&2
+            echo "  is unreadable." >&2
+            ;;
+        *"Bad passphrase"*|*"bad passphrase"*)
+            echo "  Wrong passphrase. Try again — this is the ordinary one." >&2
+            ;;
+        *)
+            # Ordered by likelihood, not by drama. Only the last is the
+            # emergency.
+            echo "  1. Wrong or unentered passphrase — try again." >&2
+            echo "  2. This machine does not hold the private key. Check with:" >&2
+            echo "       gpg --list-secret-keys ${BACKUP_RECIPIENT:-413CB8DF5FECF5F4}" >&2
+            echo "  3. If the key is genuinely gone, THAT is the emergency:" >&2
+            echo "     every backup since encryption was switched on is" >&2
+            echo "     unreadable." >&2
+            ;;
+        esac
         exit 1
     fi
     chmod 600 "$decrypted"
