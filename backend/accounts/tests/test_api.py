@@ -289,7 +289,8 @@ def test_reset_code_cannot_be_replayed(client, user):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_session_reports_anonymous_and_sets_the_csrf_cookie(client):
+@pytest.mark.parametrize("configured", [False, True])
+def test_session_reports_anonymous_and_sets_the_csrf_cookie(client, settings, configured):
     """
     Equality, not a subset check, and deliberately so: an anonymous caller must
     learn nothing about anybody, and a key added carelessly here is how that
@@ -298,10 +299,23 @@ def test_session_reports_anonymous_and_sets_the_csrf_cookie(client):
 
     `google_sign_in` qualifies — it says whether the server would honour the
     button, which the button's own 404 would say anyway.
+
+    ── THE SETTING IS FORCED, BOTH WAYS, AND THAT IS THE POINT ───────────────
+    Asserting the ambient value made this pass in CI, which has no .env, and
+    fail on any machine that had configured Google sign-in — a test that
+    depends on the developer's credentials rather than on the code. Both cases
+    are pinned instead, so the shape is checked whichever way the deployment
+    is set up.
     """
+    settings.GOOGLE_OAUTH_CLIENT_ID = "an-id" if configured else ""
+    settings.GOOGLE_OAUTH_CLIENT_SECRET = "a-secret" if configured else ""
+    settings.GOOGLE_OAUTH_REDIRECT_URI = (
+        "https://app.genmars.co.ke/api/auth/google/callback" if configured else ""
+    )
+
     r = client.get(reverse("session"))
     assert r.status_code == 200
-    assert r.json() == {"authenticated": False, "google_sign_in": False}
+    assert r.json() == {"authenticated": False, "google_sign_in": configured}
     assert "gm_csrftoken" in r.cookies, "the frontend cannot POST without this"
 
 

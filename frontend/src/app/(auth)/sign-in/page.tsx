@@ -15,6 +15,7 @@ import {
   Submit,
 } from "@/components/auth/Form";
 import { ApiError, auth, session } from "@/lib/api";
+import { googleSignInError } from "@/lib/googleSignIn";
 import { ReturnNotice } from "@/components/auth/ReturnNotice";
 import { advance, useReturnTo, withReturnTo } from "@/lib/returnTo";
 import styles from "../auth.module.css";
@@ -52,24 +53,17 @@ export default function SignInPage() {
   }, []);
 
   /*
-   * The Google callback sends people back here with ?error=google when it
+   * The Google callback sends people back here with ?error=<code> when it
    * refuses. Read from the URL in an effect, matching useReturnTo — reading
    * search params during render would need a Suspense boundary this page does
    * not otherwise want.
    *
-   * ONE MESSAGE FOR EVERY REFUSAL, and it must stay that way. The callback
-   * cannot say whether the address is unknown, deactivated, locked, or simply
-   * unverified at Google without handing back the enumeration oracle the
-   * password path is careful to close.
+   * The message is specific, unlike a failed password sign-in. See the note in
+   * lib/googleSignIn.ts for why that is safe here and is not there.
    */
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("error") === "google") {
-      setError(
-        "We could not sign you in with Google. If you have a Genmars account, " +
-          "sign in with your email address and password.",
-      );
-    }
+    const message = googleSignInError(window.location.search);
+    if (message) setError(message);
   }, []);
 
   async function onSubmit(e: React.FormEvent) {
