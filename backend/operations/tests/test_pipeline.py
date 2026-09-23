@@ -347,3 +347,80 @@ def test_the_oldest_still_reports_the_longest_wait():
 
     assert by_name["Oldest Co"] >= 30
     assert by_name["Newest Co"] <= 1
+
+
+# ── the overview activity strip ──────────────────────────────────────────────
+
+
+def test_the_activity_strip_shows_what_a_client_wrote_at_onboarding():
+    """
+    The reason the strip exists. A row saying "Client Co asked for help" with
+    no sight of what they asked for moves the work rather than removing it.
+    """
+    from operations import selectors
+
+    e = _enquiry_aged(0, "Client Co")
+    Enquiry.objects.filter(pk=e.pk).update(
+        problem="We reconcile M-Pesa against invoices by hand, two days a week."
+    )
+
+    rows = [r for r in selectors.recent_activity() if r["kind"] == "enquiry"]
+    assert rows, "the enquiry did not reach the strip"
+    assert "M-Pesa" in rows[0]["detail"]
+
+
+def test_every_activity_row_carries_somewhere_to_go():
+    """
+    Each row must land on the screen where the client can be read AND reached.
+    A row with no url is a notification, and there is already a bell for that.
+    """
+    from operations import selectors
+
+    _enquiry_aged(0, "Client Co")
+    User.objects.create_user(
+        email="newclient@example.com", password=PASSWORD, full_name="New Client",
+        email_verified_at=timezone.now(),
+    )
+
+    rows = selectors.recent_activity()
+    assert rows
+    for row in rows:
+        assert row["url"], row
+
+
+def test_an_enquiry_row_opens_that_enquiry_not_just_the_page():
+    from operations import selectors
+
+    e = _enquiry_aged(0, "Client Co")
+    row = next(r for r in selectors.recent_activity() if r["kind"] == "enquiry")
+    assert row["url"] == f"/?enquiry={e.pk}"
+
+
+def test_staff_accounts_are_not_announced_as_new_clients(staff):
+    """
+    A staff account is not news to the people who made it, and it would push
+    the rows this strip exists for off a short list.
+    """
+    from operations import selectors
+
+    rows = [r for r in selectors.recent_activity() if r["kind"] == "account"]
+    assert staff.email not in [r["detail"] for r in rows]
+
+
+def test_the_strip_is_newest_first_across_the_different_kinds():
+    """
+    The merge is the part that can silently be wrong: each source is ordered
+    on its own, and three sorted lists concatenated are not a sorted list.
+    """
+    from operations import selectors
+
+    _enquiry_aged(9, "Older Co")
+    _enquiry_aged(1, "Newer Co")
+    User.objects.create_user(
+        email="middle@example.com", password=PASSWORD, full_name="Middle",
+        email_verified_at=timezone.now(),
+    )
+
+    rows = selectors.recent_activity()
+    stamps = [r["at"] for r in rows]
+    assert stamps == sorted(stamps, reverse=True)
