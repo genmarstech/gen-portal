@@ -215,10 +215,23 @@
   border-color: var(--link-hover);
 }
 
-/* Same control, rendered as an anchor — see SecondaryLink. */
+/* Same control, rendered as an anchor — see SecondaryLink.
+   `place-items: center` comes from .secondary and centres a single child; with
+   an icon beside a label there are two, so the grid has to flow in a row or
+   they stack. */
 .secondaryLink {
   composes: secondary;
+  grid-auto-flow: column;
+  gap: 0.625rem;
   text-decoration: none;
+}
+
+/* The mark keeps its own size whatever the label does, and does not stretch
+   with the grid track. */
+.linkIcon {
+  display: inline-flex;
+  flex: none;
+  line-height: 0;
 }
 
 .secondaryLink:hover {
