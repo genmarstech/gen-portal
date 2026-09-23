@@ -173,6 +173,67 @@ export function ChoiceField({
 }
 
 
+/**
+ * Several answers, not one.
+ *
+ * Deliberately the same markup and the same classes as ChoiceField — the
+ * hidden input with a styled label — so a question that takes many answers
+ * looks like a question that takes one, and nobody has to learn a second
+ * control. The only real difference is `type` and that the state is a set.
+ *
+ * ── WHY THIS EXISTS AT ALL ────────────────────────────────────────────────
+ * Onboarding asked for a written paragraph before it would finish an account,
+ * and people stopped there — not because they had no problem, but because
+ * describing it in prose is work, and it was work standing between them and
+ * the thing they came for. Ticking is not.
+ *
+ * The free-text box is still there for anyone who wants it. It is no longer
+ * the toll gate.
+ */
+export function MultiChoiceField({
+  label,
+  options,
+  values,
+  onChange,
+  hint,
+}: {
+  label: string;
+  options: readonly string[];
+  values: readonly string[];
+  onChange: (values: string[]) => void;
+  hint?: string;
+}) {
+  function toggle(option: string) {
+    onChange(
+      values.includes(option)
+        ? values.filter((v) => v !== option)
+        : [...values, option],
+    );
+  }
+
+  return (
+    <fieldset className={styles.choiceSet}>
+      <legend className={styles.label}>{label}</legend>
+      <div className={styles.choices}>
+        {options.map((option) => (
+          <label key={option} className={styles.choice}>
+            <input
+              type="checkbox"
+              value={option}
+              checked={values.includes(option)}
+              onChange={() => toggle(option)}
+              className={styles.choiceInput}
+            />
+            <span className={styles.choiceLabel}>{option}</span>
+          </label>
+        ))}
+      </div>
+      {hint ? <p className={styles.hint}>{hint}</p> : null}
+    </fieldset>
+  );
+}
+
+
 export function PasswordField({
   label = "Password",
   hint,
