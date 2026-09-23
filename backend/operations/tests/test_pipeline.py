@@ -287,3 +287,63 @@ def test_awaiting_note_counts_active_orders_with_no_recent_published_note(
 
     counts = signed_in.get(reverse("ops-overview")).json()["counts"]
     assert counts["awaiting_note"] == 0
+
+
+# ── the order of the queue ───────────────────────────────────────────────────
+
+
+def _enquiry_aged(days: int, name: str) -> Enquiry:
+    """An enquiry that arrived `days` ago. created_at is auto_now_add, so it
+    has to be written after the fact."""
+    org = Organisation.objects.create(name=name)
+    submitter = User.objects.create_user(
+        email=f"{name.lower().replace(' ', '-')}@example.com",
+        password=PASSWORD,
+        email_verified_at=timezone.now(),
+    )
+    e = Enquiry.objects.create(
+        organisation=org,
+        submitted_by=submitter,
+        problem=f"Something {name} needs doing about it.",
+    )
+    Enquiry.objects.filter(pk=e.pk).update(
+        created_at=timezone.now() - dt.timedelta(days=days)
+    )
+    return e
+
+
+def test_the_queue_puts_the_newest_enquiry_first():
+    """
+    Pinned because this was reversed deliberately and the reasoning for the
+    old order was good — see the docstring on selectors.enquiries. An untested
+    ordering is one somebody flips back while tidying, and neither direction
+    should change by accident.
+    """
+    from operations import selectors
+
+    _enquiry_aged(30, "Oldest Co")
+    _enquiry_aged(1, "Newest Co")
+    _enquiry_aged(10, "Middle Co")
+
+    names = [e.organisation.name for e in selectors.enquiries()]
+    assert names == ["Newest Co", "Middle Co", "Oldest Co"]
+
+
+def test_the_oldest_still_reports_the_longest_wait():
+    """
+    The falsifiability partner. Sorting newest-first is only safe because
+    ageing stays visible per row — if waiting_days stopped being computed, the
+    test above would still pass while a month-old enquiry sat at the bottom
+    with nothing marking it.
+    """
+    from operations import selectors
+    from operations.serializers import EnquiryListSerializer
+
+    _enquiry_aged(30, "Oldest Co")
+    _enquiry_aged(1, "Newest Co")
+
+    rows = EnquiryListSerializer(selectors.enquiries(), many=True).data
+    by_name = {r["organisation"]: r["waiting_days"] for r in rows}
+
+    assert by_name["Oldest Co"] >= 30
+    assert by_name["Newest Co"] <= 1

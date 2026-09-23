@@ -42,18 +42,32 @@ from portal.models import (
 
 def enquiries(*, status: str | None = None) -> QuerySet[Enquiry]:
     """
-    The triage queue, oldest concern first.
+    The triage queue, newest first.
 
-    Ordered by creation ASCENDING, unlike every client-facing list. A queue is
-    not a feed: the enquiry that has been waiting longest is the one most at
-    risk of being forgotten, and putting the newest on top is how a backlog
-    quietly grows a tail nobody reads.
+    ── THIS WAS ASCENDING, AND THE ARGUMENT FOR THAT IS WORTH KEEPING ─────────
+    It read: a queue is not a feed, the enquiry waiting longest is the one most
+    at risk of being forgotten, and putting the newest on top is how a backlog
+    quietly grows a tail nobody reads. That is a real failure mode and this
+    change accepts it knowingly rather than because it was overlooked.
+
+    What decided it the other way: somebody triaging comes to this screen
+    because something just arrived, and having to scroll past a month of
+    decided work to find it made the common case the slow one. An enquiry
+    nobody has answered is a person waiting, and the delay that matters most
+    is the one happening right now.
+
+    ⚠ WHAT NOW GUARDS THE TAIL: `waiting_days` on every undecided row, styled
+      as a warning past three days (EnquiryQueue.tsx). That is a per-row badge,
+      not a sort, so it only helps somebody who scrolls. If the backlog the old
+      ordering feared ever appears, the fix is a count of overdue enquiries at
+      the top of the list — NOT quietly reversing this again, which would make
+      the screen jump around for whoever is used to it now.
     """
     qs = (
         Enquiry.objects.select_related(
             "organisation", "submitted_by", "converted_to", "decided_by"
         )
-        .order_by("created_at")
+        .order_by("-created_at")
     )
     if status:
         qs = qs.filter(status=status)
