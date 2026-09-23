@@ -10,6 +10,7 @@ import {
   Fields,
   FormError,
   PasswordField,
+  GoogleMark,
   SecondaryLink,
   Submit,
 } from "@/components/auth/Form";
@@ -161,7 +162,7 @@ export default function SignUpPage() {
           {googleOffered && (
             <>
               <Divider />
-              <SecondaryLink href="/api/auth/google/start">
+              <SecondaryLink href="/api/auth/google/start" icon={<GoogleMark />}>
                 Continue with Google
               </SecondaryLink>
             </>

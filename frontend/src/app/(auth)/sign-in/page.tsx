@@ -11,6 +11,7 @@ import {
   FormError,
   PasswordField,
   Secondary,
+  GoogleMark,
   SecondaryLink,
   Submit,
 } from "@/components/auth/Form";
@@ -131,7 +132,7 @@ export default function SignInPage() {
               Google script runs on this page and no SDK is loaded — Charter
               03 §I, and it keeps the CSP free of another origin. */}
           {googleOffered && (
-            <SecondaryLink href="/api/auth/google/start">
+            <SecondaryLink href="/api/auth/google/start" icon={<GoogleMark />}>
               Continue with Google
             </SecondaryLink>
           )}
