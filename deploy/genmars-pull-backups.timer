@@ -1,0 +1,24 @@
+# Daily, and Persistent.
+#
+# The server prunes its encrypted copies on a 14-day window, so a gap longer
+# than that silently loses everything in it. Daily leaves thirteen days of
+# margin for a laptop that was shut, travelling, or simply off.
+#
+# Persistent=true is the load-bearing line on a machine that is not always on:
+# without it a missed run is skipped forever and the schedule quietly becomes
+# "whenever the laptop happened to be awake at the right minute".
+
+[Unit]
+Description=Genmars — daily collection of encrypted backups
+
+[Timer]
+# Late morning rather than overnight, on purpose. The server dumps at 02:15 and
+# 02:45; a laptop is closed then. This runs at a time somebody is plausibly at
+# the machine, which is also when a desktop notification about a failure will
+# actually be seen.
+OnCalendar=*-*-* 11:00:00
+Persistent=true
+RandomizedDelaySec=900
+
+[Install]
+WantedBy=timers.target

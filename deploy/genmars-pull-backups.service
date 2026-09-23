@@ -1,0 +1,46 @@
+# Collect encrypted backups off the server.
+#
+# ⚠ THIS IS A USER UNIT AND IT RUNS ON YOUR LAPTOP, NOT ON THE SERVER.
+#
+# Everything else in this directory is a system unit for the Hetzner host.
+# This one is the opposite and must stay that way: the whole argument in
+# scripts/pull-backups.sh is that the destination reaches IN and the server
+# never pushes out, so that nothing which compromises the server can reach or
+# delete what has already been collected.
+#
+# Installing it on the server would invert that and quietly undo the property
+# it exists to provide.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/genmars-pull-backups.{service,timer} ~/.config/systemd/user/
+#   cp deploy/genmars-pull-alert@.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now genmars-pull-backups.timer
+#   systemctl --user list-timers genmars-pull-backups.timer
+#
+# Laptops sleep, so also:
+#   sudo loginctl enable-linger $USER
+# Without it the user manager stops when you log out, and a timer that only
+# runs while you happen to be logged in is not a schedule.
+
+[Unit]
+Description=Genmars — collect encrypted backups from the server
+Documentation=file:%h/Genmars/gen-portal/scripts/pull-backups.sh
+
+# Pointless without a route to the host. It still runs and fails honestly if
+# the network is up but the server is unreachable — that is worth knowing.
+After=network-online.target
+
+OnFailure=genmars-pull-alert@%N.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Genmars/gen-portal
+ExecStart=%h/Genmars/gen-portal/scripts/pull-backups.sh
+
+# No EnvironmentFile. The script needs only an ssh host alias, which comes from
+# ~/.ssh/config, and no credential of its own — the private key it depends on
+# is never read by this unit at all.
+
+[Install]
+WantedBy=default.target
