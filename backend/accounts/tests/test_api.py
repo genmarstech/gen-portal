@@ -290,9 +290,18 @@ def test_reset_code_cannot_be_replayed(client, user):
 
 
 def test_session_reports_anonymous_and_sets_the_csrf_cookie(client):
+    """
+    Equality, not a subset check, and deliberately so: an anonymous caller must
+    learn nothing about anybody, and a key added carelessly here is how that
+    stops being true. Widen this only for something that is a property of the
+    DEPLOYMENT rather than of a person.
+
+    `google_sign_in` qualifies — it says whether the server would honour the
+    button, which the button's own 404 would say anyway.
+    """
     r = client.get(reverse("session"))
     assert r.status_code == 200
-    assert r.json() == {"authenticated": False}
+    assert r.json() == {"authenticated": False, "google_sign_in": False}
     assert "gm_csrftoken" in r.cookies, "the frontend cannot POST without this"
 
 

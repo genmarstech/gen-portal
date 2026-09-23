@@ -129,6 +129,81 @@ def _clear_failures(user: User) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Signing in with Google
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# GOOGLE SAYS WHO SOMEBODY IS. IT DOES NOT SAY WHETHER THEY MAY COME IN.
+#
+# Every gate `authenticate` applies still applies here: locked accounts stay
+# locked, deactivated accounts stay out. Google having verified an address is
+# not a reason to skip the checks a password sign-in cannot skip — is_active is
+# how access ends everywhere at once, and an alternative door that ignored it
+# would quietly make that untrue.
+#
+# ⚠ AN UNKNOWN ADDRESS IS REFUSED. IT DOES NOT CREATE AN ACCOUNT.
+#   Signing up here is an invitation or a deliberate registration, and both
+#   attach an organisation and a role. A Google login that silently minted an
+#   account would route somebody around all of that, and the first anyone knew
+#   of it would be an orphan row with no membership.
+#
+# ⚠ email_verified IS LOAD-BEARING, NOT A FORMALITY. Without it, anyone able to
+#   create a Google account asserting an address they do not own could sign in
+#   as that person here. It is the whole basis for trusting the address, and
+#   the reason the refusal below is not merely tidy.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+GOOGLE_SIGN_IN_FAILURE = (
+    "We could not sign you in with Google. If you have a Genmars account, "
+    "sign in with your email address and password."
+)
+
+
+def authenticate_google(*, email: str, email_verified: bool) -> User:
+    """
+    Turn Google's claim about an address into a signed-in user, or refuse.
+
+    The caller has already established that the claim genuinely came from
+    Google. This function does not re-decide that — it decides what the claim
+    entitles somebody to, which is a different question and the one that
+    belongs behind this boundary.
+    """
+    email = (email or "").strip().lower()
+
+    if not email_verified:
+        raise AuthError("google_email_unverified", GOOGLE_SIGN_IN_FAILURE)
+
+    user = User.objects.filter(email=email).first()
+    if user is None:
+        # No timing equaliser here, and none is needed: reaching this point
+        # requires actually holding the Google account for the address, so
+        # there is no oracle to protect — an attacker can only ask about
+        # addresses they already control.
+        raise AuthError("google_no_such_account", GOOGLE_SIGN_IN_FAILURE)
+
+    if user.is_locked:
+        raise AccountLocked(user.locked_until)
+
+    if not user.is_active:
+        raise AuthError("google_inactive_account", GOOGLE_SIGN_IN_FAILURE)
+
+    # A successful sign-in by any route clears the count, exactly as a password
+    # sign-in does. Leaving it would let a stale run of typos lock an account
+    # that has just proved itself.
+    _clear_failures(user)
+
+    # Google has verified the address, so the account has too. This is the one
+    # thing a Google sign-in may change about an account, and it only ever
+    # moves a user forward — an already-verified address is left alone rather
+    # than re-stamped with today's date.
+    if not user.is_email_verified:
+        user.email_verified_at = timezone.now()
+        user.save(update_fields=["email_verified_at"])
+
+    return user
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Registration
 # ─────────────────────────────────────────────────────────────────────────────
 

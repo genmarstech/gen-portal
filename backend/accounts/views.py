@@ -17,10 +17,12 @@ makes the eventual AuthGate swap a day's work.
 from __future__ import annotations
 
 import logging
+import secrets
 
 from urllib.parse import quote
 
 from django.contrib.auth import login, logout
+from django.http import Http404, HttpResponseRedirect
 from django.middleware.csrf import get_token
 from django.utils import timezone
 from django.views.decorators.csrf import ensure_csrf_cookie
@@ -30,7 +32,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import emails, identity
+from . import emails, google, identity
 from .auth_backends import SESSION_BACKEND
 from .models import EmailCode, Membership, User
 from .throttling import (
@@ -216,11 +218,22 @@ class SessionView(APIView):
     def get(self, request):
         get_token(request)  # forces the cookie even on an anonymous request
         user = request.user
+
+        # Whether to offer the Google button, answered by the server that
+        # would have to honour it. A NEXT_PUBLIC_ flag would be a second
+        # switch that can disagree with this one, and the failure it produces
+        # — a button that 404s — looks like a broken deploy rather than a
+        # missing setting.
+        google_sign_in = google.is_configured()
+
         if not user.is_authenticated:
-            return Response({"authenticated": False})
+            return Response(
+                {"authenticated": False, "google_sign_in": google_sign_in}
+            )
         return Response(
             {
                 "authenticated": True,
+                "google_sign_in": google_sign_in,
                 "email": user.email,
                 "full_name": user.full_name,
                 "email_verified": user.is_email_verified,
@@ -703,3 +716,117 @@ class SignOnTokenView(APIView):
                 "issued_at": timezone.now().isoformat(),
             }
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Signing in with Google
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+# THESE TWO ARE BROWSER NAVIGATIONS, NOT API CALLS.
+#
+# Everything else in this file answers fetch() with JSON. These answer a
+# top-level navigation with a 302, because that is what an OAuth redirect flow
+# is: the person leaves for Google and comes back. Nothing calls them with
+# fetch, and a JSON body here would be read by nobody.
+#
+# ⚠ THE CALLBACK MUST BE SERVED FROM THE HOST THE PORTAL RUNS ON.
+#   Django sets its session cookie with NO Domain attribute, so the browser
+#   scopes it to whichever host served the response. A callback on
+#   api.genmars.co.ke sets a cookie for api.genmars.co.ke, which
+#   app.genmars.co.ke will never send — the person completes Google sign-in
+#   and lands back signed out, with nothing in any log to say why. On
+#   app.genmars.co.ke, Caddy sends /api/* to Next and next.config rewrites it
+#   here, so the Set-Cookie comes from the right host.
+#
+#   The tempting repair is SESSION_COOKIE_DOMAIN = ".genmars.co.ke". That is
+#   forbidden — it would start sending client sessions to the marketing site
+#   and to the API host. See the warning in settings.py.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SIGN_IN = "/sign-in"
+
+# Enough for the sign-in page to say something true, and not enough to tell an
+# attacker which half of the flow they broke.
+SIGN_IN_FAILED = SIGN_IN + "?error=google"
+
+STATE_SESSION_KEY = "google_oauth_state"
+
+
+class GoogleStartView(APIView):
+    """Send the browser to Google."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SignInThrottle]
+    throttle_scope = "auth_sign_in"
+
+    def get(self, request):
+        if not google.is_configured():
+            raise Http404
+
+        state = google.new_state()
+
+        # In the session, so the callback can prove the browser coming back is
+        # the browser that left. Django's session cookie is HttpOnly, SameSite
+        # and signed, so this is not somewhere a page can reach.
+        request.session[STATE_SESSION_KEY] = state
+
+        return HttpResponseRedirect(google.authorization_url(state=state))
+
+
+class GoogleCallbackView(APIView):
+    """Where Google sends them back."""
+
+    permission_classes = [AllowAny]
+    throttle_classes = [SignInThrottle]
+    throttle_scope = "auth_sign_in"
+
+    def get(self, request):
+        if not google.is_configured():
+            raise Http404
+
+        # Popped whatever happens. A state that survived one callback could be
+        # replayed against another, and there is no flow in which reusing it is
+        # correct — a second attempt starts at /start and mints a new one.
+        expected = request.session.pop(STATE_SESSION_KEY, None)
+
+        # The person pressed cancel on Google's screen, or Google refused.
+        # Not an error worth a message; they are back where they started.
+        if request.GET.get("error"):
+            log.info("google sign-in abandoned: %s", request.GET["error"])
+            return HttpResponseRedirect(SIGN_IN)
+
+        state = request.GET.get("state") or ""
+        if not expected or not secrets.compare_digest(state, expected):
+            # Login CSRF, a stale tab, or a session that expired mid-flow.
+            # They are indistinguishable from here and the remedy is the same.
+            log.warning("google sign-in state mismatch")
+            return HttpResponseRedirect(SIGN_IN_FAILED)
+
+        code = request.GET.get("code") or ""
+        if not code:
+            log.warning("google sign-in callback with no code")
+            return HttpResponseRedirect(SIGN_IN_FAILED)
+
+        try:
+            claims = google.exchange_code(code)
+        except google.GoogleError as e:
+            # The reason is ours. redirect_uri_mismatch in particular is hours
+            # of guessing without it, and it is not a secret from us.
+            log.warning("google token exchange failed: %s", e)
+            return HttpResponseRedirect(SIGN_IN_FAILED)
+
+        try:
+            user = identity.authenticate_google(
+                email=claims.email, email_verified=claims.email_verified
+            )
+        except identity.AuthError as e:
+            log.info("google sign-in refused: %s", e.reason)
+            return HttpResponseRedirect(SIGN_IN_FAILED)
+
+        # Same session-fixation defence as the password path: login() cycles
+        # the session key, so a key planted before sign-in is not the key that
+        # ends up authenticated.
+        login(request, user, backend=SESSION_BACKEND)
+
+        return HttpResponseRedirect(_destination(user))

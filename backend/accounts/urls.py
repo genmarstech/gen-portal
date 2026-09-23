@@ -15,6 +15,17 @@ urlpatterns = [
     path("auth/accept-invite", views.AcceptInviteView.as_view(), name="accept-invite"),
     path("auth/change-password", views.ChangePasswordView.as_view(), name="change-password"),
 
+    # Google sign-in. A browser NAVIGATES to these — they answer with a 302,
+    # not JSON, and nothing in api.ts calls them. The callback path is
+    # registered with Google and matched whole; changing it here without
+    # changing it there breaks sign-in with redirect_uri_mismatch.
+    path("auth/google/start", views.GoogleStartView.as_view(), name="google-start"),
+    path(
+        "auth/google/callback",
+        views.GoogleCallbackView.as_view(),
+        name="google-callback",
+    ),
+
     # Signing in to a sibling application with a Genmars account. See the
     # section at the foot of views.py for which of these a browser calls and
     # which one a sibling's server calls.

@@ -444,6 +444,32 @@ RESEND_BACKEND = "accounts.mail_backends.ResendBackend"
 # dashboard if it is ever printed, pasted, or committed.
 RESEND_API_KEY = env("RESEND_API_KEY", default="")
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Google sign-in
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Empty by default, and empty means OFF: accounts/google.is_configured() is
+# false and both views 404. A half-configured feature that returns errors
+# invites somebody to debug it; one that is not there says what is true.
+#
+# ⚠ THE REDIRECT MUST BE ON THE HOST THE PORTAL IS SERVED FROM, and must match
+#   what is registered in the Google console CHARACTER FOR CHARACTER — Google
+#   compares it whole, like validate_live_https_url does, not by prefix.
+#
+#   It is app.genmars.co.ke and not api.genmars.co.ke for a reason worth
+#   keeping: the session cookie carries no Domain attribute, so it is scoped to
+#   the host that set it. A callback on the API host would set a cookie the
+#   portal never sends, and sign-in would silently do nothing. The workaround
+#   somebody will reach for is SESSION_COOKIE_DOMAIN, which is exactly what the
+#   warning further up this file forbids.
+GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
+GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
+GOOGLE_OAUTH_REDIRECT_URI = env(
+    "GOOGLE_OAUTH_REDIRECT_URI",
+    default="http://localhost:3010/api/auth/google/callback",
+)
+
 # SMTP, retained as the fallback path — if Resend is ever unreachable, pointing
 # EMAIL_BACKEND at Django's smtp backend with Zoho credentials restores mail
 # without a code change. Zoho on 587 with STARTTLS, per

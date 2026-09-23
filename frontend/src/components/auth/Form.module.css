@@ -215,6 +215,17 @@
   border-color: var(--link-hover);
 }
 
+/* Same control, rendered as an anchor — see SecondaryLink. */
+.secondaryLink {
+  composes: secondary;
+  text-decoration: none;
+}
+
+.secondaryLink:hover {
+  color: var(--link-hover);
+  border-color: var(--link-hover);
+}
+
 /* A control that cannot be used must LOOK unusable. The design draws this as a
    live button; shipping it that way invites a click that does nothing. */
 .secondary:disabled {
