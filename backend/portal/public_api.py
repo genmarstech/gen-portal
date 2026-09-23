@@ -13,9 +13,12 @@ Three rules, and they are the whole security model:
 
   · PUBLISHED ROWS ONLY. The queryset filters on is_published and there is no
     parameter that widens it. A draft is invisible, not merely unlisted.
-  · Doc IS THE ONLY MODEL REACHED. No joins, no related fields, no counts over
-    other tables. Adding a second model here needs the same argument all over
-    again.
+  · TWO MODELS ARE REACHED, Doc AND WorkItem, AND NO OTHERS. No joins, no
+    related fields, no counts over other tables. WorkItem was the second and
+    had to make the argument again from scratch: it is marketing copy about
+    our own work, written by staff for strangers to read, which is exactly
+    what Doc is. A model that holds anything a client told us does not
+    qualify, however convenient the route would be.
   · NOTHING IDENTIFIES ANYBODY. Not the author, not who last edited it, not
     when staff were working. `updated_by` exists on the model and is not
     serialised, deliberately.
@@ -48,7 +51,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Doc
+from .models import Doc, WorkItem
 
 
 def published() -> "models.QuerySet[Doc]":  # noqa: F821 - annotation only
@@ -94,6 +97,101 @@ class DocSerializer(serializers.ModelSerializer):
             "status_changed_at",
             "updated_at",
         ]
+
+
+class WorkPublished:
+    """
+    The one queryset for work, and the consent gate lives inside it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE GATE IS HERE, NOT IN THE EDITOR AND NOT ON THE WEBSITE.
+
+    Charter 04 §V — credited only with written permission. An item labelled a
+    client system is invisible until `permission_on_file` is set, and that is
+    enforced by the queryset that answers the internet rather than by an
+    editor remembering to leave a box unticked.
+
+    Something Genmars owns and runs has nobody to ask, so it needs no flag.
+    That distinction is the thing the website's old all-or-nothing gate got
+    wrong: it hid our own product behind two unrelated clients' signatures.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    @staticmethod
+    def all():
+        from django.db.models import Q
+
+        return WorkItem.objects.filter(
+            Q(is_published=True)
+            & (
+                Q(permission_on_file=True)
+                | ~Q(label__in=list(WorkItem.NEEDS_CONSENT))
+            )
+        )
+
+
+class WorkItemSerializer(serializers.ModelSerializer):
+    """
+    One piece of work.
+
+    `capabilities` is sent as a list rather than the newline blob it is
+    stored as, so the site is not parsing a textarea. `updated_by` is absent
+    for the same reason it is absent from a Doc: which member of the team
+    wrote it is nobody else's business.
+    """
+
+    capabilities = serializers.ListField(
+        source="capability_list", child=serializers.CharField(), read_only=True
+    )
+    label_display = serializers.CharField(source="get_label_display", read_only=True)
+    category_display = serializers.CharField(
+        source="get_category_display", read_only=True
+    )
+
+    class Meta:
+        model = WorkItem
+        fields = [
+            "slug",
+            "name",
+            "category",
+            "category_display",
+            "label",
+            "label_display",
+            "sector",
+            "year",
+            "url",
+            "summary",
+            "detail",
+            "capabilities",
+            "architecture",
+            "engineering",
+            "results",
+            "order",
+            "updated_at",
+        ]
+
+
+class WorkListView(APIView):
+    """Everything publishable, grouped the way the site groups it."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        items = WorkPublished.all().order_by("category", "order", "-year", "name")
+        return Response(
+            {
+                "work": WorkItemSerializer(items, many=True).data,
+                # Only the categories with something in them, in the model's
+                # declared order. A heading with nothing under it is a gap the
+                # reader assumes is a bug — same rule as /docs.
+                "categories": [
+                    {"key": key, "label": label}
+                    for key, label in WorkItem.Category.choices
+                    if any(i.category == key for i in items)
+                ],
+            }
+        )
 
 
 class DocListView(APIView):

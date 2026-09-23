@@ -27,8 +27,8 @@ from accounts.mail_health import mail_health
 from accounts.models import Membership, Organisation, User
 from portal.models import (
     AccessRequest,
-    BillingProfile,
     ActivityLog,
+    BillingProfile,
     Blocker,
     ChangeRequest,
     ClientProfile,
@@ -36,8 +36,9 @@ from portal.models import (
     ContactLogEntry,
     Contract,
     Decision,
-    HostingArrangement,
     DeliveryGate,
+    Doc,
+    HostingArrangement,
     Incident,
     Invoice,
     Milestone,
@@ -45,16 +46,16 @@ from portal.models import (
     Offer,
     Order,
     ProgressNote,
+    SecurityCheck,
     Service,
     ServiceTier,
-    Doc,
     SignOnApp,
+    SupportTicket,
     System,
     SystemEvent,
-    SecurityCheck,
-    SupportTicket,
     SystemKey,
     Task,
+    WorkItem,
 )
 
 from portal.system_api import issue_key
@@ -71,78 +72,79 @@ from .serializers import (
     AccessDecisionSerializer,
     AccessRequestSerializer,
     AccessRequestWriteSerializer,
-    BillingProfileSerializer,
     ActivitySerializer,
     AttachmentSerializer,
+    BillingProfileSerializer,
+    BlockerSerializer,
+    BlockerWriteSerializer,
+    ChangeRequestSerializer,
+    ClassifyChangeSerializer,
     ClientProfileSerializer,
     ClientProfileWriteSerializer,
-    OrderCreateSerializer,
     ClockSerializer,
     ContactLogSerializer,
     ContactLogWriteSerializer,
+    ContractSerializer,
+    ConvertSerializer,
+    DecideSerializer,
     DecisionActionSerializer,
-    HostingSerializer,
-    HostingWriteSerializer,
     DecisionSerializer,
     DecisionWriteSerializer,
-    ShiftSerializer,
+    DeliveryGateSerializer,
+    DirectInvoiceSerializer,
+    DocSerializer,
+    EnquiryDetailSerializer,
+    EnquiryListSerializer,
+    GateWriteSerializer,
+    HostingSerializer,
+    HostingWriteSerializer,
+    IncidentSerializer,
+    IncidentWriteSerializer,
+    InviteSerializer,
+    InvoiceSerializer,
+    InvoiceWriteSerializer,
+    IssueContractSerializer,
+    MembershipSerializer,
+    MembershipWriteSerializer,
+    MilestoneSerializer,
+    NotificationSerializer,
+    OfferReviseSerializer,
+    OfferSerializer,
+    OfferWriteSerializer,
+    OrderCreateSerializer,
+    OrderDetailSerializer,
+    OrderListSerializer,
+    OrderWriteSerializer,
+    OrganisationSerializer,
+    OrganisationWriteSerializer,
+    PaymentSerializer,
+    PostMortemSerializer,
+    ProgressNoteSerializer,
     SecurityCheckSerializer,
     SecurityCheckWriteSerializer,
-    TicketReplySerializer,
-    TicketSerializer,
-    ChangeRequestSerializer,
-    ClassifyChangeSerializer,
-    TicketStateSerializer,
+    ServiceSerializer,
+    ServiceWriteSerializer,
+    ShiftSerializer,
+    SignatureSerializer,
+    SignOnConfigSerializer,
+    StaffInviteSerializer,
+    StaffWriteSerializer,
     SystemEventSerializer,
     SystemKeySerializer,
     SystemSerializer,
     SystemWriteSerializer,
-    OfferSerializer,
-    OfferReviseSerializer,
-    OfferWriteSerializer,
     TaskSerializer,
     TaskStatusSerializer,
     TaskWriteSerializer,
-    DirectInvoiceSerializer,
+    TeamMemberSerializer,
+    TicketReplySerializer,
+    TicketSerializer,
+    TicketStateSerializer,
     TierPriceSerializer,
     TierSerializer,
-    IncidentSerializer,
-    IncidentWriteSerializer,
-    PostMortemSerializer,
-    InvoiceSerializer,
-    NotificationSerializer,
-    InvoiceWriteSerializer,
-    PaymentSerializer,
     VoidInvoiceSerializer,
-    BlockerSerializer,
-    StaffInviteSerializer,
-    StaffWriteSerializer,
-    TeamMemberSerializer,
-    ContractSerializer,
-    IssueContractSerializer,
-    ServiceSerializer,
-    ServiceWriteSerializer,
-    SignatureSerializer,
-    DocSerializer,
-    SignOnConfigSerializer,
     VoidSerializer,
-    InviteSerializer,
-    MembershipSerializer,
-    MembershipWriteSerializer,
-    OrganisationSerializer,
-    OrganisationWriteSerializer,
-    BlockerWriteSerializer,
-    ConvertSerializer,
-    DeliveryGateSerializer,
-    GateWriteSerializer,
-    DecideSerializer,
-    EnquiryDetailSerializer,
-    EnquiryListSerializer,
-    MilestoneSerializer,
-    OrderDetailSerializer,
-    OrderListSerializer,
-    OrderWriteSerializer,
-    ProgressNoteSerializer,
+    WorkItemSerializer,
 )
 
 
@@ -3010,6 +3012,149 @@ class SignOnSecretView(StaffView):
 
 
 # ── public documentation ─────────────────────────────────────────────────────
+
+
+def _work_row(item) -> dict:
+    """
+    One piece of work as operations shows it.
+
+    `is_publishable` is here and not in the public payload, because it is the
+    answer to the question an editor actually has: would this appear if the
+    site built right now. `is_published` alone cannot answer that — an item
+    naming a client sits invisible until the permission is on file, and a
+    screen that reported only the tick box would tell somebody their project
+    was live when it was not.
+    """
+    return {
+        "id": item.pk,
+        "slug": item.slug,
+        "name": item.name,
+        "category": item.category,
+        "category_label": item.get_category_display(),
+        "label": item.label,
+        "label_display": item.get_label_display(),
+        "sector": item.sector,
+        "year": item.year,
+        "url": item.url,
+        "summary": item.summary,
+        "detail": item.detail,
+        "capabilities": item.capabilities,
+        "architecture": item.architecture,
+        "engineering": item.engineering,
+        "results": item.results,
+        "permission_on_file": item.permission_on_file,
+        "needs_consent": item.needs_consent,
+        "is_published": item.is_published,
+        "is_publishable": item.is_publishable,
+        "order": item.order,
+        "updated_at": item.updated_at,
+    }
+
+
+class WorkListView(StaffView):
+    """
+    The work published on genmars.co.ke.
+
+    Read is staff, write is founder — the same split as documentation, and for
+    the same reason: Charter 02 §I puts public statements with the founder, and
+    every word here is one. Not a new permission, because not a new authority.
+    """
+
+    def get(self, request):
+        items = WorkItem.objects.all().order_by("category", "order", "-year", "name")
+        return Response(
+            {
+                "may_edit": CanManageAccess().has_permission(request, self),
+                "work": [_work_row(i) for i in items],
+                "categories": [
+                    {"key": k, "label": v} for k, v in WorkItem.Category.choices
+                ],
+                "labels": [
+                    {
+                        "key": k,
+                        "label": v,
+                        "needs_consent": k in WorkItem.NEEDS_CONSENT,
+                    }
+                    for k, v in WorkItem.Label.choices
+                ],
+                # Publishing is a deploy, so the screen says so rather than
+                # implying a save reaches the public.
+                "live_count": sum(1 for i in items if i.is_publishable),
+                # Ticked for publication but held back by a missing signature.
+                # The number an editor most needs and would never think to ask
+                # for.
+                "awaiting_consent": sum(
+                    1 for i in items if i.is_published and not i.is_publishable
+                ),
+            }
+        )
+
+    def post(self, request):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        serializer = WorkItemSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        values = dict(serializer.validated_data)
+        for required in ("slug", "name", "summary", "label"):
+            if not values.get(required):
+                return Response(
+                    {"detail": f"A {required} is required.", "field": required},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+        try:
+            item, _ = services.save_work_item(actor=request.user, values=values)
+        except services.OperationsError as error:
+            return Response(
+                {"detail": error.message, "field": error.field},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+        return Response(_work_row(item), status=http.HTTP_201_CREATED)
+
+
+class WorkDetailView(StaffView):
+    """One piece of work: edit, publish, withdraw or delete. Founder to write."""
+
+    def patch(self, request, pk: int):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        item = WorkItem.objects.filter(pk=pk).first()
+        if item is None:
+            raise Http404
+
+        serializer = WorkItemSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        try:
+            item, _ = services.save_work_item(
+                actor=request.user, item=item, values=dict(serializer.validated_data)
+            )
+        except services.OperationsError as error:
+            return Response(
+                {"detail": error.message, "field": error.field},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+        return Response(_work_row(item))
+
+    def delete(self, request, pk: int):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {"detail": permission.message}, status=http.HTTP_403_FORBIDDEN
+            )
+
+        item = WorkItem.objects.filter(pk=pk).first()
+        if item is None:
+            raise Http404
+
+        services.delete_work_item(actor=request.user, item=item)
+        return Response(status=http.HTTP_204_NO_CONTENT)
 
 
 def _doc_row(doc) -> dict:

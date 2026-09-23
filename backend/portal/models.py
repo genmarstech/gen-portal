@@ -4144,6 +4144,204 @@ class Doc(models.Model):
         return timezone.now() - self.status_changed_at > STATUS_STALE_AFTER
 
 
+class WorkItem(models.Model):
+    """
+    Something Genmars has built, as shown on genmars.co.ke/work.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE SECOND MODEL A STRANGER READS, AND IT ARRIVED THE SAME WAY AS THE FIRST.
+
+    Like Doc, this is public marketing copy that happens to live in the
+    operations database because that is where staff already work. Everything
+    in Doc's banner applies here word for word: no client detail that is not
+    already public, no internal hostname, nothing from the contact log, and
+    Charter 04 §IV on every sentence.
+
+    It replaces a hand-edited array in gen-website/src/lib/company.ts. That
+    array meant a deploy of the marketing site to add a project, by somebody
+    who could edit TypeScript — so the list went stale, which is the worst
+    state for a page whose whole job is to prove the company does things.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THE CONSENT GATE IS PER ITEM, AND IT IS NOT A FORMALITY ────────────────
+
+    Charter 04 §V: "Client-owned software carries the client's brand; Genmars
+    is credited only with WRITTEN permission." So an item whose label names a
+    client is invisible until `permission_on_file` is set, and the public
+    queryset enforces that rather than trusting an editor to remember.
+
+    Something Genmars owns and runs has nobody to ask, so it needs no flag —
+    which is the distinction the old all-or-nothing gate on the website got
+    wrong, hiding our own product behind two clients' signatures.
+
+    ⚠ SET THE FLAG ONLY WHEN THE PERMISSION GENUINELY EXISTS, IN WRITING, AND
+      CAN BE PRODUCED IF CHALLENGED. Nothing here can check that for you.
+    """
+
+    class Category(models.TextChoices):
+        """
+        What kind of thing this is. The website groups by these.
+
+        Ordered as a reader would scan them: the things they can look at,
+        then the things they would have to be told about.
+        """
+
+        SITE = "sites", "Sites"
+        APP = "apps", "Apps"
+        SOFTWARE = "software", "Custom software"
+        DESIGN_SYSTEM = "design-systems", "Design systems"
+        TOOL = "tools", "Tools"
+        INTEGRATION = "integrations", "Integrations"
+
+    class Label(models.TextChoices):
+        """
+        What the item actually IS.
+
+        ══════════════════════════════════════════════════════════════════════
+        REQUIRED, WITH NO USEFUL DEFAULT, AND THAT IS THE ENTIRE POINT.
+
+        The failure this prevents is the one Charter 04 §IV names directly: a
+        concept described in language that implies it is in production. That
+        does not happen because somebody decided to mislead — it happens
+        because a design and a delivered system look identical in a write-up
+        and nothing forced anybody to say which this was.
+        ══════════════════════════════════════════════════════════════════════
+        """
+
+        PRODUCT = "product", "Genmars product"
+        INTERNAL = "internal", "Internal system"
+        CLIENT = "client", "Client system, published with consent"
+        CONCEPT = "concept", "Concept — designed, not deployed"
+        RESEARCH = "research", "R&D project"
+
+    #: Labels that name somebody else, and therefore need their signature.
+    NEEDS_CONSENT = {Label.CLIENT}
+
+    slug = models.SlugField(
+        max_length=80,
+        unique=True,
+        help_text=(
+            "Used in the address and as a stable key. Changing it after "
+            "publication breaks every link anybody has saved."
+        ),
+    )
+    name = models.CharField(
+        max_length=120,
+        help_text="The client, or the product's own name.",
+    )
+    category = models.CharField(
+        max_length=20, choices=Category.choices, default=Category.SITE
+    )
+    label = models.CharField(max_length=12, choices=Label.choices)
+
+    sector = models.CharField(
+        max_length=80, blank=True, default="", help_text='e.g. "Travel & tourism".'
+    )
+    year = models.CharField(max_length=9, blank=True, default="")
+
+    url = models.URLField(
+        blank=True,
+        default="",
+        help_text="Where a reader can go and look at it, if they can.",
+    )
+
+    summary = models.CharField(
+        max_length=300,
+        help_text="One sentence. The card on the index and the meta description.",
+    )
+    detail = models.TextField(
+        blank=True,
+        default="",
+        help_text="What it observably does. No invented metrics.",
+    )
+    capabilities = models.TextField(
+        blank=True,
+        default="",
+        help_text="One per line. Short noun phrases, shown as chips.",
+    )
+
+    architecture = models.TextField(blank=True, default="")
+    engineering = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "Reliability, security, scalability. Usually the most persuasive "
+            "part, and the part that survives the screenshots being removed."
+        ),
+    )
+    results = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "ONLY where real data exists. Not softened, not estimated, not "
+            "replaced with 'significantly improved' — Charter 04 §IV forbids "
+            "a figure that was not measured, and this is the field that "
+            "invites one. Where there is no number, technical specificity in "
+            "the field above convinces a reader who can evaluate it."
+        ),
+    )
+
+    permission_on_file = models.BooleanField(
+        default=False,
+        help_text=(
+            "Written permission from the client to name them. Required before "
+            "anything labelled a client system appears publicly."
+        ),
+    )
+    is_published = models.BooleanField(
+        default=False,
+        help_text=(
+            "Included in the next website build. Not the same as live — the "
+            "deploy after this is what publishes it."
+        ),
+    )
+    order = models.PositiveSmallIntegerField(
+        default=100, help_text="Low numbers first, within a category."
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    published_at = models.DateTimeField(null=True, blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="work_items_edited",
+    )
+
+    class Meta:
+        ordering = ["category", "order", "-year", "name"]
+        indexes = [
+            models.Index(
+                fields=["is_published", "category", "order"], name="work_public_idx"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.get_category_display()})"
+
+    @property
+    def needs_consent(self) -> bool:
+        return self.label in self.NEEDS_CONSENT
+
+    @property
+    def is_publishable(self) -> bool:
+        """
+        Would this actually appear, if the site built right now?
+
+        Both halves, in one place: marked for publication AND either nobody's
+        to ask or their permission on file. Operations shows this rather than
+        `is_published` alone, so an editor is never told something is live
+        when the consent gate is silently holding it back.
+        """
+        return self.is_published and (self.permission_on_file or not self.needs_consent)
+
+    @property
+    def capability_list(self) -> list[str]:
+        return [line.strip() for line in self.capabilities.splitlines() if line.strip()]
+
+
 class OrderSeen(models.Model):
     """
     When this person last looked at this order.

@@ -4754,6 +4754,70 @@ def _stamp_status(doc, values: dict) -> bool:
 
 
 @transaction.atomic
+def save_work_item(*, actor: User, item=None, values: dict):
+    """
+    Create or update a piece of work. Returns (item, publishable_changed).
+
+    Validation runs through full_clean rather than field by field, for the
+    reason save_doc gives: the rules are declared on the model and a second
+    copy here is a second copy to keep in step.
+
+    ── THE CONSENT FLAG IS NOT SILENTLY HELPFUL ──────────────────────────────
+
+    Setting `is_published` on an item that names a client and has no
+    permission on file is allowed and does nothing — the public queryset
+    filters it out. The screen reports `is_publishable` so an editor can see
+    that, rather than this quietly unticking their box or quietly publishing
+    without the signature. Both would be worse than showing them the truth.
+    """
+    from portal.models import WorkItem
+
+    creating = item is None
+    if creating:
+        item = WorkItem()
+
+    was_live = False if creating else item.is_publishable
+
+    for field, value in values.items():
+        setattr(item, field, value)
+
+    # Dated once, on first publication, and never again — re-dating on every
+    # later publish would turn "shipped in March" into "shipped today" after a
+    # typo fix. Same rule as a Doc.
+    if item.is_published and item.published_at is None:
+        item.published_at = timezone.now()
+
+    item.updated_by = actor
+
+    try:
+        item.full_clean()
+    except DjangoValidationError as error:
+        field, message = _first_error(error)
+        raise OperationsError(message, field) from None
+
+    item.save()
+
+    if item.is_publishable != was_live:
+        record(
+            actor=actor,
+            action=(
+                "work.published" if item.is_publishable else "work.withdrawn"
+            ),
+            detail={"slug": item.slug, "name": item.name},
+        )
+
+    return item, item.is_publishable != was_live
+
+
+@transaction.atomic
+def delete_work_item(*, actor: User, item) -> None:
+    """Remove a piece of work outright."""
+    slug, name = item.slug, item.name
+    item.delete()
+    record(actor=actor, action="work.deleted", detail={"slug": slug, "name": name})
+
+
+@transaction.atomic
 def save_doc(*, actor: User, doc=None, values: dict):
     """
     Create or update a document. Returns (doc, published_changed).
