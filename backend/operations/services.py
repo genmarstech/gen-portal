@@ -4801,9 +4801,23 @@ def save_work_item(*, actor: User, item=None, values: dict):
         record(
             actor=actor,
             action=(
-                "work.published" if item.is_publishable else "work.withdrawn"
+                ActivityLog.Action.WORK_PUBLISHED
+                if item.is_publishable
+                else ActivityLog.Action.WORK_WITHDRAWN
             ),
-            detail={"slug": item.slug, "name": item.name},
+            subject=item.name,
+            summary=(
+                f"{item.name} will be on genmars.co.ke/work from the next "
+                "website deploy."
+                if item.is_publishable
+                # Two ways to leave the site, and which one happened is the
+                # thing a reader of the log needs: untick and it was a choice,
+                # withdraw consent and we are obliged.
+                else f"{item.name} leaves genmars.co.ke/work at the next "
+                "website deploy."
+            ),
+            slug=item.slug,
+            category=item.category,
         )
 
     return item, item.is_publishable != was_live
@@ -4811,10 +4825,30 @@ def save_work_item(*, actor: User, item=None, values: dict):
 
 @transaction.atomic
 def delete_work_item(*, actor: User, item) -> None:
-    """Remove a piece of work outright."""
+    """
+    Remove a piece of work outright.
+
+    Unticking publish is what somebody usually wants; this is for an entry
+    that should never have existed. Logged as a withdrawal when it was on the
+    site, because from a reader's side that is what happened — and logged with
+    the same words whether the removal was a choice or a client asking to stop
+    being named, since the log cannot tell those apart and must not guess.
+    """
+    was_live = item.is_publishable
     slug, name = item.slug, item.name
     item.delete()
-    record(actor=actor, action="work.deleted", detail={"slug": slug, "name": name})
+
+    if was_live:
+        record(
+            actor=actor,
+            action=ActivityLog.Action.WORK_WITHDRAWN,
+            subject=name,
+            summary=(
+                f"{name} was deleted and leaves genmars.co.ke/work at the "
+                "next website deploy."
+            ),
+            slug=slug,
+        )
 
 
 @transaction.atomic

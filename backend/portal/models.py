@@ -1568,6 +1568,13 @@ class ActivityLog(models.Model):
         DOC_PUBLISHED = "doc.published", "Documentation published"
         DOC_UNPUBLISHED = "doc.unpublished", "Documentation withdrawn"
 
+        # The portfolio, and the same rule: the logged act is a change in what
+        # a stranger can see, not an edit. Recording the client's permission
+        # is one of those acts, because it is what releases their name — the
+        # tick that publishes is not the tick that consents.
+        WORK_PUBLISHED = "work.published", "Work published"
+        WORK_WITHDRAWN = "work.withdrawn", "Work withdrawn"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,

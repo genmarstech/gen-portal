@@ -25,11 +25,30 @@ from portal.models import WorkItem
 pytestmark = pytest.mark.django_db
 
 
+@pytest.fixture(autouse=True)
+def an_empty_table(request):
+    """
+    Start from nothing, unless the test asks for the shipped rows.
+
+    Migration 0041 seeds the three things Genmars had actually built, so the
+    table is NOT empty in a fresh database. These tests are about what the
+    queryset does with a given row — a rule that must not depend on which
+    projects the company happened to have in September 2026 — so they clear it
+    and build the case they mean.
+
+    The one test that asserts the SEED is correctly gated marks itself
+    `seeded` and keeps the rows. Both matter: the rule, and the data the rule
+    is currently applied to.
+    """
+    if "seeded" not in request.keywords:
+        WorkItem.objects.all().delete()
+
+
 @pytest.fixture
 def ours() -> WorkItem:
     """Something Genmars owns. Nobody to ask."""
     return WorkItem.objects.create(
-        slug="business-platform",
+        slug="our-own-product",
         name="Genmars Business Platform",
         category=WorkItem.Category.SOFTWARE,
         label=WorkItem.Label.PRODUCT,
@@ -153,3 +172,30 @@ def test_it_answers_without_a_session(client, ours):
     response = client.get(reverse("public-work"))
     assert response.status_code == 200
     assert response.wsgi_request.user.is_anonymous
+
+
+# ── the rows we actually shipped ────────────────────────────────────────────
+
+
+@pytest.mark.seeded
+def test_neither_client_in_the_seeded_data_is_named_publicly(client):
+    """
+    Not a hypothetical. Migration 0041 carried two real client projects into
+    this table, and neither client has been asked yet. Until they are, their
+    names must not be on genmars.co.ke — and the reason this is a test rather
+    than a careful migration is that the next person to tick a box will not
+    have read the migration.
+    """
+    held = WorkItem.objects.filter(label=WorkItem.Label.CLIENT)
+    assert held.exists(), "a seed with no client rows would not test the gate"
+    assert not held.filter(permission_on_file=True).exists()
+
+    payload = str(work(client))
+    for item in held:
+        assert item.name not in payload
+
+
+@pytest.mark.seeded
+def test_our_platform_is_the_one_thing_the_seed_publishes(client):
+    names = [i["name"] for i in work(client)["work"]]
+    assert names == ["Genmars Business Platform"]
