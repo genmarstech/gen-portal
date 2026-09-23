@@ -24,8 +24,8 @@ from portal.models import (
     Decision,
     DeliveryGate,
     Doc,
-    HostingArrangement,
     Enquiry,
+    HostingArrangement,
     Incident,
     Invoice,
     Milestone,
@@ -39,12 +39,13 @@ from portal.models import (
     ServiceTier,
     Shift,
     SignOnApp,
-    System,
-    SystemEvent,
     SupportMessage,
     SupportTicket,
+    System,
+    SystemEvent,
     SystemKey,
     Task,
+    WorkItem,
 )
 
 
@@ -1611,6 +1612,36 @@ class SignOnConfigSerializer(serializers.Serializer):
         choices=SignOnApp.Audience.choices, required=False
     )
     is_enabled = serializers.BooleanField(required=False)
+
+
+class WorkItemSerializer(serializers.Serializer):
+    """
+    What a founder may set on a piece of public work.
+
+    Partial on update so a screen can save one field. Every constraint that
+    matters lives on the model and is enforced by full_clean in
+    services.save_work_item — this validates shape and nothing else, for the
+    reason DocSerializer gives below.
+    """
+
+    slug = serializers.SlugField(max_length=80, required=False)
+    name = serializers.CharField(max_length=120, required=False)
+    category = serializers.ChoiceField(
+        choices=WorkItem.Category.choices, required=False
+    )
+    label = serializers.ChoiceField(choices=WorkItem.Label.choices, required=False)
+    sector = serializers.CharField(max_length=80, required=False, allow_blank=True)
+    year = serializers.CharField(max_length=9, required=False, allow_blank=True)
+    url = serializers.CharField(max_length=300, required=False, allow_blank=True)
+    summary = serializers.CharField(max_length=300, required=False)
+    detail = serializers.CharField(required=False, allow_blank=True)
+    capabilities = serializers.CharField(required=False, allow_blank=True)
+    architecture = serializers.CharField(required=False, allow_blank=True)
+    engineering = serializers.CharField(required=False, allow_blank=True)
+    results = serializers.CharField(required=False, allow_blank=True)
+    permission_on_file = serializers.BooleanField(required=False)
+    is_published = serializers.BooleanField(required=False)
+    order = serializers.IntegerField(min_value=0, max_value=32767, required=False)
 
 
 class DocSerializer(serializers.Serializer):

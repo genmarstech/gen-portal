@@ -7,4 +7,7 @@ from . import public_api
 urlpatterns = [
     path("docs", public_api.DocListView.as_view(), name="public-docs"),
     path("docs/<slug:slug>", public_api.DocDetailView.as_view(), name="public-doc"),
+    # The work page. Same contract as docs: published rows only, no caller,
+    # nothing that identifies a member of staff.
+    path("work", public_api.WorkListView.as_view(), name="public-work"),
 ]

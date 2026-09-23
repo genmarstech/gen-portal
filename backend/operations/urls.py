@@ -86,6 +86,10 @@ urlpatterns = [
     # it — every word is a public statement (Charter 02 §I).
     path("ops/docs", views.DocListView.as_view(), name="ops-docs"),
     path("ops/docs/<int:pk>", views.DocDetailView.as_view(), name="ops-doc"),
+    # The work shown on genmars.co.ke/work. Same split as docs: staff read,
+    # founder writes, because every word is a public statement.
+    path("ops/work", views.WorkListView.as_view(), name="ops-work"),
+    path("ops/work/<int:pk>", views.WorkDetailView.as_view(), name="ops-work-item"),
     path(
         "ops/engineering/sign-on",
         views.SignOnListView.as_view(),

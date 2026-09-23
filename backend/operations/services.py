@@ -4754,6 +4754,104 @@ def _stamp_status(doc, values: dict) -> bool:
 
 
 @transaction.atomic
+def save_work_item(*, actor: User, item=None, values: dict):
+    """
+    Create or update a piece of work. Returns (item, publishable_changed).
+
+    Validation runs through full_clean rather than field by field, for the
+    reason save_doc gives: the rules are declared on the model and a second
+    copy here is a second copy to keep in step.
+
+    ── THE CONSENT FLAG IS NOT SILENTLY HELPFUL ──────────────────────────────
+
+    Setting `is_published` on an item that names a client and has no
+    permission on file is allowed and does nothing — the public queryset
+    filters it out. The screen reports `is_publishable` so an editor can see
+    that, rather than this quietly unticking their box or quietly publishing
+    without the signature. Both would be worse than showing them the truth.
+    """
+    from portal.models import WorkItem
+
+    creating = item is None
+    if creating:
+        item = WorkItem()
+
+    was_live = False if creating else item.is_publishable
+
+    for field, value in values.items():
+        setattr(item, field, value)
+
+    # Dated once, on first publication, and never again — re-dating on every
+    # later publish would turn "shipped in March" into "shipped today" after a
+    # typo fix. Same rule as a Doc.
+    if item.is_published and item.published_at is None:
+        item.published_at = timezone.now()
+
+    item.updated_by = actor
+
+    try:
+        item.full_clean()
+    except DjangoValidationError as error:
+        field, message = _first_error(error)
+        raise OperationsError(message, field) from None
+
+    item.save()
+
+    if item.is_publishable != was_live:
+        record(
+            actor=actor,
+            action=(
+                ActivityLog.Action.WORK_PUBLISHED
+                if item.is_publishable
+                else ActivityLog.Action.WORK_WITHDRAWN
+            ),
+            subject=item.name,
+            summary=(
+                f"{item.name} will be on genmars.co.ke/work from the next "
+                "website deploy."
+                if item.is_publishable
+                # Two ways to leave the site, and which one happened is the
+                # thing a reader of the log needs: untick and it was a choice,
+                # withdraw consent and we are obliged.
+                else f"{item.name} leaves genmars.co.ke/work at the next "
+                "website deploy."
+            ),
+            slug=item.slug,
+            category=item.category,
+        )
+
+    return item, item.is_publishable != was_live
+
+
+@transaction.atomic
+def delete_work_item(*, actor: User, item) -> None:
+    """
+    Remove a piece of work outright.
+
+    Unticking publish is what somebody usually wants; this is for an entry
+    that should never have existed. Logged as a withdrawal when it was on the
+    site, because from a reader's side that is what happened — and logged with
+    the same words whether the removal was a choice or a client asking to stop
+    being named, since the log cannot tell those apart and must not guess.
+    """
+    was_live = item.is_publishable
+    slug, name = item.slug, item.name
+    item.delete()
+
+    if was_live:
+        record(
+            actor=actor,
+            action=ActivityLog.Action.WORK_WITHDRAWN,
+            subject=name,
+            summary=(
+                f"{name} was deleted and leaves genmars.co.ke/work at the "
+                "next website deploy."
+            ),
+            slug=slug,
+        )
+
+
+@transaction.atomic
 def save_doc(*, actor: User, doc=None, values: dict):
     """
     Create or update a document. Returns (doc, published_changed).
