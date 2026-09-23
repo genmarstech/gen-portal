@@ -30,6 +30,120 @@ import styles from "./page.module.css";
  * The API returns 404 rather than 403 on purpose (portal/views.py): a 403 would
  * confirm the order exists, which is itself a leak.
  */
+/**
+ * What paperwork exists on this order, and when each piece last moved.
+ *
+ * ── IT LINKS, IT DOES NOT RESTATE ──────────────────────────────────────────
+ *
+ * Every row points at content already on this page. A summary that paraphrased
+ * the agreement would become a second version of the agreement, and the two
+ * would disagree the first time one was edited — the same argument the API
+ * makes for scoping a rule in one queryset.
+ *
+ * ── AND IT DOES NOT INVENT A DOCUMENT THAT DOES NOT EXIST ──────────────────
+ *
+ * An order in scoping has no statement of work, and the row says so rather
+ * than being hidden. "Not issued yet" is a true and useful state — it tells a
+ * client nothing is signed, which Charter 02 §I makes the difference between
+ * an order existing and work being due to start.
+ */
+function Documents({ order }: { order: OrderDetail }) {
+  const published = order.notes.filter((n) => n.published_at);
+  const newestNote = published[0];
+
+  // Voids included, because the API sends them and a client is entitled to see
+  // that something was billed and withdrawn. Counting only live ones would
+  // quietly disagree with the Invoices section below.
+  const newestInvoice = order.invoices[0];
+
+  const rows: {
+    name: string;
+    state: string;
+    when: string;
+    href: string;
+    missing?: boolean;
+  }[] = [
+    {
+      name: "Client agreement",
+      state: order.contract
+        ? order.contract.signed_on
+          ? `Signed by ${order.contract.signed_by_name || "the client"}`
+          : "Issued — waiting for signature"
+        : "Not issued yet",
+      when: order.contract
+        ? order.contract.signed_on ?? shortDate(order.contract.issued_at)
+        : "",
+      href: "#agreed",
+      missing: !order.contract,
+    },
+    {
+      name: "Order details",
+      state: order.exclusions.trim()
+        ? "Scope and exclusions"
+        : "Scope — nothing excluded in writing yet",
+      when: "",
+      href: "#agreed",
+    },
+    {
+      name: published.length === 1 ? "Progress note" : "Progress notes",
+      state: published.length
+        ? `${published.length} published`
+        : "None published yet",
+      when: newestNote ? shortDate(newestNote.published_at) : "",
+      href: "#progress",
+      missing: published.length === 0,
+    },
+    {
+      name: order.invoices.length === 1 ? "Invoice" : "Invoices",
+      state: order.invoices.length
+        ? `${order.invoices.length} issued`
+        : "None yet",
+      when: newestInvoice ? shortDate(newestInvoice.issued_on) : "",
+      href: "#invoices",
+      missing: order.invoices.length === 0,
+    },
+  ];
+
+  return (
+    <section className={styles.section}>
+      <h2 className={styles.h2}>Documents</h2>
+      <p className={styles.docsLede}>
+        Everything written down about this order. Each one is further down this
+        page.
+      </p>
+      <ul className={styles.docs}>
+        {rows.map((row) => (
+          <li key={row.name} className={styles.doc}>
+            <a href={row.href} className={styles.docLink}>
+              <span className={styles.docName}>{row.name}</span>
+              <span
+                className={row.missing ? styles.docStateNone : styles.docState}
+              >
+                {row.state}
+              </span>
+              {row.when ? (
+                <span className={styles.docWhen}>{row.when}</span>
+              ) : null}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** A date somebody can read, or nothing. Never "Invalid Date". */
+function shortDate(value: string | null | undefined): string {
+  if (!value) return "";
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return "";
+  return at.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 export default function OrderPage() {
   const params = useParams<{ reference: string }>();
   const reference = params.reference;
@@ -130,7 +244,20 @@ export default function OrderPage() {
         agreement, and Charter 02 §I is explicit that work begins when a
         statement of work is signed.
       */}
-      <section className={styles.section}>
+      {/*
+        ── THE INDEX, NOT A SECOND COPY ────────────────────────────────────
+        Everything listed here is already further down this page. What was
+        missing was an answer to "what paperwork exists on this order, and has
+        any of it changed" without reading the whole thing.
+
+        So each row states what the document is, what state it is in, and when
+        it last moved — and links DOWN to the real content rather than
+        restating it. A summary that paraphrased the agreement would become a
+        second version of the agreement, and the two would disagree.
+      */}
+      <Documents order={order} />
+
+      <section id="agreed" className={styles.section}>
         <h2 className={styles.h2}>What was agreed</h2>
 
         {order.contract ? (
@@ -226,7 +353,7 @@ export default function OrderPage() {
       ) : null}
 
       {/* ---------- progress ---------- */}
-      <section className={styles.section}>
+      <section id="progress" className={styles.section}>
         <h2 className={styles.h2}>Progress</h2>
         {order.notes.length === 0 ? (
           /*
@@ -283,7 +410,7 @@ export default function OrderPage() {
 
       {/* ---------- invoices ---------- */}
       {order.invoices.length > 0 ? (
-        <section className={styles.section}>
+        <section id="invoices" className={styles.section}>
           <h2 className={styles.h2}>Invoices</h2>
           <ul className={styles.invoices}>
             {order.invoices.map((i) => (

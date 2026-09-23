@@ -424,6 +424,139 @@ def send_order_opened(
     )
 
 
+def send_contract_issued(
+    *,
+    email: str,
+    reference: str,
+    title: str,
+    version: int,
+    scope: str,
+    exclusions: str,
+    deliverables: str,
+    total_kes: str,
+    payment_terms: str,
+    target_date: str,
+) -> None:
+    """
+    A statement of work is waiting to be read and signed.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS WAS SILENT UNTIL NOW, AND IT WAS THE WORST THING TO BE SILENT ABOUT.
+
+    Every other document on an order already tells the client: an invoice
+    issued, a payment recorded, a progress note published, the order opened.
+    The statement of work — the one Charter 02 §I says work BEGINS on — was
+    issued into the portal with nothing sent at all. A client learned that
+    Genmars was waiting on their signature only if they happened to sign in.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THE TERMS ARE IN THE MESSAGE, NOT BEHIND THE LINK ──────────────────────
+
+    Same reasoning as send_order_opened, and stronger here. The value of
+    writing scope down before work is that the client can disagree while
+    disagreeing is cheap; a client who must remember a password first reads it
+    in three weeks, by which time disagreeing is expensive.
+
+    ⚠ IT MUST NOT SAY THE WORK HAS STARTED, and it must not say signing is a
+      formality. Charter 02 §I puts the signature before delivery, so the only
+      honest thing this can report is that the document exists and is waiting.
+    """
+    limits = exclusions.strip() or (
+        "Nothing has been written down as out of scope. If there is something "
+        "you are assuming is included, say so before signing."
+    )
+
+    _send(
+        to=email,
+        subject=f"{reference} — statement of work for {title}",
+        text=(
+            f"{title}\n"
+            f"{reference} — statement of work, version {version}\n\n"
+            "This sets out what we have agreed to build, what it costs and "
+            "when it is due. Nothing starts until it is signed.\n\n"
+            f"WHAT IT COVERS\n{scope}\n\n"
+            f"WHAT IT DOES NOT COVER\n{limits}\n\n"
+            + (f"WHAT YOU GET\n{deliverables}\n\n" if deliverables.strip() else "")
+            + f"PRICE\nKES {total_kes}\n\n"
+            + (f"PAYMENT\n{payment_terms}\n\n" if payment_terms.strip() else "")
+            + (f"TARGET DATE\n{target_date}\n\n" if target_date else "")
+            + "Read it in full and tell us if any of it is wrong before you "
+            "sign:\n"
+            f"https://app.genmars.co.ke/dashboard/{reference}\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/order_opened.html",
+        context={
+            "heading": f"Statement of work — {title}",
+            "preheader": "What we have agreed, what it costs, and when. "
+            "Nothing starts until it is signed.",
+            "reference": reference,
+            "scope": scope,
+            "limits": limits,
+            "target_date": target_date,
+            "contact": "",
+        },
+    )
+
+
+def send_signature_recorded(
+    *,
+    email: str,
+    reference: str,
+    title: str,
+    version: int,
+    signed_by_name: str,
+    signed_on: str,
+    recorded_by: str,
+) -> None:
+    """
+    Genmars has written down that this client signed.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS A RECEIPT FOR AN ASSERTION WE MADE ABOUT THEM.
+
+    record_signature does not capture a signature — Genmars runs no signing
+    product, and the docstring there is explicit that claiming one would breach
+    Charter 04 §IV. What it records is a member of staff stating that a client
+    signed somewhere else.
+
+    That is a fact about the client, entered by us, which starts the clock on
+    delivery. They are entitled to see it and to say it is wrong, and they can
+    do neither if nobody tells them. Hence the name of the person who recorded
+    it: the email reports what actually happened, not "your signature was
+    received".
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    _send(
+        to=email,
+        subject=f"{reference} — we have recorded your signature",
+        text=(
+            f"{title}\n"
+            f"{reference} — statement of work, version {version}\n\n"
+            f"{recorded_by} at Genmars has recorded that {signed_by_name} "
+            f"signed this on {signed_on}.\n\n"
+            "If that is not right — wrong date, wrong name, or you have not "
+            "signed at all — reply and tell us. Delivery is measured from "
+            "this.\n\n"
+            f"https://app.genmars.co.ke/dashboard/{reference}\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/signature_recorded.html",
+        context={
+            "heading": "Signature recorded",
+            "preheader": "We have written down that you signed. Tell us if "
+            "that is wrong.",
+            "reference": reference,
+            "title": title,
+            "signed_by_name": signed_by_name,
+            "signed_on": signed_on,
+            "recorded_by": recorded_by,
+        },
+    )
+
+
 def send_offer(
     *,
     email: str,

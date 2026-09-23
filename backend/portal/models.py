@@ -1121,6 +1121,12 @@ class Notification(models.Model):
         ENQUIRY_RECEIVED = "enquiry_received", "Enquiry received"
         INCIDENT_RAISED = "incident_raised", "Incident raised"
         OFFER_SENT = "offer_sent", "Offer received"
+        # The statement of work. Its own kinds rather than ORDER_UPDATE:
+        # Charter 02 §I makes this the document delivery begins on, and a
+        # client scanning their notifications should be able to tell "we are
+        # waiting on your signature" from "the target date moved".
+        CONTRACT_ISSUED = "contract_issued", "Statement of work issued"
+        CONTRACT_SIGNED = "contract_signed", "Signature recorded"
         TASK_ASSIGNED = "task_assigned", "Task assigned to you"
         SUPPORT_REPLY = "support_reply", "Reply on your support request"
         SUPPORT_RAISED = "support_raised", "New support request"
