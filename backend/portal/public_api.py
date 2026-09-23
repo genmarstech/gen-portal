@@ -45,6 +45,7 @@ mistaken for a client one at a glance.
 
 from __future__ import annotations
 
+from django.conf import settings
 from django.shortcuts import get_object_or_404
 from rest_framework import serializers
 from rest_framework.permissions import AllowAny
@@ -52,6 +53,71 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import Doc, WorkItem
+
+
+class PublicRead(APIView):
+    """
+    A public, unauthenticated, cross-origin-readable GET. Nothing else.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS THE ONLY PLACE IN THIS DJANGO THAT SENDS Access-Control-Allow-Origin.
+
+    settings.py says the portal needs no CORS anywhere, and that is still true:
+    the browser only ever talks to app.genmars.co.ke, which proxies /api/*
+    server-side, so those calls are same-origin. This is the one exception, and
+    it exists because genmars.co.ke now refreshes /work in the visitor's browser
+    so publishing shows up without a deploy.
+
+    Three properties make that safe, and removing any one of them breaks it:
+
+      1. `authentication_classes = []` — no session, token or key is read here,
+         so there is no credential for a cross-origin caller to borrow. This is
+         the load-bearing one.
+      2. NO Access-Control-Allow-Credentials, ever. Setting it is what turns a
+         readable endpoint into one that acts as somebody else. There is no
+         session to act as today; the header must not be here waiting for the
+         day there is.
+      3. Reads only. The preflight advertises GET, HEAD and OPTIONS, and the
+         views define no other verb.
+
+    ⚠ DO NOT PUT THIS MIXIN ON ANYTHING UNDER /api/ OR /api/ops/. Those are
+      scoped to a caller, so they DO read a credential, and property 1 is
+      immediately false. This belongs to /api/public/ alone — which is why it
+      lives in this file and not in a shared module where it would look
+      generally applicable.
+
+    An allowlist rather than `*`, not because `*` would leak anything here, but
+    because the header then names who this was opened for and a reviewer can
+    tell whether that is still the intent.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def _allow(self, request, response):
+        origin = request.headers.get("Origin")
+        if origin and origin in settings.PUBLIC_API_CORS_ORIGINS:
+            response["Access-Control-Allow-Origin"] = origin
+        # Always, even when the origin did not match: the response body varies
+        # by Origin, and a cache that does not know that will serve the
+        # allowed origin's headers to everybody else, or the reverse.
+        response["Vary"] = (
+            f"{response['Vary']}, Origin" if response.has_header("Vary") else "Origin"
+        )
+        return response
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        return self._allow(request, response)
+
+    def options(self, request, *args, **kwargs):
+        """The preflight. Reads only, and deliberately no credentials header."""
+        response = super().options(request, *args, **kwargs)
+        response["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "Accept, Content-Type"
+        response["Access-Control-Max-Age"] = "86400"
+        return response
 
 
 def published() -> "models.QuerySet[Doc]":  # noqa: F821 - annotation only
@@ -171,11 +237,9 @@ class WorkItemSerializer(serializers.ModelSerializer):
         ]
 
 
-class WorkListView(APIView):
+class WorkListView(PublicRead):
     """Everything publishable, grouped the way the site groups it."""
 
-    permission_classes = [AllowAny]
-    authentication_classes = []
 
     def get(self, request):
         items = WorkPublished.all().order_by("category", "order", "-year", "name")
@@ -194,11 +258,9 @@ class WorkListView(APIView):
         )
 
 
-class DocListView(APIView):
+class DocListView(PublicRead):
     """Every published document, with its body — the build fetches once."""
 
-    permission_classes = [AllowAny]
-    authentication_classes = []
 
     def get(self, request):
         docs = published().order_by("category", "order", "title")
@@ -223,11 +285,9 @@ class DocListView(APIView):
         )
 
 
-class DocDetailView(APIView):
+class DocDetailView(PublicRead):
     """One document. Not used by the build; here for anyone reading the API."""
 
-    permission_classes = [AllowAny]
-    authentication_classes = []
 
     def get(self, request, slug: str):
         # 404 for a draft, not 403 — the same rule as everywhere else in this

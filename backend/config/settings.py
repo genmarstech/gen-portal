@@ -146,6 +146,31 @@ AUTH_PASSWORD_VALIDATORS = [
 # endpoint cannot be driven with a portal user's session. Keep it that way: a
 # browser calling api.genmars.co.ke directly would need CORS plus a deliberate
 # decision about credentials, which is a bigger change than it looks.
+#
+# ── THAT DECISION WAS TAKEN ON 2026-09-23, FOR EXACTLY ONE NAMESPACE ─────────
+#
+# genmars.co.ke refreshes /work in the visitor's browser so publishing in
+# operations is visible without a deploy, so it reads /api/public/ across
+# origins. The deliberate decision about credentials is: NONE. Those views set
+# `authentication_classes = []`, so no session, token or key is read there, and
+# `Access-Control-Allow-Credentials` is never sent. The session cookie remains
+# host-only on app.genmars.co.ke and is not sent here regardless.
+#
+# The header is applied by portal.public_api.PublicRead and nowhere else. It
+# must never appear on /api/ (scoped to a client) or /api/ops/ (staff) — those
+# DO read a credential, which is the whole difference.
+#
+# No package for this. Charter 03 §I: one response header on one read-only
+# namespace is not a reason to take on django-cors-headers, whose defaults are
+# broader than this needs.
+PUBLIC_API_CORS_ORIGINS = [
+    o.strip()
+    for o in env(
+        "PUBLIC_API_CORS_ORIGINS",
+        default=["https://genmars.co.ke", "https://www.genmars.co.ke"],
+    )
+    if o.strip()
+]
 
 SESSION_ENGINE = "django.contrib.sessions.backends.db"
 SESSION_COOKIE_NAME = "gm_session"
