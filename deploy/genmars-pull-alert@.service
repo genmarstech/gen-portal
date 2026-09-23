@@ -1,0 +1,19 @@
+# Say out loud that the backup pull failed.
+#
+# A pull that fails into the journal is a pull nobody knows failed, and the
+# failure it is most likely to report — "the newest copy is more than two days
+# old" — is precisely the one that looks like nothing while the archive stops
+# being current.
+#
+# The server mails its alerts through Resend. This is a laptop: a desktop
+# notification reaches the same person faster and needs no credential.
+
+[Unit]
+Description=Genmars — notify that %i failed
+
+[Service]
+Type=oneshot
+# `|| true` because a missing notification daemon must not turn one failure
+# into two. The journal still has the detail either way, and the command below
+# is what to read.
+ExecStart=/bin/sh -c 'notify-send --urgency=critical "Genmars backup pull failed" "%i — run: journalctl --user -u %i -n 40" || true'
