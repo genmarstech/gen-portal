@@ -213,10 +213,80 @@ def test_export_is_scoped_to_the_requesting_user(client, world):
 
 
 def test_export_downloads_as_a_file(client, world):
-    """Charter 05 §VIII is about handing data back, not rendering it on a page."""
+    """
+    The default is still a file. The account page reads the same endpoint with
+    ?inline=1 to show the data instead — see the tests below — and this one
+    guards the download, which is what somebody taking their data elsewhere
+    needs.
+    """
     sign_in(client, "a@acme.example")
     r = client.get(reverse("export"))
     assert "attachment" in r["Content-Disposition"]
+
+
+# ── the same data, shown rather than saved ───────────────────────────────────
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# THE PAGE MUST NOT BE ABLE TO SHOW LESS THAN THE FILE.
+#
+# Charter 05 §VIII is about not holding data back, and a curated summary beside
+# a "download everything" button is how a client comes to believe the summary
+# is everything. One payload, two presentations — and the first test below is
+# what keeps them the same payload rather than two that drift.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_inline_returns_exactly_what_the_file_contains(client, world):
+    sign_in(client, "a@acme.example")
+
+    downloaded = json.loads(client.get(reverse("export")).content)
+    shown = json.loads(client.get(reverse("export") + "?inline=1").content)
+
+    assert shown == downloaded
+
+
+def test_inline_is_not_served_as_a_download(client, world):
+    sign_in(client, "a@acme.example")
+    r = client.get(reverse("export") + "?inline=1")
+    assert r.status_code == 200
+    assert "Content-Disposition" not in r
+
+
+def test_inline_does_not_mail_privacy_on_every_page_load(client, world):
+    """
+    The notice records data LEAVING as a file. Opening your own account page is
+    the portal doing its ordinary job, and a notice on every page load would
+    bury the ones that mean something — costing the record its value rather
+    than adding to it.
+    """
+    from django.core import mail
+
+    sign_in(client, "a@acme.example")
+    mail.outbox.clear()
+    client.get(reverse("export") + "?inline=1")
+    assert len(mail.outbox) == 0
+
+
+def test_downloading_still_mails_privacy(client, world):
+    """The falsifiability partner: the notice must not have been lost."""
+    from django.core import mail
+
+    sign_in(client, "a@acme.example")
+    mail.outbox.clear()
+    client.get(reverse("export"))
+    assert len(mail.outbox) == 1
+
+
+def test_inline_is_scoped_to_the_requesting_user(client, world):
+    """Shown or saved, it is still one person's data."""
+    sign_in(client, "b@beta.example")
+    payload = json.loads(client.get(reverse("export") + "?inline=1").content)
+    assert [o["reference"] for o in payload["orders"]] == ["GM-002"]
+
+
+def test_inline_requires_authentication(client, world):
+    r = client.get(reverse("export") + "?inline=1")
+    assert r.status_code in (401, 403)
 
 
 def test_export_contains_no_password_material(client, world):

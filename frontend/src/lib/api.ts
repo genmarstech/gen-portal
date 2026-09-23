@@ -630,6 +630,18 @@ export const portal = {
 
   /** Charter 05 §VIII — a plain link, so the browser downloads it. */
   exportUrl: "/api/account/export",
+
+  /**
+   * The same payload the download contains, for showing on the page.
+   *
+   * Deliberately the same endpoint with a flag, not a second friendlier one:
+   * a curated summary beside a full download is how somebody comes to believe
+   * the summary is everything, and the two would drift the first time a field
+   * was added to one of them. `unknown` because the shape is whatever the
+   * server holds — the page renders it generically rather than typing it,
+   * which is what stops the page showing less than the file.
+   */
+  myData: () => get<Record<string, unknown>>("/account/export?inline=1"),
 };
 
 export const auth = {

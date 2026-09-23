@@ -129,6 +129,26 @@ class ExportView(APIView):
 
     def get(self, request):
         payload = export_payload(request.user)
+
+        # ── ?inline=1 IS THE SAME PAYLOAD, SHOWN INSTEAD OF SAVED ───────────
+        #
+        # The account page reads this to display what we hold. It is the SAME
+        # export_payload and deliberately not a second, friendlier one: a
+        # curated summary beside a full download is how a client comes to
+        # believe the summary is everything, and the two would drift the first
+        # time a field was added to one of them.
+        #
+        # No Content-Disposition, so the browser hands it to the page rather
+        # than saving it.
+        if request.query_params.get("inline"):
+            # ── AND NO NOTICE EMAIL ON THIS PATH ────────────────────────────
+            # The notice below records data LEAVING as a file. Opening your own
+            # account page is the portal doing its ordinary job, and mailing
+            # privacy@ on every page load would bury the notices that mean
+            # something under ones that do not — which costs the record its
+            # value rather than adding to it.
+            return JsonResponse(payload, json_dumps_params={"indent": 2})
+
         response = JsonResponse(payload, json_dumps_params={"indent": 2})
         response["Content-Disposition"] = (
             'attachment; filename="genmars-export.json"'
