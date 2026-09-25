@@ -185,6 +185,7 @@ class WorkPublished:
 
     @staticmethod
     def all():
+        """Everything publishable, products and work alike."""
         from django.db.models import Q
 
         return WorkItem.objects.filter(
@@ -194,6 +195,28 @@ class WorkPublished:
                 | ~Q(label__in=list(WorkItem.NEEDS_CONSENT))
             )
         )
+
+    # ── PRODUCTS AND WORK ARE ONE TABLE, SPLIT BY LABEL ─────────────────────
+    #
+    # `label` already drew this line before anybody asked for two pages:
+    # PRODUCT is something Genmars owns and sells; INTERNAL, CLIENT, CONCEPT
+    # and RESEARCH are things we did. So the split is a filter, not a second
+    # model — one editing surface in ops, one consent gate, and no chance of
+    # an item existing in one place and not the other.
+    #
+    # ⚠ THE TWO ARE COMPLEMENTS AND MUST STAY SO. Anything publishable appears
+    #   on exactly one of the two pages. A third label added to `Label` lands
+    #   in work by default, which is the safe side: a new kind of thing showing
+    #   up beside our own products would overclaim, and showing up beside our
+    #   work would not.
+
+    @staticmethod
+    def products():
+        return WorkPublished.all().filter(label=WorkItem.Label.PRODUCT)
+
+    @staticmethod
+    def work():
+        return WorkPublished.all().exclude(label=WorkItem.Label.PRODUCT)
 
 
 class WorkItemSerializer(serializers.ModelSerializer):
@@ -237,25 +260,52 @@ class WorkItemSerializer(serializers.ModelSerializer):
         ]
 
 
-class WorkListView(PublicRead):
-    """Everything publishable, grouped the way the site groups it."""
+def _grouped(items) -> dict:
+    """The payload both public lists answer with."""
+    return {
+        "work": WorkItemSerializer(items, many=True).data,
+        # Only the categories with something in them, in the model's declared
+        # order. A heading with nothing under it is a gap the reader assumes
+        # is a bug — same rule as /docs.
+        "categories": [
+            {"key": key, "label": label}
+            for key, label in WorkItem.Category.choices
+            if any(i.category == key for i in items)
+        ],
+    }
 
+
+class WorkListView(PublicRead):
+    """
+    What we have been doing — and NOT what we sell.
+
+    Products moved to their own page and their own endpoint, so this is
+    concepts, research, internal systems and client work. The key is still
+    called "work" because the website reads both lists with the same code and
+    renaming it would be a breaking change for a cosmetic gain.
+    """
 
     def get(self, request):
-        items = WorkPublished.all().order_by("category", "order", "-year", "name")
-        return Response(
-            {
-                "work": WorkItemSerializer(items, many=True).data,
-                # Only the categories with something in them, in the model's
-                # declared order. A heading with nothing under it is a gap the
-                # reader assumes is a bug — same rule as /docs.
-                "categories": [
-                    {"key": key, "label": label}
-                    for key, label in WorkItem.Category.choices
-                    if any(i.category == key for i in items)
-                ],
-            }
-        )
+        items = WorkPublished.work().order_by("category", "order", "-year", "name")
+        return Response(_grouped(items))
+
+
+class ProductListView(PublicRead):
+    """
+    What Genmars owns and sells.
+
+    A separate page because the two answer different questions. "Can you build
+    something like this" is asked of a portfolio; "can I buy this" is asked of
+    a product, and a visitor who wants the second should not have to infer it
+    from a list of research projects.
+
+    Same serializer and same shape as work, deliberately: one payload type,
+    one renderer on the site, and no second thing to keep in step.
+    """
+
+    def get(self, request):
+        items = WorkPublished.products().order_by("order", "-year", "name")
+        return Response(_grouped(items))
 
 
 class DocListView(PublicRead):

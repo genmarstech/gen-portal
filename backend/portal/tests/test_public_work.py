@@ -75,10 +75,52 @@ def theirs_unsigned() -> WorkItem:
     )
 
 
+@pytest.fixture
+def theirs_signed(theirs_unsigned) -> WorkItem:
+    """The same client work, with the signature on file."""
+    theirs_unsigned.permission_on_file = True
+    theirs_unsigned.save(update_fields=["permission_on_file"])
+    return theirs_unsigned
+
+
+@pytest.fixture
+def concept() -> WorkItem:
+    """
+    Designed, not deployed. Needs no signature — it names nobody — and belongs
+    in work rather than beside things we actually sell.
+    """
+    return WorkItem.objects.create(
+        slug="a-concept",
+        name="A Concept",
+        category=WorkItem.Category.DESIGN_SYSTEM,
+        label=WorkItem.Label.CONCEPT,
+        summary="Drawn, never built.",
+        is_published=True,
+    )
+
+
 def work(client) -> dict:
     response = client.get(reverse("public-work"))
     assert response.status_code == 200
     return response.json()
+
+
+def products(client) -> dict:
+    """
+    The other half of the same table.
+
+    Products moved to their own page; `work` no longer answers with them. A
+    test about the consent gate still belongs on work, and a test about our own
+    product now belongs here — which is the split, expressed in the tests.
+    """
+    response = client.get(reverse("public-products"))
+    assert response.status_code == 200
+    return response.json()
+
+
+def everything(client) -> list[dict]:
+    """Both lists, for tests about the payload rather than the page."""
+    return work(client)["work"] + products(client)["work"]
 
 
 # ── the gate ────────────────────────────────────────────────────────────────
@@ -89,7 +131,7 @@ def test_our_own_product_needs_nobody_s_permission(client, ours):
     The control, and the thing the website's old gate got wrong: it hid our
     own product behind two unrelated clients' signatures.
     """
-    names = [i["name"] for i in work(client)["work"]]
+    names = [i["name"] for i in products(client)["work"]]
     assert "Genmars Business Platform" in names
 
 
@@ -122,7 +164,7 @@ def test_one_missing_signature_no_longer_hides_everything_else(
     The old website rule was all-or-nothing across every entry. That was right
     about client work and wrong about ours, so the gate is now per item.
     """
-    names = [i["name"] for i in work(client)["work"]]
+    names = [i["name"] for i in everything(client)]
     assert names == ["Genmars Business Platform"]
 
 
@@ -142,7 +184,7 @@ def test_an_unpublished_item_is_invisible_even_with_permission(client):
 
 
 def test_capabilities_arrive_as_a_list_not_a_textarea(client, ours):
-    item = work(client)["work"][0]
+    item = products(client)["work"][0]
     assert item["capabilities"] == [
         "Multi-tenant isolation",
         "Point of sale",
@@ -156,14 +198,14 @@ def test_the_payload_names_nobody_on_staff(client, ours):
     business, and `updated_by` exists on the model precisely so it can be
     left out here.
     """
-    body = work(client)
+    body = products(client)
     assert "updated_by" not in body["work"][0]
     assert "updated_by" not in str(body)
 
 
 def test_only_categories_with_something_in_them_are_listed(client, ours):
     """A heading with nothing under it is a gap the reader assumes is a bug."""
-    keys = [c["key"] for c in work(client)["categories"]]
+    keys = [c["key"] for c in products(client)["categories"]]
     assert keys == ["software"]
 
 
@@ -197,5 +239,62 @@ def test_neither_client_in_the_seeded_data_is_named_publicly(client):
 
 @pytest.mark.seeded
 def test_our_platform_is_the_one_thing_the_seed_publishes(client):
-    names = [i["name"] for i in work(client)["work"]]
+    names = [i["name"] for i in everything(client)]
     assert names == ["Genmars Business Platform"]
+
+
+# ── the split ────────────────────────────────────────────────────────────────
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# PRODUCTS AND WORK ARE COMPLEMENTS OF ONE TABLE.
+#
+# Two pages answering two questions — "can I buy this" and "can you build
+# something like this" — out of one record type, one editing surface and one
+# consent gate. The test that matters is not that each page has the right
+# rows; it is that NOTHING falls between the two and nothing appears on both.
+# A filter that drifts from its complement loses an item silently, and the
+# item it loses is the one nobody notices is missing.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_product_is_not_in_work(client, ours):
+    assert [i["name"] for i in work(client)["work"]] == []
+
+
+def test_work_is_not_in_products(client, theirs_signed):
+    assert [i["name"] for i in products(client)["work"]] == []
+
+
+def test_every_publishable_item_appears_on_exactly_one_page(
+    client, ours, theirs_signed, concept
+):
+    """
+    Written as a set comparison rather than two length checks, because an item
+    appearing on BOTH pages and an item appearing on NEITHER both satisfy a
+    naive count.
+    """
+    in_work = {i["slug"] for i in work(client)["work"]}
+    in_products = {i["slug"] for i in products(client)["work"]}
+
+    assert in_work & in_products == set(), "an item is on both pages"
+
+    publishable = {
+        i.slug
+        for i in WorkItem.objects.filter(is_published=True)
+        if i.permission_on_file or i.label not in WorkItem.NEEDS_CONSENT
+    }
+    assert in_work | in_products == publishable, "an item is on neither page"
+
+
+def test_the_consent_gate_still_applies_to_products(client, ours):
+    """
+    Products skip the gate because Genmars has nobody to ask — not because the
+    products endpoint forgot to apply it. If a product were ever labelled a
+    client system it would need the signature like anything else.
+    """
+    ours.label = WorkItem.Label.CLIENT
+    ours.permission_on_file = False
+    ours.save(update_fields=["label", "permission_on_file"])
+
+    assert products(client)["work"] == []
+    assert work(client)["work"] == []
