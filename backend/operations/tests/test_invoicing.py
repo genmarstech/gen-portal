@@ -1059,9 +1059,20 @@ def test_the_client_notification_feed_answers_and_marks_read(client, signed, sta
     client.force_login(client_user)
 
     body = client.get(reverse("notifications")).json()
-    assert body["unread"] == 1
-    assert body["notifications"][0]["read"] is False
-    assert body["notifications"][0]["url"] == "/invoices"
+
+    # Newest first, and the invoice is the newest thing that happened. Asserted
+    # by finding it rather than by a total, because the `signed` fixture issues
+    # a statement of work and records a signature — both of which now notify
+    # the client too, and a hard count here would break every time the
+    # lifecycle gains a step it should have had all along.
+    invoice_notice = next(
+        n for n in body["notifications"] if n["url"] == "/invoices"
+    )
+    assert invoice_notice["read"] is False
+    assert body["unread"] == len(
+        [n for n in body["notifications"] if not n["read"]]
+    )
+    assert body["unread"] >= 1
 
     marked = client.post(reverse("notifications"), {}, content_type="application/json")
     assert marked.json()["unread"] == 0

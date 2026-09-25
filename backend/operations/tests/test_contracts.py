@@ -293,3 +293,192 @@ def test_no_client_account_reaches_the_contract_endpoints(client, order, client_
         reverse("ops-contract-sign", args=[order.reference, 1]),
     ]:
         assert client.post(url, content_type="application/json").status_code == 403, url
+
+
+# ── telling the client a statement of work exists ────────────────────────────
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# THIS WAS SILENT, AND IT WAS THE WORST THING TO BE SILENT ABOUT.
+#
+# An invoice issued, a payment recorded, a progress note published, an order
+# opened — every one already reached the client. The statement of work, which
+# Charter 02 §I makes the document delivery BEGINS on, was created in the
+# portal with nothing sent. A client learned Genmars was waiting on their
+# signature only by signing in and looking.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def _contract(order, staff):
+    return services.issue_contract(
+        order=order, actor=staff, deliverables="Import pipeline\nRunbook"
+    )
+
+
+def test_issuing_a_statement_of_work_tells_the_client(order, staff, client_user):
+    from django.core import mail
+    from portal.models import Notification
+
+    mail.outbox.clear()
+    _contract(order, staff)
+
+    notice = Notification.objects.get(
+        user=client_user, kind=Notification.Kind.CONTRACT_ISSUED
+    )
+    assert order.reference in notice.title
+    assert notice.url == f"/dashboard/{order.reference}"
+
+    assert len(mail.outbox) == 1
+    assert mail.outbox[0].to == ["client@example.com"]
+
+
+def test_the_email_carries_the_terms_rather_than_only_a_link(order, staff):
+    """
+    Same reasoning as send_order_opened, and stronger here: the value of
+    writing scope down before work is that the client can disagree while
+    disagreeing is cheap. Behind a password it is read in three weeks.
+    """
+    from django.core import mail
+
+    mail.outbox.clear()
+    contract = _contract(order, staff)
+
+    body = mail.outbox[0].body
+    assert contract.scope[:20] in body
+    assert "Import pipeline" in body
+    assert order.reference in body
+
+
+def test_it_does_not_claim_work_has_started(order, staff):
+    """
+    Charter 02 §I puts the signature before delivery. "We have started" in this
+    email would be the company committing itself by notification rather than by
+    contract — the same trap send_order_opened documents.
+    """
+    from django.core import mail
+
+    mail.outbox.clear()
+    _contract(order, staff)
+
+    body = mail.outbox[0].body.lower()
+    for claim in ("we have started", "work has begun", "work has started"):
+        assert claim not in body
+    assert "nothing starts until it is signed" in body
+
+
+def test_an_unverified_address_is_not_sent_commercial_terms(
+    order, staff, client_user
+):
+    """
+    The message carries scope, price and payment terms. An unverified address
+    is one nobody has proved they read, so sending to it is sending a client's
+    commercial terms to whoever owns that mailbox — the exclusion every other
+    client email already applies.
+    """
+    from django.core import mail
+
+    client_user.email_verified_at = None
+    client_user.save(update_fields=["email_verified_at"])
+
+    mail.outbox.clear()
+    _contract(order, staff)
+    assert len(mail.outbox) == 0
+
+
+def test_somebody_who_opted_out_of_updates_is_not_emailed(
+    order, staff, client_user
+):
+    from django.core import mail
+
+    Membership.objects.filter(user=client_user).update(receives_updates=False)
+
+    mail.outbox.clear()
+    _contract(order, staff)
+    assert len(mail.outbox) == 0
+
+
+def test_the_dashboard_notice_still_lands_when_no_email_goes_out(
+    order, staff, client_user
+):
+    """
+    The falsifiability partner for the two tests above. They would both pass if
+    issuing quietly stopped notifying anybody at all — the portal record must
+    survive an address we will not email.
+    """
+    from portal.models import Notification
+
+    client_user.email_verified_at = None
+    client_user.save(update_fields=["email_verified_at"])
+
+    _contract(order, staff)
+    assert Notification.objects.filter(
+        user=client_user, kind=Notification.Kind.CONTRACT_ISSUED
+    ).exists()
+
+
+# ── and telling them what we wrote down about them ───────────────────────────
+
+
+def test_recording_a_signature_tells_the_client_what_was_recorded(
+    order, staff, client_user
+):
+    """
+    record_signature captures no signature — a member of staff asserts that one
+    happened elsewhere, and that assertion starts the delivery clock. The
+    person it is about is entitled to read it and say it is wrong.
+    """
+    from django.core import mail
+    from portal.models import Notification
+
+    contract = _contract(order, staff)
+    mail.outbox.clear()
+
+    services.record_signature(
+        contract=contract,
+        actor=staff,
+        signed_on=dt.date(2026, 9, 20),
+        signed_by_name="A Client",
+    )
+
+    notice = Notification.objects.get(
+        user=client_user, kind=Notification.Kind.CONTRACT_SIGNED
+    )
+    assert "A Client" in notice.body
+
+    body = mail.outbox[0].body
+    assert "A Client" in body
+    assert "2026-09-20" in body
+    # Named, because who asserted it is the fact this establishes.
+    assert "Ops" in body
+
+
+def test_the_receipt_does_not_claim_we_captured_a_signature(order, staff):
+    """
+    Genmars runs no signing product. Charter 04 §IV forbids wording that
+    implies one, and "your signature was received" is exactly that claim.
+    """
+    from django.core import mail
+
+    contract = _contract(order, staff)
+    mail.outbox.clear()
+    services.record_signature(
+        contract=contract, actor=staff,
+        signed_on=dt.date(2026, 9, 20), signed_by_name="A Client",
+    )
+
+    body = mail.outbox[0].body.lower()
+    for claim in ("your signature was received", "signature captured", "e-sign"):
+        assert claim not in body
+    assert "has recorded that" in body
+
+
+def test_the_receipt_says_how_to_correct_it(order, staff):
+    """Delivery is measured from this date, so a wrong one is not clerical."""
+    from django.core import mail
+
+    contract = _contract(order, staff)
+    mail.outbox.clear()
+    services.record_signature(
+        contract=contract, actor=staff,
+        signed_on=dt.date(2026, 9, 20), signed_by_name="A Client",
+    )
+    assert "not right" in mail.outbox[0].body.lower()

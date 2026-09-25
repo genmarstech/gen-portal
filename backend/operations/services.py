@@ -689,6 +689,13 @@ def issue_contract(*, order: Order, actor: User, deliverables: str = "") -> Cont
             else f"Statement of work replaced — version {version}"
         ),
     )
+
+    # AFTER the record, and outside nothing: issuing is the point at which the
+    # client becomes able to act, and until this call existed they were not
+    # told. See notify_contract_issued — every other document on an order
+    # already reaches them and this one did not.
+    notify_contract_issued(contract)
+
     return contract
 
 
@@ -742,6 +749,13 @@ def record_signature(
     mark_client_notice(
         order=contract.order, reason="Statement of work signed"
     )
+
+    # The client is told what we have written down about them. This records a
+    # staff assertion that they signed somewhere else, and it starts the
+    # delivery clock — so the person it is about gets to read it and say it is
+    # wrong. See notify_signature_recorded.
+    notify_signature_recorded(contract)
+
     return contract
 
 
@@ -3985,6 +3999,130 @@ def _email_order_opened(order: Order) -> None:
             # fact; the email is an account of it, and the notification in the
             # dashboard has already landed.
             log.exception("could not email %s about %s", membership.user.email, order.reference)
+
+
+def notify_contract_issued(contract: Contract) -> None:
+    """
+    The statement of work is ready to read and sign.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS WAS THE ONE DOCUMENT NOTHING TOLD THE CLIENT ABOUT.
+
+    An invoice issued, a payment recorded, a note published, an order opened —
+    every one of those already reaches the client. The statement of work, which
+    Charter 02 §I makes the document delivery BEGINS on, was created in the
+    portal in silence. The client discovered Genmars was waiting on them only
+    by signing in and looking.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    order = contract.order
+    _notify(
+        users=_client_recipients(order.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.CONTRACT_ISSUED,
+        title=f"{order.reference} — statement of work",
+        body="What we have agreed, what it costs and when. Nothing starts "
+        "until it is signed.",
+        url=f"/dashboard/{order.reference}",
+    )
+    _email_contract_issued(contract)
+
+
+def notify_signature_recorded(contract: Contract) -> None:
+    """
+    We have written down that they signed. They are entitled to see it.
+
+    record_signature captures no signature — a member of staff is asserting
+    that one happened elsewhere. That assertion starts the delivery clock, so
+    the person it is about should be able to read it and say it is wrong.
+    """
+    order = contract.order
+    _notify(
+        users=_client_recipients(order.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.CONTRACT_SIGNED,
+        title=f"{order.reference} — signature recorded",
+        body=f"Recorded as signed by {contract.signed_by_name} on "
+        f"{contract.signed_on}. Tell us if that is not right.",
+        url=f"/dashboard/{order.reference}",
+    )
+    _email_signature_recorded(contract)
+
+
+def _email_contract_issued(contract: Contract) -> None:
+    """
+    Same two exclusions as every other client email, for the same reasons:
+    `receives_updates` off means they asked not to hear about this, and an
+    unverified address is one nobody has proved they read — this message
+    carries scope, price and payment terms, so sending it to an unproved
+    address is sending a client's commercial terms to whoever owns that
+    mailbox.
+    """
+    order = contract.order
+    recipients = (
+        Membership.objects.filter(
+            organisation=order.organisation, receives_updates=True
+        )
+        .select_related("user")
+        .exclude(user__email_verified_at__isnull=True)
+    )
+
+    for membership in recipients:
+        try:
+            emails.send_contract_issued(
+                email=membership.user.email,
+                reference=order.reference,
+                title=contract.title,
+                version=contract.version,
+                scope=contract.scope,
+                exclusions=contract.exclusions,
+                deliverables=contract.deliverables,
+                total_kes=f"{contract.total_kes:,.2f}",
+                payment_terms=contract.payment_terms,
+                target_date=(
+                    contract.target_date.isoformat() if contract.target_date else ""
+                ),
+            )
+        except Exception:
+            # A failed email must not roll back the contract. The contract is
+            # the fact; the email is an account of it, and the dashboard
+            # notification has already landed.
+            log.exception(
+                "could not email %s about %s", membership.user.email, order.reference
+            )
+
+
+def _email_signature_recorded(contract: Contract) -> None:
+    order = contract.order
+    recipients = (
+        Membership.objects.filter(
+            organisation=order.organisation, receives_updates=True
+        )
+        .select_related("user")
+        .exclude(user__email_verified_at__isnull=True)
+    )
+
+    recorded_by = ""
+    if contract.recorded_by_id:
+        recorded_by = contract.recorded_by.full_name or contract.recorded_by.email
+
+    for membership in recipients:
+        try:
+            emails.send_signature_recorded(
+                email=membership.user.email,
+                reference=order.reference,
+                title=contract.title,
+                version=contract.version,
+                signed_by_name=contract.signed_by_name,
+                signed_on=(
+                    contract.signed_on.isoformat() if contract.signed_on else ""
+                ),
+                recorded_by=recorded_by or "Somebody",
+            )
+        except Exception:
+            log.exception(
+                "could not email %s about %s", membership.user.email, order.reference
+            )
 
 
 # ── clients: the rest of the lifecycle ───────────────────────────────────────

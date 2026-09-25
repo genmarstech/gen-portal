@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { MyData } from "./MyData";
 import { Fields, FormError, PasswordField, Submit } from "@/components/auth/Form";
 import { ApiError, auth, portal, session } from "@/lib/api";
 import styles from "./page.module.css";
@@ -57,10 +58,20 @@ export default function AccountPage() {
       <section className={styles.section}>
         <h2 className={styles.h2}>Your data</h2>
         <p className={styles.body}>
-          Download everything we hold on this account — your profile, your
-          organisation, every order, every progress note and every milestone —
-          as a JSON file. No request, no wait, no conditions.
+          Everything we hold on this account — your profile, your organisation,
+          every order, every progress note, every milestone and every invoice.
+          Read it here, or take it away as a JSON file. No request, no wait, no
+          conditions.
         </p>
+
+        {/*
+          Above the download, deliberately. Charter 05 §VIII is about not
+          holding data back, and "you may have it if you download a file and
+          find something that opens JSON" is a smaller version of holding it
+          back. Reading it should be the easy path; the file is for taking it
+          somewhere else.
+        */}
+        <MyData />
         {/*
           A plain link, not a fetch. The endpoint answers with
           Content-Disposition: attachment, so the browser saves the file itself;

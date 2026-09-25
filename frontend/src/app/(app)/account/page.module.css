@@ -66,3 +66,109 @@
   font-size: 0.8125rem;
   color: var(--ink-faint);
 }
+
+/* ── what we hold, on the page ─────────────────────────────────────────────
+   Rendered generically from whatever the export returns, so these styles must
+   survive arbitrary nesting: an order contains a contract contains a list of
+   deliverables. Indentation comes from the nested <dl>, not from depth-aware
+   classes, because there is no component that knows the depth. */
+
+.dataError {
+  margin: 0 0 12px;
+  font-size: 0.875rem;
+  color: var(--danger);
+}
+
+.data {
+  margin-top: 4px;
+}
+
+.dataNote {
+  margin: 0 0 14px;
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+.dataPairs {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+/* A nested group steps in and takes a rule, so the shape of the data is
+   readable without any component knowing how deep it is. */
+.dataPairs .dataPairs {
+  margin-top: 6px;
+  padding-left: 12px;
+  border-left: 2px solid var(--rule);
+}
+
+.dataPair {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) 1fr;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.dataKey {
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+}
+
+.dataDd {
+  margin: 0;
+  min-width: 0;
+}
+
+.dataValue {
+  font-size: 0.875rem;
+  color: var(--ink);
+  /* Scope and progress notes are prose with newlines in them. Without this
+     they collapse into one paragraph and stop being the thing that was
+     written. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* An empty field is SHOWN, not hidden — "we hold nothing here" is information,
+   and hiding it would make this a summary of the non-empty fields. */
+.dataEmpty {
+  font-size: 0.875rem;
+  color: var(--ink-faint);
+}
+
+.dataList {
+  margin: 0;
+  padding: 0 0 0 1.1rem;
+  display: grid;
+  gap: 10px;
+}
+
+.dataItem {
+  padding-left: 2px;
+}
+
+.dataHide {
+  margin-top: 16px;
+  padding: 0;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--ink-muted);
+  background: none;
+  border: none;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.dataHide:hover {
+  color: var(--ink);
+}
+
+/* Two columns become two cramped ones on a phone. Stack, with the label above
+   its value — the same fix the order Documents index uses. */
+@media (max-width: 34rem) {
+  .dataPair {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
