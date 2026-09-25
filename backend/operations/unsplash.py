@@ -44,6 +44,7 @@ view would both misreport usage and spend the limit on traffic.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import urllib.error
@@ -154,7 +155,14 @@ def search(query: str) -> list[dict]:
     if not is_configured():
         raise UnsplashError("Unsplash is not configured on this server.")
 
-    key = f"unsplash:search:{query.lower()}"
+    # ── THE QUERY IS HASHED, NOT INTERPOLATED ───────────────────────────────
+    # A search phrase has spaces in it, and Django warns that a cache key
+    # containing them would break against memcached. It works on this Redis,
+    # so the warning is the only symptom — one line of noise on every search,
+    # and a real failure the day somebody changes the cache backend. A digest
+    # is fixed-length and safe whatever is underneath.
+    digest = hashlib.sha256(query.lower().encode()).hexdigest()[:32]
+    key = f"unsplash:search:{digest}"
     cached = cache.get(key)
     if cached is not None:
         return cached
