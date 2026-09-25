@@ -12,6 +12,8 @@ re-implemented slightly differently by the next endpoint.
 
 from __future__ import annotations
 
+import logging
+
 from datetime import timedelta
 
 from django.db import models
@@ -22,6 +24,10 @@ from django.utils import timezone
 from rest_framework import status as http
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+# The one thing logged from this module: an Unsplash search that failed, with
+# their reason. See UnsplashSearchView.
+log = logging.getLogger(__name__)
 
 from accounts.mail_health import mail_health
 from accounts.models import Membership, Organisation, User
@@ -60,7 +66,7 @@ from portal.models import (
 
 from portal.system_api import issue_key
 
-from . import approvals, exports, search, selectors, services
+from . import approvals, exports, search, selectors, services, unsplash
 from .permissions import (
     CanCommit,
     CanConfigureBilling,
@@ -3048,6 +3054,11 @@ def _work_row(item) -> dict:
         "architecture": item.architecture,
         "engineering": item.engineering,
         "results": item.results,
+        "image_url": item.image_url,
+        "image_alt": item.image_alt,
+        "image_credit_name": item.image_credit_name,
+        "image_credit_url": item.image_credit_url,
+        "image_id": item.image_id,
         "permission_on_file": item.permission_on_file,
         "needs_consent": item.needs_consent,
         "is_published": item.is_published,
@@ -3055,6 +3066,67 @@ def _work_row(item) -> dict:
         "order": item.order,
         "updated_at": item.updated_at,
     }
+
+
+class UnsplashSearchView(StaffView):
+    """
+    Pictures to choose from, fetched by this server rather than the browser.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE ACCESS KEY STAYS HERE.
+
+    The obvious shape — the ops screen calling api.unsplash.com itself — puts
+    the key in a bundle served to anybody who loads the page. It also spends
+    the rate limit once per open tab instead of once per search.
+    ══════════════════════════════════════════════════════════════════════════
+
+    Staff rather than founder. Choosing a photograph is not publishing
+    anything; the founder gate is on the save, where the words are.
+    """
+
+    def get(self, request):
+        if not unsplash.is_configured():
+            return Response(
+                {
+                    "configured": False,
+                    "photos": [],
+                    "detail": (
+                        "Unsplash is not set up on this server, so pictures "
+                        "cannot be searched. Everything else still saves."
+                    ),
+                }
+            )
+
+        try:
+            photos = unsplash.search(request.query_params.get("q", ""))
+        except unsplash.UnsplashError as error:
+            # Their own words. "The hourly limit is spent" and "the key is
+            # wrong" need different people to fix them, and a single
+            # "search failed" sends whoever reads it to guess which.
+            log.warning("unsplash search failed: %s", error)
+            return Response(
+                {"configured": True, "photos": [], "detail": str(error)},
+                status=http.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response({"configured": True, "photos": photos})
+
+
+class UnsplashUsedView(StaffView):
+    """
+    Tell Unsplash a photo was taken up. Required by their API terms.
+
+    Its own endpoint rather than a step inside the save, so a tracking call
+    cannot fail somebody's edit. Called once when an editor picks — not per
+    page view, which would both misreport usage and spend the rate limit on
+    traffic that never touches their API.
+    """
+
+    def post(self, request):
+        unsplash.note_download(request.data.get("download_location", ""))
+        # 204 whatever happened. The editor is not waiting on this and there is
+        # nothing they could do about a failure; note_download logs it.
+        return Response(status=http.HTTP_204_NO_CONTENT)
 
 
 class WorkListView(StaffView):

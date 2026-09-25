@@ -1643,6 +1643,19 @@ class WorkItemSerializer(serializers.Serializer):
     is_published = serializers.BooleanField(required=False)
     order = serializers.IntegerField(min_value=0, max_value=32767, required=False)
 
+    # The picture. Written by the ops picker, which fills all of these from one
+    # Unsplash result — the pairing rule (a photo needs its photographer and
+    # its alt text) is on the model, where it also holds for the admin.
+    image_url = serializers.CharField(max_length=500, required=False, allow_blank=True)
+    image_alt = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    image_credit_name = serializers.CharField(
+        max_length=120, required=False, allow_blank=True
+    )
+    image_credit_url = serializers.CharField(
+        max_length=400, required=False, allow_blank=True
+    )
+    image_id = serializers.CharField(max_length=40, required=False, allow_blank=True)
+
 
 class DocSerializer(serializers.Serializer):
     """

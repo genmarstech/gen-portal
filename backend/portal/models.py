@@ -4288,6 +4288,58 @@ class WorkItem(models.Model):
         ),
     )
 
+    # ── THE PICTURE, AND WHY IT IS FIVE FIELDS AND NOT A FILE ───────────────
+    #
+    # Unsplash is hotlinked, never re-hosted: their licence asks for it and
+    # their CDN is better at serving images than this box is. So what is
+    # stored is a URL plus the credit that URL obliges us to print.
+    #
+    # ⚠ THE CREDIT IS DENORMALISED ON PURPOSE. Photographer and link are
+    #   copied here at the moment the image is chosen, so the website never
+    #   calls Unsplash at all — not at build, not at runtime. Looking the
+    #   credit up when it was needed would make every page build depend on a
+    #   third party and spend a rate limit to reprint a name that cannot
+    #   change.
+    #
+    # ⚠ AN IMAGE WITHOUT ITS CREDIT MUST NOT BE PUBLISHABLE. Unsplash's terms
+    #   require attribution, and a blank photographer beside a live photo is a
+    #   licence breach that looks like a cosmetic gap. `clean()` enforces the
+    #   pair below.
+    #
+    # Empty is the ordinary state. Most work has no picture and does not need
+    # one; the card and the panel both render without it.
+    image_url = models.URLField(
+        blank=True,
+        default="",
+        max_length=500,
+        help_text="Unsplash CDN address. Chosen in ops, never typed by hand.",
+    )
+    image_alt = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text=(
+            "What the picture shows, for somebody who cannot see it. Not the "
+            "same as the summary — describe the image, not the project."
+        ),
+    )
+    image_credit_name = models.CharField(
+        max_length=120,
+        blank=True,
+        default="",
+        help_text="The photographer. Required by the Unsplash licence.",
+    )
+    image_credit_url = models.URLField(
+        blank=True,
+        default="",
+        max_length=400,
+        help_text="Their Unsplash profile, with the attribution parameters.",
+    )
+    #: Their id for the photo. Kept so the same picture can be recognised
+    #: across items and so a future change can find what was used, without
+    #: parsing it back out of a CDN URL that is theirs to restructure.
+    image_id = models.CharField(max_length=40, blank=True, default="")
+
     permission_on_file = models.BooleanField(
         default=False,
         help_text=(
@@ -4327,6 +4379,47 @@ class WorkItem(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.get_category_display()})"
+
+    def clean(self):
+        """
+        A picture and its credit travel together, or neither is stored.
+
+        ══════════════════════════════════════════════════════════════════════
+        UNSPLASH'S LICENCE REQUIRES ATTRIBUTION, AND A MISSING ONE LOOKS LIKE
+        A COSMETIC GAP RATHER THAN A BREACH.
+
+        That is the whole reason this is a model rule and not a form one: a
+        photograph published with no photographer beside it is a licence
+        breach, and nothing about the page would look wrong. Enforced here so
+        it holds for the ops form, the admin and anything written later.
+        ══════════════════════════════════════════════════════════════════════
+
+        Alt text is in the pair too. An image with no alt is invisible to
+        somebody using a screen reader and to somebody on a connection that
+        did not load it, which is a different kind of not-published.
+        """
+        super().clean()
+
+        if self.image_url and not (self.image_credit_name and self.image_credit_url):
+            raise ValidationError(
+                {
+                    "image_credit_name": (
+                        "A picture needs its photographer. The Unsplash "
+                        "licence requires the credit, and choosing the image "
+                        "in ops fills this in for you."
+                    )
+                }
+            )
+
+        if self.image_url and not self.image_alt.strip():
+            raise ValidationError(
+                {
+                    "image_alt": (
+                        "Describe what the picture shows, for somebody who "
+                        "cannot see it."
+                    )
+                }
+            )
 
     @property
     def needs_consent(self) -> bool:

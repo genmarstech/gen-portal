@@ -446,6 +446,29 @@ RESEND_API_KEY = env("RESEND_API_KEY", default="")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Unsplash — pictures for /work and /products
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A SERVER-SIDE key. It is read by operations/unsplash.py and never sent to a
+# browser: the ops screen asks this Django, and this Django asks Unsplash. A
+# key in a JavaScript bundle is a key that has been given away.
+#
+# Empty means off. The picker says so rather than failing, and every item
+# without a picture renders exactly as it does today.
+#
+# ⚠ THE DEMO TIER IS 50 REQUESTS AN HOUR, AND THAT IS PLENTY BECAUSE OF WHERE
+#   THE CALLS HAPPEN. The website build makes none — the chosen URL and credit
+#   are stored on the item. A visitor makes none; they load the CDN, not the
+#   API. Only an editor searching spends anything. Do not move the search to
+#   the website or to a keystroke handler without re-reading that arithmetic.
+UNSPLASH_ACCESS_KEY = env("UNSPLASH_ACCESS_KEY", default="")
+
+# Sent as utm_source on the links back to a photographer's profile, which
+# Unsplash's terms ask for. Their dashboard shows referrals by this name.
+UNSPLASH_APP_NAME = env("UNSPLASH_APP_NAME", default="genmars")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Google sign-in
 # ─────────────────────────────────────────────────────────────────────────────
 #

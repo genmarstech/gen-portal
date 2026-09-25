@@ -89,6 +89,18 @@ urlpatterns = [
     # The work shown on genmars.co.ke/work. Same split as docs: staff read,
     # founder writes, because every word is a public statement.
     path("ops/work", views.WorkListView.as_view(), name="ops-work"),
+    # Choosing a picture. Staff, not founder: picking a photograph publishes
+    # nothing, and the founder gate is on the save where the words are.
+    path(
+        "ops/work/unsplash",
+        views.UnsplashSearchView.as_view(),
+        name="ops-unsplash-search",
+    ),
+    path(
+        "ops/work/unsplash/used",
+        views.UnsplashUsedView.as_view(),
+        name="ops-unsplash-used",
+    ),
     path("ops/work/<int:pk>", views.WorkDetailView.as_view(), name="ops-work-item"),
     path(
         "ops/engineering/sign-on",
