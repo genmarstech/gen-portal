@@ -83,6 +83,8 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-order-milestones", args=[reference]),
         reverse("ops-milestone", args=[reference, 1]),
         # engineering delivery
+        reverse("ops-unsplash-search"),
+        reverse("ops-unsplash-used"),
         reverse("ops-delivery"),
         reverse("ops-delivery-backfill"),
         reverse("ops-gate", args=[reference, 1]),
@@ -220,6 +222,7 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
         "ops-security-check",
         "ops-docs", "ops-doc",
         "ops-work", "ops-work-item",
+        "ops-unsplash-search", "ops-unsplash-used",
         "ops-sign-on", "ops-sign-on-detail", "ops-sign-on-secret",
     }
     missing = named - covered

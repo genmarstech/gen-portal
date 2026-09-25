@@ -255,6 +255,14 @@ class WorkItemSerializer(serializers.ModelSerializer):
             "architecture",
             "engineering",
             "results",
+            # The picture and the credit it obliges us to print. Sent together
+            # and always: the site cannot render one without the other, and a
+            # payload that carried the URL alone would make an attribution
+            # breach a front-end bug rather than an impossible state.
+            "image_url",
+            "image_alt",
+            "image_credit_name",
+            "image_credit_url",
             "order",
             "updated_at",
         ]
