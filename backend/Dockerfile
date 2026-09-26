@@ -137,9 +137,42 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 #
 # --access-logfile - sends access logs to stdout so the container log driver
 # handles rotation; a file inside the container would grow until the disk filled.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# gthread, NOT THE DEFAULT SYNC WORKER, AND THE MEDIA SHELF IS WHY.
+#
+# With sync workers, `--timeout 30` is measured against the whole request —
+# INCLUDING the time spent reading the body off a slow client. Measured from
+# a Nairobi connection, this server takes 20 MB in 14.4s: about 1.4 MB/s. So
+# a sync worker killed any upload over roughly 42 MB, and worse on a slower
+# line — while portal.attachments advertises a 200 MB ceiling for company
+# media. The cap was a promise the app server could not keep.
+#
+# gunicorn's own documentation draws the distinction: for non-sync workers
+# the timeout "just means that the worker process is still communicating and
+# is not tied to the length of time required to handle a single request."
+# A gthread worker keeps notifying the arbiter while its threads work, so a
+# four-minute upload no longer looks like a wedged process.
+#
+# That is why the timeout STAYS AT 30. The alternative — sync workers with a
+# seven-minute timeout — would have bought the same uploads by disabling the
+# protection that reaps genuinely hung workers, for every request.
+#
+# Threads also fix the other half of the problem, which the timeout hid: with
+# three sync workers, one person uploading a video occupied a THIRD of the
+# API for the duration. 3 x 8 gives 24 concurrent slots, so a slow upload
+# costs a twenty-fourth.
+#
+# 24 slots do NOT mean 24 held database connections: CONN_MAX_AGE is unset,
+# so Django closes its connection at the end of every request. Postgres here
+# allows 100. Setting CONN_MAX_AGE without revisiting this arithmetic is how
+# that stops being true.
+# ═══════════════════════════════════════════════════════════════════════════
 CMD ["gunicorn", "config.wsgi:application", \
      "--bind", "0.0.0.0:8010", \
+     "--worker-class", "gthread", \
      "--workers", "3", \
+     "--threads", "8", \
      "--timeout", "30", \
      "--graceful-timeout", "30", \
      "--access-logfile", "-", \
