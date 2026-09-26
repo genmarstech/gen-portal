@@ -44,7 +44,7 @@ export function LoadingMark({ size = 28, label = "Loading", className }: Props) 
         {/* Planet — the G. Holds still; it is the thing being orbited. */}
         <g className={styles.planet}>
           <path
-            d="M90.8 45.6 A34 34 0 1 0 90.8 74.4"
+            d="M85.27 37.25 A34 34 0 1 0 85.27 82.75"
             fill="none"
             stroke="var(--mark-g, #8B5A48)"
             strokeWidth="9"
