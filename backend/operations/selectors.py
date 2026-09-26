@@ -31,6 +31,7 @@ from portal.models import (
     DeliveryGate,
     Enquiry,
     Invoice,
+    LibraryFile,
     Milestone,
     Order,
     ProgressNote,
@@ -855,3 +856,99 @@ def recent_activity(limit: int = 12) -> list[dict]:
 
     items.sort(key=lambda i: i["at"], reverse=True)
     return items[:limit]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The company library
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def library(
+    *,
+    user: User,
+    shelf: str = "",
+    query: str = "",
+    include_archived: bool = False,
+) -> QuerySet[LibraryFile]:
+    """
+    The company documents this account may see.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE VISIBILITY FILTER LIVES HERE AND NOWHERE ELSE.
+
+    `LibraryFile.visibility` is enforced by the `.exclude()` below, on the
+    queryset that answers every list and every fetch. Not in a view, not in a
+    serialiser, not in the frontend — the same reason `portal/selectors.py`
+    gives for tenant scoping: one place to audit, and a rule enforced in two
+    places eventually disagrees with itself.
+
+    A founder-only document is therefore ABSENT rather than forbidden. Anyone
+    else asking for it by id gets 404, because 403 would confirm it exists —
+    and "there is a document about me that I am not allowed to see" is exactly
+    the fact the narrow visibility was chosen to keep quiet.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    rows = LibraryFile.objects.select_related("uploaded_by", "replaced_by")
+
+    if not user.can_manage_access:
+        rows = rows.exclude(visibility=LibraryFile.Visibility.FOUNDER)
+
+    if not include_archived:
+        rows = rows.filter(archived_at__isnull=True)
+
+    if shelf:
+        rows = rows.filter(shelf=shelf)
+
+    if query:
+        # Title and description only. The file's CONTENTS are not searched and
+        # that is not a gap to fill later with a text-extraction dependency —
+        # Charter 03 §I. It is why `description` exists and why its help text
+        # asks for what the file does not say.
+        rows = rows.filter(
+            Q(title__icontains=query)
+            | Q(description__icontains=query)
+            | Q(original_name__icontains=query)
+        )
+
+    return rows
+
+
+def library_file(*, user: User, pk: int) -> LibraryFile | None:
+    """One document, or None if this account may not see it. See `library`."""
+    return library(user=user, include_archived=True).filter(pk=pk).first()
+
+
+def library_shelves(*, user: User) -> list[dict]:
+    """
+    Every shelf with a count, INCLUDING THE EMPTY ONES.
+
+    An empty shelf is information: it is how somebody discovers that nobody
+    has ever filed a supplier agreement. A list built only from what exists
+    would silently hide the gap the library was built to expose.
+    """
+    counts = dict(
+        library(user=user)
+        .values_list("shelf")
+        .annotate(n=Count("id"))
+        .values_list("shelf", "n")
+    )
+    return [
+        {"key": key, "label": label, "count": counts.get(key, 0)}
+        for key, label in LibraryFile.Shelf.choices
+    ]
+
+
+def library_attention(*, user: User, within_days: int = 30) -> list[LibraryFile]:
+    """
+    What has lapsed or is about to, soonest first.
+
+    Expired before expiring: a certificate that ran out in March is a problem
+    now, and one that runs out next month is a reminder. Ordering by the date
+    puts them in that order without needing to say so twice.
+    """
+    horizon = timezone.localdate() + timedelta(days=within_days)
+    return list(
+        library(user=user)
+        .filter(expires_on__isnull=False, expires_on__lte=horizon)
+        .order_by("expires_on", "id")
+    )

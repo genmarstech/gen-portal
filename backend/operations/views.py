@@ -17,8 +17,9 @@ import logging
 from datetime import timedelta
 
 from django.db import models
-from django.http import Http404, HttpResponse
+from django.http import FileResponse, Http404, HttpResponse
 from django.shortcuts import get_object_or_404
+from django.utils.dateparse import parse_date
 from rest_framework.parsers import FormParser, MultiPartParser
 from django.utils import timezone
 from rest_framework import status as http
@@ -47,6 +48,7 @@ from portal.models import (
     HostingArrangement,
     Incident,
     Invoice,
+    LibraryFile,
     Milestone,
     Notification,
     Offer,
@@ -110,6 +112,7 @@ from .serializers import (
     InvoiceSerializer,
     InvoiceWriteSerializer,
     IssueContractSerializer,
+    LibraryFileSerializer,
     MembershipSerializer,
     MembershipWriteSerializer,
     MilestoneSerializer,
@@ -3365,3 +3368,223 @@ class DocDetailView(StaffView):
 
         services.delete_doc(actor=request.user, doc=doc)
         return Response(status=http.HTTP_204_NO_CONTENT)
+
+
+# ── the company library ──────────────────────────────────────────────────────
+
+
+def _library_or_404(request, pk: int):
+    """
+    Fetch through the selector, which applies visibility.
+
+    404 rather than 403 for a founders-only document, deliberately — see the
+    banner on `selectors.library`. Going through `get_object_or_404(LibraryFile, ...)`
+    here instead would be the bug: it would find the row, and the refusal would
+    confirm its existence.
+    """
+    document = selectors.library_file(user=request.user, pk=pk)
+    if document is None:
+        raise Http404
+    return document
+
+
+class LibraryView(StaffView):
+    """
+    The company's filing cabinet: list, and file something new.
+
+    Multipart on POST. What may be stored is decided by portal/attachments.py
+    from the bytes; nothing about that judgement lives here.
+    """
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        include_archived = str(request.query_params.get("archived", "")).lower() in {
+            "1", "true", "yes",
+        }
+        rows = selectors.library(
+            user=request.user,
+            shelf=str(request.query_params.get("shelf", "") or ""),
+            query=str(request.query_params.get("q", "") or "").strip(),
+            include_archived=include_archived,
+        )
+        return Response(
+            {
+                "documents": LibraryFileSerializer(rows, many=True).data,
+                "shelves": selectors.library_shelves(user=request.user),
+                # Sent with the list rather than fetched separately: an expiry
+                # nobody asked for is exactly the one that lapses.
+                "attention": LibraryFileSerializer(
+                    selectors.library_attention(user=request.user), many=True
+                ).data,
+                # So the screen can offer the founder-only option to the people
+                # who may use it, instead of showing everybody a control that
+                # refuses them.
+                "can_restrict": bool(request.user.can_manage_access),
+                "can_delete": bool(request.user.can_manage_access),
+            }
+        )
+
+    def post(self, request):
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response(
+                {"detail": "No file arrived.", "field": "file"},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+
+        from portal import attachments as attachment_rules
+
+        replaces = None
+        replaces_id = request.data.get("replaces")
+        if replaces_id:
+            # Through the selector, so a document this account cannot see
+            # cannot be superseded by one it can.
+            replaces = selectors.library_file(user=request.user, pk=int(replaces_id))
+            if replaces is None:
+                raise Http404
+
+        expires_on = _library_date(request.data.get("expires_on"))
+        if expires_on is _INVALID_DATE:
+            return Response(
+                {"detail": "That is not a date.", "field": "expires_on"},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            document = services.add_library_file(
+                actor=request.user,
+                upload=upload,
+                title=str(request.data.get("title", "") or ""),
+                description=str(request.data.get("description", "") or ""),
+                shelf=str(request.data.get("shelf", "") or LibraryFile.Shelf.OTHER),
+                visibility=str(
+                    request.data.get("visibility", "") or LibraryFile.Visibility.STAFF
+                ),
+                expires_on=expires_on,
+                replaces=replaces,
+            )
+        except attachment_rules.AttachmentError as exc:
+            body = {"detail": exc.message}
+            if exc.field:
+                body["field"] = exc.field
+            return Response(body, status=http.HTTP_400_BAD_REQUEST)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(
+            LibraryFileSerializer(document).data, status=http.HTTP_201_CREATED
+        )
+
+
+# A sentinel, because `None` is a legitimate value here: clearing the expiry
+# date is a thing somebody does, and it has to be distinguishable from "that
+# string was not a date".
+_INVALID_DATE = object()
+
+
+def _library_date(raw):
+    """`None` for absent or cleared, a date, or the sentinel for nonsense."""
+    if raw in (None, "", "null"):
+        return None
+    parsed = parse_date(str(raw))
+    return parsed if parsed is not None else _INVALID_DATE
+
+
+class LibraryDetailView(StaffView):
+    """Read one document's details, change them, archive it, or delete it."""
+
+    def get(self, request, pk: int):
+        # Through the selector like every other handler here, so a direct link
+        # to a founders-only document 404s for the person it was forwarded to.
+        return Response(LibraryFileSerializer(_library_or_404(request, pk)).data)
+
+    def patch(self, request, pk: int):
+        document = _library_or_404(request, pk)
+
+        # Archive and restore arrive as an action on the same endpoint rather
+        # than as two more routes: they are one bit on the row, and a screen
+        # that can set it can unset it.
+        action = str(request.data.get("action", "") or "")
+        if action == "archive":
+            services.archive_library_file(document=document, actor=request.user)
+            return Response(LibraryFileSerializer(document).data)
+        if action == "restore":
+            services.restore_library_file(document=document, actor=request.user)
+            return Response(LibraryFileSerializer(document).data)
+
+        expires_on = ...
+        if "expires_on" in request.data:
+            expires_on = _library_date(request.data.get("expires_on"))
+            if expires_on is _INVALID_DATE:
+                return Response(
+                    {"detail": "That is not a date.", "field": "expires_on"},
+                    status=http.HTTP_400_BAD_REQUEST,
+                )
+
+        def given(field: str):
+            value = request.data.get(field)
+            return None if value is None else str(value)
+
+        try:
+            document = services.update_library_file(
+                document=document,
+                actor=request.user,
+                title=given("title"),
+                description=given("description"),
+                shelf=given("shelf"),
+                visibility=given("visibility"),
+                expires_on=expires_on,
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(LibraryFileSerializer(document).data)
+
+    def delete(self, request, pk: int):
+        document = _library_or_404(request, pk)
+        try:
+            services.delete_library_file(document=document, actor=request.user)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(status=http.HTTP_204_NO_CONTENT)
+
+
+class LibraryDownloadView(StaffView):
+    """
+    The only way a company document leaves this system.
+
+    ── THE HEADERS ARE THE POINT, SAME AS AttachmentDownloadView ───────────────
+
+    This cabinet takes Word documents, which the contact log does not, so the
+    reasoning there applies here with more force rather than less:
+    `as_attachment` means the browser saves rather than renders, and `nosniff`
+    stops it second-guessing the type we assigned. Serving any of this inline
+    from api.genmars.co.ke would be stored cross-site scripting against a
+    member of staff, with their operations session in the cookie jar.
+
+    Permission goes through the selector, so a founders-only document 404s for
+    everybody else — including on a direct link somebody was sent.
+    """
+
+    def get(self, request, pk: int):
+        document = _library_or_404(request, pk)
+
+        try:
+            handle = document.file.open("rb")
+        except FileNotFoundError:
+            # The row outlived the file — a restore from a database dump, which
+            # does not carry MEDIA_ROOT. Saying so beats a 500 and beats an
+            # empty download that looks like corruption.
+            raise Http404("The record exists but the file is not on this server.")
+
+        response = FileResponse(
+            handle,
+            content_type=document.content_type,
+            as_attachment=True,
+            filename=document.original_name,
+        )
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        response["Cache-Control"] = "private, no-store"
+        return response

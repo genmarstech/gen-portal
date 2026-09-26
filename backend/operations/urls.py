@@ -84,6 +84,25 @@ urlpatterns = [
     # is founder-only; see SignOnListView.
     # Public documentation on genmars.co.ke. Staff read it, the founder writes
     # it — every word is a public statement (Charter 02 §I).
+    # ── the company's own filing cabinet ─────────────────────────────────────
+    #
+    # Under /api/ops/ like everything else in this file, which is the whole
+    # point: these are Genmars documents and no client route may ever reach
+    # them. An entry for this under /api/ would be a data breach, not a typo.
+    path("ops/library", views.LibraryView.as_view(), name="ops-library"),
+    path(
+        "ops/library/<int:pk>",
+        views.LibraryDetailView.as_view(),
+        name="ops-library-file",
+    ),
+    # The bytes. A separate route from the row on purpose — it is the only one
+    # that serves a file, and it is the one to look at when asking how a
+    # document can leave.
+    path(
+        "ops/library/<int:pk>/file",
+        views.LibraryDownloadView.as_view(),
+        name="ops-library-download",
+    ),
     path("ops/docs", views.DocListView.as_view(), name="ops-docs"),
     path("ops/docs/<int:pk>", views.DocDetailView.as_view(), name="ops-doc"),
     # The work shown on genmars.co.ke/work. Same split as docs: staff read,

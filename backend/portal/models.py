@@ -1581,6 +1581,19 @@ class ActivityLog(models.Model):
         WORK_PUBLISHED = "work.published", "Work published"
         WORK_WITHDRAWN = "work.withdrawn", "Work withdrawn"
 
+        # The company's own filing cabinet. Every act is logged, unlike the
+        # documentation above where only publication is — because the question
+        # these answer is "who put the signed contract there, and who took it
+        # away", and an archive that cannot say is not a record of anything.
+        # A DOWNLOAD is deliberately not logged: every staff account may read
+        # what it can see, and a log of reads would be a surveillance record
+        # of colleagues rather than an account of what was done.
+        LIBRARY_ADDED = "library.added", "Document added to the library"
+        LIBRARY_UPDATED = "library.updated", "Library document details changed"
+        LIBRARY_ARCHIVED = "library.archived", "Library document archived"
+        LIBRARY_RESTORED = "library.restored", "Library document restored"
+        LIBRARY_REMOVED = "library.removed", "Library document deleted"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -4741,3 +4754,213 @@ class ChangeRequest(models.Model):
         if self.classified_at is None:
             return None
         return self.classified_at - self.raised_at
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The company's own filing cabinet
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def library_path(instance: "LibraryFile", filename: str) -> str:
+    """
+    Where a company document is stored. Same rule as `attachment_path`: the
+    name it arrived with is display text and never a path.
+
+    Shelved by category rather than by uploader, because the question later is
+    always "where is the insurance certificate" and never "what did Edwin
+    upload in 2026".
+    """
+    import uuid
+
+    suffix = Path(filename).suffix.lower()[:10]
+    shelf = instance.shelf or LibraryFile.Shelf.OTHER
+    return f"library/{shelf}/{uuid.uuid4().hex}{suffix}"
+
+
+class LibraryFile(models.Model):
+    """
+    A document the company itself owns: the paperwork, not a client's.
+
+    ══════════════════════════════════════════════════════════════════════════
+    WHAT THIS IS FOR, AND WHAT IT IS NOT.
+
+    The certificate of incorporation, the KRA compliance certificate, the
+    signed Terms of Business, the DPA, an advocate's brief, a supplier
+    agreement, the brand guide. Things that today live in `~/Genmars/05-policies`
+    on one laptop, in an email thread, or in a WhatsApp forward — which means
+    that the documents the company is legally required to produce on request
+    are the ones with no system behind them.
+
+    It is NOT a client document store. Anything belonging to a client hangs off
+    that client's record, where `portal/selectors.py` can scope it and Charter
+    05 §VIII can delete it. A client's signed contract living here instead
+    would be outside both, and the first sign of the mistake would be a
+    deletion request that missed a copy.
+
+    It is NOT a general file dump either. Every row has a shelf and a person
+    who put it there, because a filing cabinet nobody filed is a drawer.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── VISIBILITY IS TWO STATES, AND THE NARROW ONE IS FOUNDER ─────────────────
+
+    accounts/models.py says it plainly: "in a three-person company, hiding the
+    work from each other would be theatre". Almost everything here is readable
+    by any staff account and should be. The exception is the paperwork that is
+    not about the work — a bank mandate, an advocate's letter about a dispute,
+    anything naming an individual's pay — and the authority that already
+    governs that class of thing is `can_manage_access`, the founder-only one.
+
+    So there is no per-document access list and there must not be one. Two
+    states map onto an authority that already exists; a third would need a
+    rule nobody has written down, and an access list would need a screen to
+    maintain it and would still be wrong the day somebody leaves.
+
+    ── AN ARCHIVED DOCUMENT IS KEPT, A DELETED ONE IS GONE ─────────────────────
+
+    Superseding is the normal case: insurance renews, a policy is reissued.
+    That is `archived_at`, and the bytes stay, because "what cover was in force
+    last March" is a question somebody will actually be asked.
+
+    Deleting is the rare case — the wrong file, a document uploaded to the
+    wrong shelf of the wrong company — and it removes the bytes for real, the
+    same way `ContactAttachmentView.delete` does. A soft delete that keeps the
+    file while saying it is gone is us being untrue about our own system.
+
+    ── EXPIRY IS THE FIELD MOST LIKELY TO BECOME UNTRUE ────────────────────────
+
+    Same lesson as `Doc.status_changed_at`. A compliance library's real failure
+    is not a missing certificate, it is a present one that expired in March and
+    still looks like a certificate. So `expires_on` is optional, `is_expired`
+    is computed rather than stored, and the operations list sorts what has
+    lapsed to the top instead of leaving it to be noticed.
+    """
+
+    class Shelf(models.TextChoices):
+        """
+        Where a document sits. Deliberately six, and named after the reason
+        somebody goes looking rather than after a department — there is no
+        department.
+        """
+
+        POLICY = "policy", "Policies and contracts"
+        COMPLIANCE = "compliance", "Registration and compliance"
+        FINANCE = "finance", "Finance and banking"
+        SUPPLIER = "supplier", "Suppliers and services"
+        BRAND = "brand", "Brand and templates"
+        OTHER = "other", "Everything else"
+
+    class Visibility(models.TextChoices):
+        STAFF = "staff", "Any Genmars staff"
+        FOUNDER = "founder", "Founders only"
+
+    title = models.CharField(
+        max_length=200,
+        help_text=(
+            "What this is, as somebody looking for it would say it — "
+            "'Certificate of incorporation', not 'scan_003'."
+        ),
+    )
+    description = models.TextField(
+        blank=True,
+        help_text=(
+            "Anything the file itself does not say: what it is for, who "
+            "issued it, what to do when it lapses."
+        ),
+    )
+
+    shelf = models.CharField(
+        max_length=16, choices=Shelf.choices, default=Shelf.OTHER, db_index=True
+    )
+    visibility = models.CharField(
+        max_length=8, choices=Visibility.choices, default=Visibility.STAFF
+    )
+
+    file = models.FileField(upload_to=library_path, max_length=300)
+
+    # What it was called on the uploader's machine. Display text only — see
+    # library_path, and attachment_path for the full reasoning.
+    original_name = models.CharField(max_length=255)
+    # Decided by reading the bytes in portal/attachments.py, never taken from
+    # the browser or the extension.
+    content_type = models.CharField(max_length=100)
+    size_bytes = models.PositiveIntegerField()
+
+    # The date printed on the thing, where it has one. Optional because most
+    # documents do not expire and a required field would be filled with
+    # guesses, which is worse than a blank.
+    expires_on = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Only if it actually lapses — a certificate or a cover note.",
+    )
+
+    archived_at = models.DateTimeField(null=True, blank=True)
+
+    # Set when a renewal is uploaded in place of this one. Nullable and not
+    # required: it records a supersession that happened, and a library where
+    # nobody ever filled it in still works.
+    replaced_by = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="replaces",
+    )
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="library_files",
+        limit_choices_to={"is_staff": True},
+    )
+    # Kept as text as well, so the record still says who filed it after the
+    # account is deleted. Same pattern as ContactAttachment.
+    uploaded_by_label = models.CharField(max_length=200, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # Newest first. A filing cabinet is read from the front: the thing
+        # somebody just filed is overwhelmingly the thing being looked for.
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["shelf", "-created_at"]),
+            models.Index(fields=["archived_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.title
+
+    @property
+    def is_archived(self) -> bool:
+        return self.archived_at is not None
+
+    @property
+    def is_expired(self) -> bool:
+        """Computed, never stored — see the banner. A stored flag is a flag
+        that is right until the day it matters."""
+        return self.expires_on is not None and self.expires_on < timezone.localdate()
+
+    def expires_within(self, days: int = 30) -> bool:
+        """Lapsing soon enough to do something about it."""
+        if self.expires_on is None or self.is_expired:
+            return False
+        return (self.expires_on - timezone.localdate()).days <= days
+
+    def readable_by(self, user) -> bool:
+        """
+        Whether this account may see that this row exists at all.
+
+        Used by the selector rather than by a view. A founder-only document is
+        absent from the list for everybody else and 404s on a direct fetch —
+        403 would confirm it exists, which is the enumeration oracle the
+        client side already refuses to hand out.
+        """
+        if not (user and user.is_authenticated and user.is_staff):
+            return False
+        if self.visibility == self.Visibility.FOUNDER:
+            return bool(user.can_manage_access)
+        return True
