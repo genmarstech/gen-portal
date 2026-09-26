@@ -1594,6 +1594,18 @@ class ActivityLog(models.Model):
         LIBRARY_RESTORED = "library.restored", "Library document restored"
         LIBRARY_REMOVED = "library.removed", "Library document deleted"
 
+        # The media shelf. Uploads and deletions are logged; a DOWNLOAD is
+        # not, for the same reason a library read is not — every staff
+        # account may take what it can see, and a log of who took which
+        # logo is a surveillance record of colleagues rather than an account
+        # of what was done. MediaAsset.download_count records HOW MANY, so
+        # the company can tell which assets earn their place, and never WHO.
+        MEDIA_ADDED = "media.added", "Media added"
+        MEDIA_UPDATED = "media.updated", "Media details changed"
+        MEDIA_ARCHIVED = "media.archived", "Media archived"
+        MEDIA_RESTORED = "media.restored", "Media restored"
+        MEDIA_REMOVED = "media.removed", "Media deleted"
+
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -4964,3 +4976,160 @@ class LibraryFile(models.Model):
         if self.visibility == self.Visibility.FOUNDER:
             return bool(user.can_manage_access)
         return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The media shelf
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def media_path(instance: "MediaAsset", filename: str) -> str:
+    """
+    Where a media file is stored. Same rule as everywhere else in this file:
+    the uploaded name is display text and never a path.
+    """
+    import uuid
+
+    suffix = Path(filename).suffix.lower()[:10]
+    shelf = instance.shelf or MediaAsset.Shelf.OTHER
+    return f"media/{shelf}/{uuid.uuid4().hex}{suffix}"
+
+
+class MediaAsset(models.Model):
+    """
+    The company's own pictures and video: logos, photography, screenshots,
+    campaign art, the promo film.
+
+    ══════════════════════════════════════════════════════════════════════════
+    WHY THIS IS NOT A SHELF INSIDE LibraryFile.
+
+    They look adjacent and they are not the same thing.
+
+    LibraryFile is paperwork. It is FOUND — searched by name, filtered by
+    shelf — and what matters about a row is whether it is current: it has an
+    expiry, it supersedes, it archives. It deliberately has no previews and
+    deliberately refuses video, and the banner on ContactAttachment explains
+    why an image parser is not welcome near uploaded files.
+
+    Media is BROWSED. Nobody searches for the logo by name; they look at a
+    grid and recognise it. It needs previews to be usable at all, it holds
+    files an order of magnitude larger, and the whole point is downloading
+    the original to edit it — which is a verb the library does not have.
+
+    Folding them together would mean the library's list growing thumbnails,
+    its 25 MB cap growing to 200, and its expiry and supersede fields sitting
+    blank on every row. Two models, two pages, one shared set of primitives:
+    portal/attachments.py decides what may be stored, and one view serves
+    the bytes.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── VISIBILITY IS ONE TIER HERE, UNLIKE THE LIBRARY ────────────────────────
+
+    Every staff account reads everything; only a founder can delete. The
+    library has a founders-only tier because it holds bank mandates and
+    advocates' letters. A logo does not need one, and a setting nobody has a
+    reason to use is a setting that gets used wrongly.
+
+    ── DOWNLOADS ARE COUNTED, NEVER ATTRIBUTED ────────────────────────────────
+
+    `download_count` is the one number that tells the company which assets
+    are actually used — which is the difference between a media shelf and a
+    folder nobody opens. It records how many, never who: see the note on
+    ActivityLog.Action.MEDIA_ADDED.
+    """
+
+    class Shelf(models.TextChoices):
+        BRAND = "brand", "Brand and logo"
+        PHOTO = "photo", "Photography"
+        VIDEO = "video", "Video"
+        SOCIAL = "social", "Social and campaign"
+        PRODUCT = "product", "Product and screenshots"
+        OTHER = "other", "Everything else"
+
+    title = models.CharField(
+        max_length=200,
+        help_text="What it is, as somebody hunting for it would say it.",
+    )
+    description = models.TextField(
+        blank=True,
+        help_text=(
+            "Where it has been used, what it may and may not be used for, "
+            "who shot it."
+        ),
+    )
+    shelf = models.CharField(
+        max_length=16, choices=Shelf.choices, default=Shelf.OTHER, db_index=True
+    )
+
+    file = models.FileField(upload_to=media_path, max_length=300)
+
+    original_name = models.CharField(max_length=255)
+    # From the bytes, in portal/attachments.py — never the browser's claim.
+    content_type = models.CharField(max_length=100)
+    size_bytes = models.PositiveBigIntegerField()
+
+    # Read from the file header, never by decoding. Null for video and for
+    # anything unmeasurable, and nothing may depend on them — see the banner
+    # above `dimensions` in portal/attachments.py.
+    width = models.PositiveIntegerField(null=True, blank=True)
+    height = models.PositiveIntegerField(null=True, blank=True)
+
+    # How many, never who.
+    download_count = models.PositiveIntegerField(default=0)
+
+    archived_at = models.DateTimeField(null=True, blank=True)
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="media_assets",
+        limit_choices_to={"is_staff": True},
+    )
+    uploaded_by_label = models.CharField(max_length=200, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(fields=["shelf", "-created_at"]),
+            models.Index(fields=["archived_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return self.title
+
+    @property
+    def is_archived(self) -> bool:
+        return self.archived_at is not None
+
+    @property
+    def is_image(self) -> bool:
+        """Whether the BYTES said it is a raster image. Decides only whether a
+        preview is offered, never how anything is served."""
+        return self.content_type.startswith("image/")
+
+    @property
+    def is_video(self) -> bool:
+        return self.content_type.startswith("video/")
+
+    @property
+    def previewable(self) -> bool:
+        """
+        Whether this may be served inline.
+
+        Raster and video only — never a PDF, and there is no SVG or HTML in
+        the allowlist to begin with. `MediaPreviewView` asks this rather than
+        deciding for itself, so the rule lives in one place.
+        """
+        return self.is_image or self.is_video
+
+    @property
+    def aspect(self) -> float | None:
+        """For the grid, so tiles do not reflow as they load."""
+        if not self.width or not self.height:
+            return None
+        return round(self.width / self.height, 4)

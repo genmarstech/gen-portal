@@ -49,6 +49,7 @@ from portal.models import (
     Incident,
     Invoice,
     LibraryFile,
+    MediaAsset,
     Milestone,
     Notification,
     Offer,
@@ -66,6 +67,7 @@ from portal.models import (
     WorkItem,
 )
 
+from portal import attachments as attachment_rules
 from portal.system_api import issue_key
 
 from . import approvals, exports, search, selectors, services, unsplash
@@ -113,6 +115,7 @@ from .serializers import (
     InvoiceWriteSerializer,
     IssueContractSerializer,
     LibraryFileSerializer,
+    MediaAssetSerializer,
     MembershipSerializer,
     MembershipWriteSerializer,
     MilestoneSerializer,
@@ -3587,4 +3590,207 @@ class LibraryDownloadView(StaffView):
         response["X-Content-Type-Options"] = "nosniff"
         response["Content-Security-Policy"] = "default-src 'none'; sandbox"
         response["Cache-Control"] = "private, no-store"
+        return response
+
+
+# ── the media shelf ──────────────────────────────────────────────────────────
+
+
+def _media_or_404(pk: int) -> MediaAsset:
+    asset = selectors.media_asset(pk=pk)
+    if asset is None:
+        raise Http404
+    return asset
+
+
+class MediaView(StaffView):
+    """The media grid: list, and put something new on the shelf."""
+
+    parser_classes = [MultiPartParser, FormParser]
+
+    def get(self, request):
+        include_archived = str(request.query_params.get("archived", "")).lower() in {
+            "1", "true", "yes",
+        }
+        rows = selectors.media(
+            shelf=str(request.query_params.get("shelf", "") or ""),
+            query=str(request.query_params.get("q", "") or "").strip(),
+            include_archived=include_archived,
+        )
+        return Response(
+            {
+                "assets": MediaAssetSerializer(rows, many=True).data,
+                "shelves": selectors.media_shelves(),
+                "totals": selectors.media_totals(),
+                # The server's answer about this account, so a control
+                # nobody may use is absent rather than present and refusing.
+                "can_delete": bool(request.user.can_manage_access),
+                "max_bytes": attachment_rules.MEDIA_MAX_BYTES,
+            }
+        )
+
+    def post(self, request):
+        upload = request.FILES.get("file")
+        if upload is None:
+            return Response(
+                {"detail": "No file arrived.", "field": "file"},
+                status=http.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            asset = services.add_media(
+                actor=request.user,
+                upload=upload,
+                title=str(request.data.get("title", "") or ""),
+                description=str(request.data.get("description", "") or ""),
+                shelf=str(request.data.get("shelf", "") or MediaAsset.Shelf.OTHER),
+            )
+        except attachment_rules.AttachmentError as exc:
+            body = {"detail": exc.message}
+            if exc.field:
+                body["field"] = exc.field
+            return Response(body, status=http.HTTP_400_BAD_REQUEST)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(MediaAssetSerializer(asset).data, status=http.HTTP_201_CREATED)
+
+
+class MediaDetailView(StaffView):
+    """Read one asset, change what we say about it, archive it, delete it."""
+
+    def get(self, request, pk: int):
+        return Response(MediaAssetSerializer(_media_or_404(pk)).data)
+
+    def patch(self, request, pk: int):
+        asset = _media_or_404(pk)
+
+        action = str(request.data.get("action", "") or "")
+        if action == "archive":
+            services.archive_media(asset=asset, actor=request.user)
+            return Response(MediaAssetSerializer(asset).data)
+        if action == "restore":
+            services.restore_media(asset=asset, actor=request.user)
+            return Response(MediaAssetSerializer(asset).data)
+
+        def given(field: str):
+            value = request.data.get(field)
+            return None if value is None else str(value)
+
+        try:
+            asset = services.update_media(
+                asset=asset,
+                actor=request.user,
+                title=given("title"),
+                description=given("description"),
+                shelf=given("shelf"),
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(MediaAssetSerializer(asset).data)
+
+    def delete(self, request, pk: int):
+        asset = _media_or_404(pk)
+        try:
+            services.delete_media(asset=asset, actor=request.user)
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(status=http.HTTP_204_NO_CONTENT)
+
+
+def _open_or_404(asset: MediaAsset):
+    try:
+        return asset.file.open("rb")
+    except FileNotFoundError:
+        # The row outlived the file — a restore from a database dump, which
+        # does not carry MEDIA_ROOT.
+        raise Http404("The record exists but the file is not on this server.")
+
+
+class MediaDownloadView(StaffView):
+    """
+    The original, as an attachment. This is the point of the whole feature:
+    somebody pulls the master down and edits it.
+    """
+
+    def get(self, request, pk: int):
+        asset = _media_or_404(pk)
+        handle = _open_or_404(asset)
+
+        services.note_media_download(asset=asset)
+
+        response = FileResponse(
+            handle,
+            content_type=asset.content_type,
+            as_attachment=True,
+            filename=asset.original_name,
+        )
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        response["Cache-Control"] = "private, no-store"
+        return response
+
+
+class MediaPreviewView(StaffView):
+    """
+    The same bytes, INLINE, so the grid can show them.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS IS THE ONE ROUTE IN THIS SYSTEM THAT SERVES A STORED FILE INLINE, AND
+    THE REASONING HAD BETTER BE GOOD.
+
+    settings.py and portal/attachments.py both say a stored file is never
+    rendered in our origin, because an HTML or SVG file served inline is
+    stored cross-site scripting against whichever member of staff opens it,
+    with their operations session attached. That rule is right and it is not
+    being relaxed for convenience — a media grid that cannot show the media
+    is not a media grid, so the question is what makes this safe rather than
+    whether to do it.
+
+    Four things, and all four are required:
+
+      1. THE TYPE COMES FROM THE BYTES. portal/attachments.py decided it by
+         reading the header. The browser's claim and the filename were never
+         consulted.
+      2. ONLY RASTER AND VIDEO. `asset.previewable` — and the allowlist has
+         no SVG and no HTML in it to begin with, so the dangerous formats
+         cannot reach this route even mislabelled. A PDF is storable and is
+         NOT previewable, because a PDF is a scripting host.
+      3. nosniff. Without it a browser may second-guess the type we assigned,
+         which is the whole attack in one header.
+      4. `default-src 'none'; sandbox`. Even granting a file that got past
+         all of the above, it executes nothing, loads nothing and reaches
+         nothing.
+
+    A PNG served with 2, 3 and 4 is inert. That is the argument; if any of
+    the four is ever removed, this route has to go with it.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    def get(self, request, pk: int):
+        asset = _media_or_404(pk)
+        if not asset.previewable:
+            # Not 403: there is nothing here to preview, and saying so as a
+            # refusal would invite somebody to add a bypass.
+            raise Http404
+
+        handle = _open_or_404(asset)
+
+        response = FileResponse(
+            handle,
+            content_type=asset.content_type,
+            # The single difference from the download route.
+            as_attachment=False,
+            # Named anyway. Without it FileResponse falls back to the stored
+            # name, which is the random one from media_path — so "save image
+            # as" from a preview would offer a 32-character hex string. It
+            # leaks nothing (that name is random precisely so it cannot), it
+            # is just useless to the person saving it.
+            filename=asset.original_name,
+        )
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Content-Security-Policy"] = "default-src 'none'; sandbox"
+        # A grid re-requests the same tiles constantly, so a short private
+        # cache is worth it — but it must stay private: this is company
+        # media behind a staff session and must not sit in a shared proxy.
+        response["Cache-Control"] = "private, max-age=300"
         return response

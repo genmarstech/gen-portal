@@ -166,6 +166,11 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-library"),
         reverse("ops-library-file", args=[1]),
         reverse("ops-library-download", args=[1]),
+        # company media, including the one inline-serving route
+        reverse("ops-media"),
+        reverse("ops-media-asset", args=[1]),
+        reverse("ops-media-download", args=[1]),
+        reverse("ops-media-preview", args=[1]),
     ]
 
 
@@ -230,6 +235,7 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
         "ops-unsplash-search", "ops-unsplash-used",
         "ops-sign-on", "ops-sign-on-detail", "ops-sign-on-secret",
         "ops-library", "ops-library-file", "ops-library-download",
+        "ops-media", "ops-media-asset", "ops-media-download", "ops-media-preview",
     }
     missing = named - covered
     assert not missing, (

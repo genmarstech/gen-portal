@@ -84,6 +84,23 @@ urlpatterns = [
     # is founder-only; see SignOnListView.
     # Public documentation on genmars.co.ke. Staff read it, the founder writes
     # it — every word is a public statement (Charter 02 §I).
+    # ── company media: pictures, video, the brand kit ────────────────────────
+    #
+    # `preview` is the one route in this API that serves a stored file
+    # inline. MediaPreviewView carries the four conditions that make that
+    # safe; do not add a second inline route without reading them.
+    path("ops/media", views.MediaView.as_view(), name="ops-media"),
+    path("ops/media/<int:pk>", views.MediaDetailView.as_view(), name="ops-media-asset"),
+    path(
+        "ops/media/<int:pk>/file",
+        views.MediaDownloadView.as_view(),
+        name="ops-media-download",
+    ),
+    path(
+        "ops/media/<int:pk>/preview",
+        views.MediaPreviewView.as_view(),
+        name="ops-media-preview",
+    ),
     # ── the company's own filing cabinet ─────────────────────────────────────
     #
     # Under /api/ops/ like everything else in this file, which is the whole

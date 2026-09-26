@@ -625,3 +625,56 @@ def test_signing_up_again_in_a_different_case_does_not_make_a_second_account(cli
         )
     assert User.objects.filter(email="dup@example.com").count() == 1
     assert User.objects.count() == 1
+
+
+# ── a throttle must not be the thing that crashes ───────────────────────────
+
+
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    "body",
+    ['"hello"', "42", "[1, 2]", "null", "true"],
+    ids=["string", "number", "array", "null", "bool"],
+)
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/auth/sign-in",
+        "/api/auth/sign-up",
+    ],
+)
+def test_a_json_body_that_is_not_an_object_does_not_500(client, path, body):
+    """
+    ⚠ THESE ALL RETURNED 500 BEFORE EmailScopedThrottle CHECKED.
+
+    `{"email": ...}` parses to a dict, but a bare string, number, array,
+    null and true are all valid JSON, and DRF hands them through as a str,
+    an int, a list and so on. `request.data.get("email")` then raised
+    AttributeError inside check_throttles — before any view code and before
+    authentication — so a one-line request body crashed an unauthenticated
+    endpoint on five routes.
+
+    Nothing leaked. But a pre-auth crash is a free way to fill the error log
+    from outside, and a throttle that raises is a throttle that is not
+    throttling: the request never reached the rate limit it was supposed to
+    be counted against.
+
+    400 is the right answer. 500 is never the right answer to a request
+    somebody can send by hand.
+    """
+    response = client.post(path, data=body, content_type="application/json")
+    assert response.status_code < 500, (
+        f"{path} returned {response.status_code} for body {body}"
+    )
+
+
+@pytest.mark.django_db
+def test_an_email_that_is_not_a_string_does_not_500(client):
+    """The same hole one level in: the body is an object, the field is not."""
+    for value in ("5", "null", "[1]", '{"a": 1}'):
+        response = client.post(
+            "/api/auth/sign-in",
+            data=f'{{"email": {value}, "password": "x"}}',
+            content_type="application/json",
+        )
+        assert response.status_code < 500, f"email={value} -> {response.status_code}"
