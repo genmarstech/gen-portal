@@ -11,3 +11,10 @@ sent-emails/
 !.env.example
 staticfiles/
 .pytest_cache/
+
+# Uploaded files. MEDIA_ROOT is a local directory in development, so a
+# contact-log attachment or a company-library document written while running
+# the server lands in the working tree. Committing one would put a client's
+# scan — or the company's own bank mandate — into git history, where deleting
+# it is a rewrite rather than a delete.
+media/

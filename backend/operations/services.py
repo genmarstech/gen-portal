@@ -35,6 +35,7 @@ from portal.models import (
     Enquiry,
     Incident,
     Invoice,
+    LibraryFile,
     Milestone,
     MpesaPayment,
     Notification,
@@ -5079,3 +5080,256 @@ def delete_doc(*, actor: User, doc) -> None:
             ),
             slug=slug,
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The company library
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Writes only. What a given account may SEE is `operations/selectors.library`,
+# and nothing in here re-decides it — a function that took `user` and filtered
+# on visibility would be the second enforcement point that eventually disagrees
+# with the first.
+
+
+def _library_actor(actor: User) -> None:
+    """
+    Marking a document founders-only, and changing one that already is, are
+    both `can_manage_access`.
+
+    The asymmetry matters and is easy to get backwards: RAISING the bar is not
+    the dangerous direction. LOWERING it is — anybody able to move a document
+    from founders-only to all-staff could publish the bank mandate to the
+    company by editing one field. So the check is on touching the setting at
+    all, in either direction.
+    """
+    if not actor.can_manage_access:
+        raise OperationsError(
+            "Only a founder can decide who may read a document.",
+            field="visibility",
+        )
+
+
+def add_library_file(
+    *,
+    actor: User,
+    upload,
+    title: str,
+    description: str = "",
+    shelf: str = LibraryFile.Shelf.OTHER,
+    visibility: str = LibraryFile.Visibility.STAFF,
+    expires_on=None,
+    replaces: LibraryFile | None = None,
+) -> LibraryFile:
+    """
+    File a company document.
+
+    What may be stored is `portal/attachments.py` and nothing about that
+    judgement lives here — the same division as `attach_to_contact`, with
+    `documents=True` because this cabinet holds Word files and a client's
+    upload does not.
+    """
+    from portal import attachments
+
+    title = (title or "").strip()
+    if not title:
+        raise OperationsError(
+            "Give it a name somebody could find it by.", field="title"
+        )
+
+    if shelf not in LibraryFile.Shelf.values:
+        raise OperationsError("That is not one of the shelves.", field="shelf")
+    if visibility not in LibraryFile.Visibility.values:
+        raise OperationsError("That is not a visibility.", field="visibility")
+    if visibility == LibraryFile.Visibility.FOUNDER:
+        _library_actor(actor)
+
+    content_type, extension = attachments.inspect(
+        upload, documents=True, max_bytes=attachments.LIBRARY_MAX_BYTES
+    )
+
+    # Trimmed of any path the browser sent — some send `C:\Users\...\x.pdf`.
+    original = (getattr(upload, "name", "") or "file").replace("\\", "/").split("/")[-1]
+
+    document = LibraryFile(
+        title=title[:200],
+        description=(description or "").strip(),
+        shelf=shelf,
+        visibility=visibility,
+        original_name=original[:255],
+        content_type=content_type,
+        size_bytes=upload.size,
+        expires_on=expires_on,
+        uploaded_by=actor,
+        uploaded_by_label=actor.full_name or actor.email,
+    )
+    # `save` on the FileField runs library_path, which uses the extension we
+    # decided rather than the one on the upload.
+    document.file.save(f"document{extension}", upload, save=False)
+    document.save()
+
+    if replaces is not None:
+        # A renewal. Archiving the old one here rather than asking somebody to
+        # remember is the whole point of the field: the failure this library
+        # exists to prevent is two insurance certificates and no way to tell
+        # which is current.
+        replaces.archived_at = timezone.now()
+        replaces.replaced_by = document
+        replaces.save(update_fields=["archived_at", "replaced_by", "updated_at"])
+        record(
+            actor=actor,
+            action=ActivityLog.Action.LIBRARY_ARCHIVED,
+            subject=replaces.title,
+            summary=f"Superseded by a new upload: {title[:120]}",
+            shelf=replaces.shelf,
+        )
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.LIBRARY_ADDED,
+        subject=title[:120],
+        summary=f"Added to the company library ({LibraryFile.Shelf(shelf).label})",
+        # The filename and the shelf, never the description — a description
+        # can say why an advocate was engaged, and ActivityLog.detail is read
+        # by everybody who can read the log.
+        shelf=shelf,
+        filename=original[:120],
+        bytes=upload.size,
+    )
+    return document
+
+
+def update_library_file(
+    *,
+    document: LibraryFile,
+    actor: User,
+    title: str | None = None,
+    description: str | None = None,
+    shelf: str | None = None,
+    visibility: str | None = None,
+    expires_on=...,
+) -> LibraryFile:
+    """
+    Change what we say about a document, never the document.
+
+    There is deliberately no way to swap the file under an existing row. A
+    replacement is a new row with `replaces` set, so the thing that was on the
+    shelf last year is still the thing that was on the shelf last year.
+    """
+    changed: list[str] = []
+
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise OperationsError("It still needs a name.", field="title")
+        if title[:200] != document.title:
+            document.title = title[:200]
+            changed.append("title")
+
+    if description is not None and description.strip() != document.description:
+        document.description = description.strip()
+        changed.append("description")
+
+    if shelf is not None and shelf != document.shelf:
+        if shelf not in LibraryFile.Shelf.values:
+            raise OperationsError("That is not one of the shelves.", field="shelf")
+        document.shelf = shelf
+        changed.append("shelf")
+
+    if visibility is not None and visibility != document.visibility:
+        if visibility not in LibraryFile.Visibility.values:
+            raise OperationsError("That is not a visibility.", field="visibility")
+        # Either direction — see `_library_actor`.
+        _library_actor(actor)
+        document.visibility = visibility
+        changed.append("visibility")
+
+    # `...` rather than None, because clearing an expiry date IS a change
+    # somebody makes and `None` is the value that expresses it.
+    if expires_on is not ... and expires_on != document.expires_on:
+        document.expires_on = expires_on
+        changed.append("expires_on")
+
+    if not changed:
+        return document
+
+    document.save()
+    record(
+        actor=actor,
+        action=ActivityLog.Action.LIBRARY_UPDATED,
+        subject=document.title,
+        # WHICH fields moved, not what they became — the same rule
+        # BILLING_CHANGED follows a few hundred lines up.
+        summary=f"Library document details changed: {', '.join(changed)}",
+        fields=changed,
+    )
+    return document
+
+
+def archive_library_file(*, document: LibraryFile, actor: User) -> LibraryFile:
+    """Take it off the shelf. The bytes stay — see the model's banner."""
+    if document.archived_at is not None:
+        return document
+    document.archived_at = timezone.now()
+    document.save(update_fields=["archived_at", "updated_at"])
+    record(
+        actor=actor,
+        action=ActivityLog.Action.LIBRARY_ARCHIVED,
+        subject=document.title,
+        summary="Archived. The file is kept and can be restored.",
+        shelf=document.shelf,
+    )
+    return document
+
+
+def restore_library_file(*, document: LibraryFile, actor: User) -> LibraryFile:
+    """Put it back."""
+    if document.archived_at is None:
+        return document
+    document.archived_at = None
+    # If it was archived because something replaced it, restoring it means
+    # that is no longer true. Leaving the pointer would show a current
+    # document claiming to have been superseded.
+    document.replaced_by = None
+    document.save(update_fields=["archived_at", "replaced_by", "updated_at"])
+    record(
+        actor=actor,
+        action=ActivityLog.Action.LIBRARY_RESTORED,
+        subject=document.title,
+        summary="Restored to the shelf.",
+        shelf=document.shelf,
+    )
+    return document
+
+
+def delete_library_file(*, document: LibraryFile, actor: User) -> None:
+    """
+    Really gone — the row and the bytes.
+
+    FOUNDER ONLY, which archiving is not. The two acts look adjacent on a
+    screen and are not: archiving is reversible and is how a document is
+    normally retired, and this is the one that loses the company's own
+    paperwork. It exists because a file put on the wrong company's shelf must
+    be removable for real, and a soft delete that keeps the bytes while saying
+    it is gone would be us being untrue about our own system.
+    """
+    if not actor.can_manage_access:
+        raise OperationsError(
+            "Only a founder can delete a company document. Archive it instead "
+            "— that keeps the file and can be undone."
+        )
+
+    title = document.title
+    shelf = document.shelf
+    name = document.original_name
+
+    document.file.delete(save=False)
+    document.delete()
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.LIBRARY_REMOVED,
+        subject=title,
+        summary=f"Deleted from the company library: {name[:120]}",
+        shelf=shelf,
+    )

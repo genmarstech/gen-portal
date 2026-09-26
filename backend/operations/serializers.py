@@ -28,6 +28,7 @@ from portal.models import (
     HostingArrangement,
     Incident,
     Invoice,
+    LibraryFile,
     Milestone,
     Notification,
     Offer,
@@ -1680,3 +1681,64 @@ class DocSerializer(serializers.Serializer):
     status_note = serializers.CharField(
         max_length=200, required=False, allow_blank=True
     )
+
+
+class LibraryFileSerializer(serializers.ModelSerializer):
+    """
+    A company document, as a list row.
+
+    Metadata only, same as AttachmentSerializer: the bytes leave through
+    LibraryDownloadView and there is no path here a browser could render
+    inline. MEDIA_URL is empty on purpose and this is one of the places that
+    would quietly undo it.
+    """
+
+    shelf_label = serializers.CharField(source="get_shelf_display", read_only=True)
+    visibility_label = serializers.CharField(
+        source="get_visibility_display", read_only=True
+    )
+    uploaded_by = serializers.CharField(source="uploaded_by_label", read_only=True)
+    is_archived = serializers.BooleanField(read_only=True)
+    # Computed on the model, never stored — see its banner. Sent rather than
+    # derived in the browser so that "expired" means the same thing on every
+    # screen and does not depend on a laptop's clock.
+    is_expired = serializers.BooleanField(read_only=True)
+    expires_soon = serializers.SerializerMethodField()
+    replaced_by_title = serializers.SerializerMethodField()
+    url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = LibraryFile
+        fields = [
+            "id",
+            "title",
+            "description",
+            "shelf",
+            "shelf_label",
+            "visibility",
+            "visibility_label",
+            "original_name",
+            "content_type",
+            "size_bytes",
+            "expires_on",
+            "is_expired",
+            "expires_soon",
+            "is_archived",
+            "archived_at",
+            "replaced_by",
+            "replaced_by_title",
+            "uploaded_by",
+            "url",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_expires_soon(self, document: LibraryFile) -> bool:
+        return document.expires_within()
+
+    def get_replaced_by_title(self, document: LibraryFile) -> str:
+        return document.replaced_by.title if document.replaced_by_id else ""
+
+    def get_url(self, document: LibraryFile) -> str:
+        # The download route, not a media path.
+        return f"/api/ops/library/{document.pk}/file"
