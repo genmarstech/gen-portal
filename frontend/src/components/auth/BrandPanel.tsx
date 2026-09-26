@@ -188,7 +188,7 @@ function BrandLockup() {
     <div className={styles.lockup}>
       <svg viewBox="0 0 120 120" className={styles.lockupMark} focusable="false">
         <path
-          d="M90.8 45.6 A34 34 0 1 0 90.8 74.4"
+          d="M85.27 37.25 A34 34 0 1 0 85.27 82.75"
           fill="none"
           stroke="currentColor"
           strokeWidth="9"

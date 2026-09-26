@@ -1,8 +1,41 @@
 /**
+ * ══════════════════════════════════════════════════════════════════════════
+ * THE G'S ARC WAS OPENED FROM ±25.1° TO ±42° ON 2026-09-26, AND THE OLD
+ * GEOMETRY WAS MEASURABLY BROKEN.
+ *
+ * The arc used to run from ±25.1° with a 9-unit round cap on each end.
+ * Measure what that leaves between the cap and the crossbar:
+ *
+ *     upper arc end, incl. round cap   reaches y = 54.6
+ *     crossbar top edge                sits at  y = 55.5
+ *     clear counter                    0.92px   — in a 120-unit box
+ *
+ * Both of the G's counters were sealed to under a pixel, so at every size
+ * anyone actually saw — favicon, header, loading mark, the og image — the
+ * right-hand side filled in solid and the mark read as a C with a nub. It
+ * was not a rendering artefact and no amount of lighting fixed it: there
+ * was no aperture to light.
+ *
+ * At ±42° the counter opens to 9.25px and the crossbar reads as a crossbar.
+ * Nothing else moved: same centre (60,60), same radius 34, same stroke
+ * weight, same crossbar, same silhouette, same ring. The arc is 17° shorter
+ * at each end and that is the entire change.
+ *
+ * ⚠ IT IS CHANGED IN ALL FIVE PLACES AT ONCE — gen-website, internals-tm,
+ * gen-portal, business-os and the promo film — plus both .svg files and the
+ * raster icons regenerated from them. The mark existing in two shapes is
+ * worse than either shape. If this is ever revised again, revise it
+ * everywhere in the same change.
+ *
+ * The old path, for the record:  M90.8 45.6 A34 34 0 1 0 90.8 74.4
+ * ══════════════════════════════════════════════════════════════════════════
+ */
+/**
  * Brand marks — Orbit G and the wordmark.
  *
- * Geometry is transcribed exactly from 06-brand/logo/svg/. Do not eyeball
- * adjustments; re-export from the design canvas (06-brand/source/) instead.
+ * Geometry is transcribed exactly from 06-brand/logo/svg/, WITH ONE
+ * DELIBERATE CORRECTION — see the banner above Mark. Do not eyeball any
+ * other adjustment; re-export from the design canvas (06-brand/source/).
  *
  * The wordmark is drawn as inline SVG rather than loaded as <img> for two
  * reasons: the <text> nodes need the page's Jost webfont to render correctly,
@@ -37,7 +70,7 @@ export function Mark({ size = 40, className }: MarkProps) {
       focusable="false"
     >
       <path
-        d="M90.8 45.6 A34 34 0 1 0 90.8 74.4"
+        d="M85.27 37.25 A34 34 0 1 0 85.27 82.75"
         fill="none"
         stroke="var(--mark-g, #8B5A48)"
         strokeWidth="9"
@@ -98,7 +131,7 @@ export function Wordmark({
     >
       <g transform="translate(8,26)">
         <path
-          d="M90.8 45.6 A34 34 0 1 0 90.8 74.4"
+          d="M85.27 37.25 A34 34 0 1 0 85.27 82.75"
           fill="none"
           stroke="var(--mark-g, #8B5A48)"
           strokeWidth="9"
