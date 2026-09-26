@@ -161,6 +161,11 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-sign-on"),
         reverse("ops-sign-on-detail", args=[1]),
         reverse("ops-sign-on-secret", args=[1]),
+        # the company library — its own documents, and the route that
+        # serves the bytes. A client account must not reach either.
+        reverse("ops-library"),
+        reverse("ops-library-file", args=[1]),
+        reverse("ops-library-download", args=[1]),
     ]
 
 
@@ -224,6 +229,7 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
         "ops-work", "ops-work-item",
         "ops-unsplash-search", "ops-unsplash-used",
         "ops-sign-on", "ops-sign-on-detail", "ops-sign-on-secret",
+        "ops-library", "ops-library-file", "ops-library-download",
     }
     missing = named - covered
     assert not missing, (
