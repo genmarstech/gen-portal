@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
-from django.db.models import Count, Prefetch, Q, QuerySet
+from django.db.models import Count, Prefetch, Q, QuerySet, Sum
 from django.utils import timezone
 
 from accounts.models import Membership, Organisation, User
@@ -32,6 +32,7 @@ from portal.models import (
     Enquiry,
     Invoice,
     LibraryFile,
+    MediaAsset,
     Milestone,
     Order,
     ProgressNote,
@@ -952,3 +953,65 @@ def library_attention(*, user: User, within_days: int = 30) -> list[LibraryFile]
         .filter(expires_on__isnull=False, expires_on__lte=horizon)
         .order_by("expires_on", "id")
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The media shelf
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def media(
+    *, shelf: str = "", query: str = "", include_archived: bool = False
+) -> QuerySet[MediaAsset]:
+    """
+    Company media.
+
+    No `user` argument, unlike `library` above, and that is the decision
+    rather than an omission: media has one visibility tier. Every staff
+    account reads everything here, so there is nothing for a per-account
+    filter to do — and a filter that does nothing is a filter somebody later
+    assumes is protecting something.
+    """
+    rows = MediaAsset.objects.select_related("uploaded_by")
+
+    if not include_archived:
+        rows = rows.filter(archived_at__isnull=True)
+    if shelf:
+        rows = rows.filter(shelf=shelf)
+    if query:
+        # Name and note only. Nothing reads inside a file, which is why the
+        # description's help text asks where an asset has been used.
+        rows = rows.filter(
+            Q(title__icontains=query)
+            | Q(description__icontains=query)
+            | Q(original_name__icontains=query)
+        )
+    return rows
+
+
+def media_asset(*, pk: int) -> MediaAsset | None:
+    return media(include_archived=True).filter(pk=pk).first()
+
+
+def media_shelves() -> list[dict]:
+    """
+    Every shelf with a count, including the empty ones — an empty shelf is
+    how somebody notices nobody has ever put the logo here.
+    """
+    counts = dict(
+        media().values_list("shelf").annotate(n=Count("id")).values_list("shelf", "n")
+    )
+    return [
+        {"key": key, "label": label, "count": counts.get(key, 0)}
+        for key, label in MediaAsset.Shelf.choices
+    ]
+
+
+def media_totals() -> dict:
+    """What the shelf costs and what is actually used."""
+    rows = media()
+    return {
+        "count": rows.count(),
+        "bytes": rows.aggregate(n=Sum("size_bytes"))["n"] or 0,
+        "downloads": rows.aggregate(n=Sum("download_count"))["n"] or 0,
+    }

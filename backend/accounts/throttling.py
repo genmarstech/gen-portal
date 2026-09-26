@@ -77,7 +77,36 @@ class EmailScopedThrottle(SimpleRateThrottle):
     scope = "auth_email"
 
     def get_cache_key(self, request, view):
-        email = (request.data.get("email") or "").strip().lower()
+        """
+        ⚠ `request.data` IS NOT ALWAYS A DICT, AND ASSUMING IT WAS CRASHED
+        FIVE UNAUTHENTICATED ENDPOINTS.
+
+        `{"email": ...}` parses to a dict, but `"hello"`, `42`, `[1,2]`,
+        `null` and `true` are all valid JSON too, and DRF hands those through
+        as a str, an int, a list and so on. Calling `.get` on one raised
+        AttributeError inside `check_throttles` — before any view code and
+        before authentication — so a one-line request body returned 500 from
+        sign-in, sign-up and both code endpoints.
+
+        Nothing leaked. But a pre-auth crash is a free way to fill the error
+        log from outside, and a throttle that raises is a throttle that is
+        not throttling: the request never reached the limit it was supposed
+        to be counted against.
+
+        A body that is not an object cannot name an address, so there is
+        nothing to key on and the per-IP throttle stays in charge — which is
+        exactly the `return None` path this already had for a missing one.
+        """
+        data = request.data
+        if not hasattr(data, "get"):
+            return None
+
+        email = data.get("email")
+        # And one level in: `{"email": 5}` or `{"email": null}`.
+        if not isinstance(email, str):
+            return None
+
+        email = email.strip().lower()
         if not email:
             return None  # nothing to key on; the IP throttle still applies
         return f"throttle:email:{getattr(view, 'throttle_scope', self.scope)}:{email}"

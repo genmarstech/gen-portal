@@ -16,6 +16,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, models, transaction
+from django.db.models import F
 from django.utils import timezone
 
 from accounts import emails, identity
@@ -36,6 +37,7 @@ from portal.models import (
     Incident,
     Invoice,
     LibraryFile,
+    MediaAsset,
     Milestone,
     MpesaPayment,
     Notification,
@@ -5332,4 +5334,194 @@ def delete_library_file(*, document: LibraryFile, actor: User) -> None:
         subject=title,
         summary=f"Deleted from the company library: {name[:120]}",
         shelf=shelf,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# The media shelf
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def add_media(
+    *,
+    actor: User,
+    upload,
+    title: str,
+    description: str = "",
+    shelf: str = MediaAsset.Shelf.OTHER,
+) -> MediaAsset:
+    """
+    Put a picture or a video on the shelf.
+
+    What may be stored is portal/attachments.py, with `media=True` for video
+    and a 200 MB ceiling. Nothing about that judgement lives here.
+    """
+    from portal import attachments
+
+    title = (title or "").strip()
+    if not title:
+        raise OperationsError(
+            "Give it a name somebody could find it by.", field="title"
+        )
+    if shelf not in MediaAsset.Shelf.values:
+        raise OperationsError("That is not one of the shelves.", field="shelf")
+
+    content_type, extension = attachments.inspect(
+        upload, media=True, max_bytes=attachments.MEDIA_MAX_BYTES
+    )
+    # Header read, not a decode — and cosmetic, so a None here is fine.
+    size = attachments.dimensions(upload)
+
+    original = (getattr(upload, "name", "") or "file").replace("\\", "/").split("/")[-1]
+
+    asset = MediaAsset(
+        title=title[:200],
+        description=(description or "").strip(),
+        shelf=shelf,
+        original_name=original[:255],
+        content_type=content_type,
+        size_bytes=upload.size,
+        width=size[0] if size else None,
+        height=size[1] if size else None,
+        uploaded_by=actor,
+        uploaded_by_label=actor.full_name or actor.email,
+    )
+    asset.file.save(f"asset{extension}", upload, save=False)
+    asset.save()
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.MEDIA_ADDED,
+        subject=title[:120],
+        summary=f"Added to media ({MediaAsset.Shelf(shelf).label})",
+        shelf=shelf,
+        filename=original[:120],
+        bytes=upload.size,
+    )
+    return asset
+
+
+def update_media(
+    *,
+    asset: MediaAsset,
+    actor: User,
+    title: str | None = None,
+    description: str | None = None,
+    shelf: str | None = None,
+) -> MediaAsset:
+    """
+    Change what we say about an asset, never the asset.
+
+    There is deliberately no way to swap the file under a row. A new version
+    is a new upload, so a thing somebody linked to last month is still that
+    thing.
+    """
+    changed: list[str] = []
+
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise OperationsError("It still needs a name.", field="title")
+        if title[:200] != asset.title:
+            asset.title = title[:200]
+            changed.append("title")
+
+    if description is not None and description.strip() != asset.description:
+        asset.description = description.strip()
+        changed.append("description")
+
+    if shelf is not None and shelf != asset.shelf:
+        if shelf not in MediaAsset.Shelf.values:
+            raise OperationsError("That is not one of the shelves.", field="shelf")
+        asset.shelf = shelf
+        changed.append("shelf")
+
+    if not changed:
+        return asset
+
+    asset.save()
+    record(
+        actor=actor,
+        action=ActivityLog.Action.MEDIA_UPDATED,
+        subject=asset.title,
+        # Which fields moved, not what they became.
+        summary=f"Media details changed: {', '.join(changed)}",
+        fields=changed,
+    )
+    return asset
+
+
+def archive_media(*, asset: MediaAsset, actor: User) -> MediaAsset:
+    """Off the shelf, bytes kept. The reversible one."""
+    if asset.archived_at is not None:
+        return asset
+    asset.archived_at = timezone.now()
+    asset.save(update_fields=["archived_at", "updated_at"])
+    record(
+        actor=actor,
+        action=ActivityLog.Action.MEDIA_ARCHIVED,
+        subject=asset.title,
+        summary="Archived. The file is kept and can be restored.",
+        shelf=asset.shelf,
+    )
+    return asset
+
+
+def restore_media(*, asset: MediaAsset, actor: User) -> MediaAsset:
+    if asset.archived_at is None:
+        return asset
+    asset.archived_at = None
+    asset.save(update_fields=["archived_at", "updated_at"])
+    record(
+        actor=actor,
+        action=ActivityLog.Action.MEDIA_RESTORED,
+        subject=asset.title,
+        summary="Restored to the shelf.",
+        shelf=asset.shelf,
+    )
+    return asset
+
+
+def delete_media(*, asset: MediaAsset, actor: User) -> None:
+    """
+    Really gone — the row and the bytes. FOUNDER ONLY.
+
+    Same split as the library: archiving is reversible and is how something
+    is normally retired; this is the one that loses the original nobody kept
+    a copy of. A 200 MB master that only existed here is not recoverable from
+    a database dump, because a dump does not carry MEDIA_ROOT.
+    """
+    if not actor.can_manage_access:
+        raise OperationsError(
+            "Only a founder can delete company media. Archive it instead — "
+            "that keeps the file and can be undone."
+        )
+
+    title, shelf, name = asset.title, asset.shelf, asset.original_name
+    asset.file.delete(save=False)
+    asset.delete()
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.MEDIA_REMOVED,
+        subject=title,
+        summary=f"Deleted from media: {name[:120]}",
+        shelf=shelf,
+    )
+
+
+def note_media_download(*, asset: MediaAsset) -> None:
+    """
+    One more download of this asset.
+
+    ⚠ NO ACTOR, ON PURPOSE. Which assets earn their place is worth knowing;
+    which colleague fetched the logo on Tuesday is not, and recording it
+    would make this a surveillance log. See ActivityLog.Action.MEDIA_ADDED.
+
+    An F() update so two people downloading at once cannot lose a count, and
+    no `save()` on the instance so it cannot clobber a concurrent edit to the
+    title.
+    """
+    MediaAsset.objects.filter(pk=asset.pk).update(
+        download_count=F("download_count") + 1
     )

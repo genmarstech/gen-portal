@@ -29,6 +29,7 @@ from portal.models import (
     Incident,
     Invoice,
     LibraryFile,
+    MediaAsset,
     Milestone,
     Notification,
     Offer,
@@ -1742,3 +1743,56 @@ class LibraryFileSerializer(serializers.ModelSerializer):
     def get_url(self, document: LibraryFile) -> str:
         # The download route, not a media path.
         return f"/api/ops/library/{document.pk}/file"
+
+
+class MediaAssetSerializer(serializers.ModelSerializer):
+    """
+    A media asset, as a grid tile.
+
+    Metadata and two ROUTES, never a media path. `preview_url` is null unless
+    the asset may be served inline — the model decides that, not this
+    serialiser and not the browser, so a screen cannot talk itself into
+    previewing a PDF.
+    """
+
+    shelf_label = serializers.CharField(source="get_shelf_display", read_only=True)
+    uploaded_by = serializers.CharField(source="uploaded_by_label", read_only=True)
+    is_archived = serializers.BooleanField(read_only=True)
+    is_image = serializers.BooleanField(read_only=True)
+    is_video = serializers.BooleanField(read_only=True)
+    aspect = serializers.FloatField(read_only=True)
+    url = serializers.SerializerMethodField()
+    preview_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = MediaAsset
+        fields = [
+            "id",
+            "title",
+            "description",
+            "shelf",
+            "shelf_label",
+            "original_name",
+            "content_type",
+            "size_bytes",
+            "width",
+            "height",
+            "aspect",
+            "is_image",
+            "is_video",
+            "is_archived",
+            "archived_at",
+            "download_count",
+            "uploaded_by",
+            "url",
+            "preview_url",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_url(self, asset: MediaAsset) -> str:
+        """The download. Always an attachment."""
+        return f"/api/ops/media/{asset.pk}/file"
+
+    def get_preview_url(self, asset: MediaAsset) -> str | None:
+        return f"/api/ops/media/{asset.pk}/preview" if asset.previewable else None

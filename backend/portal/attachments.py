@@ -45,6 +45,15 @@ MAX_BYTES = 10 * 1024 * 1024
 # it is the size it is.
 LIBRARY_MAX_BYTES = 25 * 1024 * 1024
 
+# The media shelf holds video. A sixty-second 1080p promo is ~17 MB, a longer
+# cut or a raw phone clip is several times that, and the point of keeping it
+# is that somebody can pull the original down and edit it. A cap that forces
+# people to compress first defeats the feature.
+#
+# Django writes anything past FILE_UPLOAD_MAX_MEMORY_SIZE (2 MB) straight to
+# a temp file, so a 200 MB upload never sits in the container's memory.
+MEDIA_MAX_BYTES = 200 * 1024 * 1024
+
 # ── what we accept, keyed by the bytes a file actually starts with ───────────
 #
 # The value is the content type WE assign and the extension WE store it under.
@@ -139,6 +148,54 @@ ODF_TYPES: dict[bytes, tuple[str, str]] = {
 MAX_ARCHIVE_MEMBERS = 4096
 
 
+# ── moving pictures ─────────────────────────────────────────────────────────
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# VIDEO IS ACCEPTED FOR THE MEDIA SHELF AND NOWHERE ELSE.
+#
+# MP4 and friends are ISO base media files: the bytes at offset 4 are `ftyp`
+# and the four after that are the brand. Same shape as the HEIC check above —
+# HEIC is literally a member of the same family — so this is the same kind of
+# identification, not a weaker one.
+#
+# WebM is Matroska and announces itself with an EBML header instead.
+#
+# What this does NOT do is parse the container. Nothing here walks atoms,
+# reads a moov, or decodes a frame; a demuxer running on uploaded bytes is
+# exactly the attack surface portal/attachments.py exists to avoid. We
+# identify the format and store the file. The browser decodes it, in a
+# sandbox, having been told by `nosniff` exactly what it is.
+# ═════════════════════════════════════════════════════════════════════════════
+
+# ISO base media brands worth taking. Deliberately not `ftyp` alone: that
+# would accept every ISO-BMFF ever specified, including formats nothing here
+# can play.
+VIDEO_BRANDS: dict[bytes, tuple[str, str]] = {
+    b"isom": ("video/mp4", ".mp4"),
+    b"iso2": ("video/mp4", ".mp4"),
+    b"iso4": ("video/mp4", ".mp4"),
+    b"iso5": ("video/mp4", ".mp4"),
+    b"iso6": ("video/mp4", ".mp4"),
+    b"mp41": ("video/mp4", ".mp4"),
+    b"mp42": ("video/mp4", ".mp4"),
+    b"avc1": ("video/mp4", ".mp4"),
+    b"mmp4": ("video/mp4", ".mp4"),
+    b"M4V ": ("video/mp4", ".m4v"),
+    b"qt  ": ("video/quicktime", ".mov"),
+}
+
+
+def _video(head: bytes) -> tuple[str, str] | None:
+    """Identify a video by its container header. No demuxing — see the banner."""
+    if head[4:8] == b"ftyp":
+        return VIDEO_BRANDS.get(head[8:12])
+    # EBML magic. Both .webm and .mkv start with it; we serve it as WebM,
+    # which is what a browser will actually try to play.
+    if head[:4] == b"\x1a\x45\xdf\xa3":
+        return "video/webm", ".webm"
+    return None
+
+
 def _office(upload) -> tuple[str, str] | None:
     """
     Decide whether a zip container is an office document, by opening it.
@@ -209,7 +266,11 @@ class AttachmentError(Exception):
 
 
 def inspect(
-    upload, *, documents: bool = False, max_bytes: int | None = None
+    upload,
+    *,
+    documents: bool = False,
+    media: bool = False,
+    max_bytes: int | None = None,
 ) -> tuple[str, str]:
     """
     Decide what this file is by reading it. Returns (content_type, extension).
@@ -219,10 +280,11 @@ def inspect(
     their laptop, so the refusal names what we do take.
 
     `documents=True` additionally accepts office formats, and is passed by the
-    company library alone. It defaults to False so that adding the library
-    could not quietly widen what a CLIENT may upload to the contact log —
-    the two surfaces answer to different threat models and the default is the
-    stricter one.
+    company library alone. `media=True` additionally accepts video, and is
+    passed by the media shelf alone. Both default to False so that adding a
+    surface could not quietly widen what a CLIENT may upload to the contact
+    log — the surfaces answer to different threat models and the default is
+    the strictest one.
     """
     limit = MAX_BYTES if max_bytes is None else max_bytes
 
@@ -250,6 +312,13 @@ def inspect(
     if container is not None:
         return container
 
+    # Checked before the office branch: a video shares the `ftyp` shape with
+    # HEIC above, and is nothing like a zip.
+    if media:
+        video = _video(head)
+        if video is not None:
+            return video
+
     # Checked last and only when asked. `_office` opens the archive, which is
     # real work, and there is no reason to do it for a file that already
     # matched a signature above.
@@ -264,12 +333,18 @@ def inspect(
             field="file",
         )
 
-    accepted = (
-        "Word, Excel, PowerPoint and OpenDocument files, PDFs and photographs "
-        "(JPEG, PNG, HEIC, WebP, GIF)"
-        if documents
-        else "Photographs (JPEG, PNG, HEIC, WebP, GIF) and PDFs"
-    )
+    if media:
+        accepted = (
+            "Video (MP4, MOV, WebM), photographs (JPEG, PNG, HEIC, WebP, GIF) "
+            "and PDFs"
+        )
+    elif documents:
+        accepted = (
+            "Word, Excel, PowerPoint and OpenDocument files, PDFs and "
+            "photographs (JPEG, PNG, HEIC, WebP, GIF)"
+        )
+    else:
+        accepted = "Photographs (JPEG, PNG, HEIC, WebP, GIF) and PDFs"
     raise AttachmentError(
         f"That is not a file type we take. {accepted} — everything else has to "
         "arrive as one of those. It is not about the name: we check what the "
@@ -328,3 +403,98 @@ class AttachmentDownloadView(APIView):
         # A client's document must not sit in a shared proxy cache.
         response["Cache-Control"] = "private, no-store"
         return response
+
+
+# ── how big a picture is, without decoding it ───────────────────────────────
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# THIS READS A HEADER. IT IS NOT AN IMAGE PARSER, AND THE DISTINCTION IS THE
+# WHOLE REASON IT IS ALLOWED TO EXIST.
+#
+# ContactAttachment's docstring refuses Pillow and says why: an image parser
+# running on files from outside is historically one of the most exploited
+# pieces of code in any stack, and thumbnails were not worth it.
+#
+# What follows decodes nothing. It reads a handful of big-endian integers
+# from fixed offsets — the same operation as reading a file's length — and
+# never touches compressed pixel data. There is no allocation proportional to
+# the image, no decompression, and no third-party code.
+#
+# It exists because a media grid without aspect ratios reflows as every tile
+# loads. Dimensions are COSMETIC: every branch fails soft and returns None,
+# and the caller stores nulls. Nothing downstream may depend on them.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def _be(b: bytes) -> int:
+    return int.from_bytes(b, "big")
+
+
+def dimensions(upload) -> tuple[int, int] | None:
+    """(width, height) for a raster image, or None. Never raises."""
+    try:
+        upload.seek(0)
+        head = upload.read(32)
+
+        # PNG: IHDR is always the first chunk, width and height at 16..24.
+        if head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR":
+            return _be(head[16:20]), _be(head[20:24])
+
+        # GIF: little-endian, at a fixed offset.
+        if head[:6] in (b"GIF87a", b"GIF89a"):
+            return (
+                int.from_bytes(head[6:8], "little"),
+                int.from_bytes(head[8:10], "little"),
+            )
+
+        # WebP: three sub-formats, each with its size in a different place.
+        if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            chunk = head[12:16]
+            if chunk == b"VP8X":
+                # 24-bit little-endian, stored as value-1.
+                return (
+                    int.from_bytes(head[24:27], "little") + 1,
+                    int.from_bytes(head[27:30], "little") + 1,
+                )
+            if chunk == b"VP8 ":
+                return (
+                    int.from_bytes(head[26:28], "little") & 0x3FFF,
+                    int.from_bytes(head[28:30], "little") & 0x3FFF,
+                )
+            if chunk == b"VP8L":
+                bits = int.from_bytes(head[21:25], "little")
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            return None
+
+        # JPEG: the only one needing a walk, because the frame header sits
+        # after a variable number of segments. BOUNDED to 64 hops — a crafted
+        # file must not be able to spin this, and no real photograph has
+        # anywhere near that many segments before its SOF.
+        if head[:3] == b"\xff\xd8\xff":
+            upload.seek(2)
+            for _ in range(64):
+                marker = upload.read(2)
+                if len(marker) < 2 or marker[0] != 0xFF:
+                    return None
+                kind = marker[1]
+                length = _be(upload.read(2))
+                if length < 2:
+                    return None
+                # SOF0..SOF15, excluding the four that are not frame headers.
+                if 0xC0 <= kind <= 0xCF and kind not in (0xC4, 0xC8, 0xCC):
+                    body = upload.read(5)
+                    if len(body) < 5:
+                        return None
+                    return _be(body[3:5]), _be(body[1:3])
+                upload.seek(length - 2, 1)
+            return None
+
+        return None
+    except (OSError, ValueError, IndexError):
+        # Cosmetic. A file we cannot measure is still a file we can store.
+        return None
+    finally:
+        try:
+            upload.seek(0)
+        except OSError:
+            pass
