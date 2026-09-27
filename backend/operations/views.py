@@ -3706,6 +3706,21 @@ def _open_or_404(asset: MediaAsset):
         raise Http404("The record exists but the file is not on this server.")
 
 
+def _size_on_disk(asset: MediaAsset) -> int:
+    """
+    The file's real length, not the column.
+
+    `size_bytes` is what the upload declared and is right in every ordinary
+    case — but a Content-Range computed from a stale column against a file of
+    a different length is a corrupt stream, and the browser reports it as a
+    decode error with nothing pointing back here.
+    """
+    try:
+        return asset.file.size
+    except (FileNotFoundError, OSError):
+        raise Http404("The record exists but the file is not on this server.")
+
+
 class MediaDownloadView(StaffView):
     """
     The original, as an attachment. This is the point of the whole feature:
@@ -3714,20 +3729,25 @@ class MediaDownloadView(StaffView):
 
     def get(self, request, pk: int):
         asset = _media_or_404(pk)
+
+        size = _size_on_disk(asset)
         handle = _open_or_404(asset)
 
-        services.note_media_download(asset=asset)
+        # Counted once per range request would inflate it wildly for a
+        # resumed 200 MB download, so only a request for the whole thing
+        # counts as a download. A resume is somebody finishing one.
+        if not request.META.get("HTTP_RANGE"):
+            services.note_media_download(asset=asset)
 
-        response = FileResponse(
+        return attachment_rules.serve_file(
+            request,
             handle,
+            size=size,
             content_type=asset.content_type,
-            as_attachment=True,
             filename=asset.original_name,
+            as_attachment=True,
+            cache_control="private, no-store",
         )
-        response["X-Content-Type-Options"] = "nosniff"
-        response["Content-Security-Policy"] = "default-src 'none'; sandbox"
-        response["Cache-Control"] = "private, no-store"
-        return response
 
 
 class MediaPreviewView(StaffView):
@@ -3773,24 +3793,24 @@ class MediaPreviewView(StaffView):
             # refusal would invite somebody to add a bypass.
             raise Http404
 
+        size = _size_on_disk(asset)
         handle = _open_or_404(asset)
 
-        response = FileResponse(
+        # `as_attachment=False` is the single difference from the download
+        # route. The filename is still given: without it the browser offers
+        # the stored name from media_path, a 32-character hex string, to
+        # anyone using "save image as". It leaks nothing — that name is
+        # random precisely so it cannot — it is just useless.
+        #
+        # A grid re-requests the same tiles constantly, so a short cache is
+        # worth it; it stays PRIVATE because this is company media behind a
+        # staff session and must not sit in a shared proxy.
+        return attachment_rules.serve_file(
+            request,
             handle,
+            size=size,
             content_type=asset.content_type,
-            # The single difference from the download route.
-            as_attachment=False,
-            # Named anyway. Without it FileResponse falls back to the stored
-            # name, which is the random one from media_path — so "save image
-            # as" from a preview would offer a 32-character hex string. It
-            # leaks nothing (that name is random precisely so it cannot), it
-            # is just useless to the person saving it.
             filename=asset.original_name,
+            as_attachment=False,
+            cache_control="private, max-age=300",
         )
-        response["X-Content-Type-Options"] = "nosniff"
-        response["Content-Security-Policy"] = "default-src 'none'; sandbox"
-        # A grid re-requests the same tiles constantly, so a short private
-        # cache is worth it — but it must stay private: this is company
-        # media behind a staff session and must not sit in a shared proxy.
-        response["Cache-Control"] = "private, max-age=300"
-        return response
