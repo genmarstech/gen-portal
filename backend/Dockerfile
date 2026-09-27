@@ -84,9 +84,38 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # libpq5 is the RUNTIME half of libpq-dev: psycopg needs the shared library, not
 # the headers. Installing libpq-dev here instead would drag the compiler back in.
+#
+# ═══════════════════════════════════════════════════════════════════════════
+# ffmpeg IS HERE FOR MEDIA PREVIEWS, AND IT REVERSES A STANCE THIS CODEBASE
+# TOOK ON PURPOSE. READ THIS BEFORE COPYING THE PATTERN.
+#
+# ContactAttachment's docstring refuses Pillow and explains why: an image
+# parser running on files that arrived from outside is historically one of
+# the most exploited pieces of code in any stack, and thumbnails were not
+# worth it. ffmpeg is a far larger surface than Pillow — a pile of demuxers
+# and decoders, several of which have had remote-code-execution bugs.
+#
+# It is here anyway, for reasons that do not generalise:
+#
+#   · The files it touches are uploaded by GENMARS STAFF to the media shelf,
+#     not by clients to the contact log. Different threat model entirely.
+#   · It NEVER runs in a request. `manage.py build_media_previews` is a
+#     separate process started by a timer, so a crash kills a batch job and
+#     not an API worker, and a hang is bounded by the command's own timeout.
+#   · The alternative was serving 15 MB masters as in-page previews. Measured
+#     against a real connection — 0.25 MB/s down, a film needing 0.26 MB/s —
+#     that stalls, which is the bug this fixes.
+#
+# Charter 03 §I: what was already there could not do this job. Nothing in
+# Django, and nothing already installed, transcodes video.
+#
+# ⚠ DO NOT REACH FOR ffmpeg FROM A VIEW, AND DO NOT POINT IT AT A CLIENT
+# UPLOAD. If either becomes tempting, the reasoning above has stopped
+# applying and the decision has to be taken again.
+# ═══════════════════════════════════════════════════════════════════════════
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends libpq5 curl; \
+    apt-get install -y --no-install-recommends libpq5 curl ffmpeg; \
     rm -rf /var/lib/apt/lists/*; \
     groupadd -g 10002 -r app; \
     useradd -u 10002 -r -g app -s /usr/sbin/nologin -d /app app

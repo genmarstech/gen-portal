@@ -1760,6 +1760,9 @@ class MediaAssetSerializer(serializers.ModelSerializer):
     is_archived = serializers.BooleanField(read_only=True)
     is_image = serializers.BooleanField(read_only=True)
     is_video = serializers.BooleanField(read_only=True)
+    preview_state_label = serializers.CharField(
+        source="get_preview_state_display", read_only=True
+    )
     aspect = serializers.FloatField(read_only=True)
     url = serializers.SerializerMethodField()
     preview_url = serializers.SerializerMethodField()
@@ -1780,6 +1783,8 @@ class MediaAssetSerializer(serializers.ModelSerializer):
             "aspect",
             "is_image",
             "is_video",
+            "preview_state",
+            "preview_state_label",
             "is_archived",
             "archived_at",
             "download_count",

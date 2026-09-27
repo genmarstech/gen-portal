@@ -3706,6 +3706,14 @@ def _open_or_404(asset: MediaAsset):
         raise Http404("The record exists but the file is not on this server.")
 
 
+def _preview_size(asset: MediaAsset) -> int:
+    """The length of whatever the preview route will actually serve."""
+    try:
+        return asset.preview_source.size
+    except (FileNotFoundError, OSError, ValueError):
+        raise Http404("The record exists but the file is not on this server.")
+
+
 def _size_on_disk(asset: MediaAsset) -> int:
     """
     The file's real length, not the column.
@@ -3793,8 +3801,14 @@ class MediaPreviewView(StaffView):
             # refusal would invite somebody to add a bypass.
             raise Http404
 
-        size = _size_on_disk(asset)
-        handle = _open_or_404(asset)
+        # The LIGHTER cut for video, the file itself for an image — the
+        # model decides, so this route cannot accidentally stream a 200 MB
+        # master into a grid tile.
+        size = _preview_size(asset)
+        try:
+            handle = asset.preview_source.open("rb")
+        except FileNotFoundError:
+            raise Http404("The record exists but the file is not on this server.")
 
         # `as_attachment=False` is the single difference from the download
         # route. The filename is still given: without it the browser offers
@@ -3809,7 +3823,7 @@ class MediaPreviewView(StaffView):
             request,
             handle,
             size=size,
-            content_type=asset.content_type,
+            content_type=asset.preview_content_type,
             filename=asset.original_name,
             as_attachment=False,
             cache_control="private, max-age=300",

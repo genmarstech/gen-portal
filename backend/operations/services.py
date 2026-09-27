@@ -5386,6 +5386,14 @@ def add_media(
         uploaded_by=actor,
         uploaded_by_label=actor.full_name or actor.email,
     )
+    # Video needs a lighter cut before a browser can stream it — see the
+    # banner on MediaAsset.preview_file. Queued here and built out of band
+    # by `manage.py build_media_previews`; transcoding inside this request
+    # would hold a worker for minutes and put ffmpeg in the request path,
+    # which backend/Dockerfile explicitly forbids.
+    if content_type.startswith("video/"):
+        asset.preview_state = MediaAsset.PreviewState.PENDING
+
     asset.file.save(f"asset{extension}", upload, save=False)
     asset.save()
 
