@@ -1,0 +1,18 @@
+# Every two minutes. A preview that appears a minute or two after upload is
+# fine — the tile says so plainly — and the master is downloadable from the
+# moment it lands, so nothing is blocked while this waits.
+#
+# NOT Persistent=true, unlike the backup timer: a missed transcode is picked
+# up by the next run because the work is a queue in the database, not a
+# scheduled event. Catching up on boot would only mean running it twice.
+
+[Unit]
+Description=Genmars portal — build media previews every couple of minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

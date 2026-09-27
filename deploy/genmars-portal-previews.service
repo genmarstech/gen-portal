@@ -1,0 +1,35 @@
+# Genmars portal — build the lighter preview cut for uploaded video.
+#
+# A master is the wrong file to stream into a grid: the promo is 15.4 MB at
+# 2148 kbps, and against a real connection to this box (0.25 MB/s down) it
+# buffers, plays about twelve seconds and stalls. The command makes a ~340
+# kbps cut; the master stays untouched and is still what "Download original"
+# returns.
+#
+# WHY A TIMER AND NOT CELERY. celery is in requirements.txt and has been for
+# the life of the repository — unimported, no worker container, no broker
+# wiring. Using it would mean a second thing to deploy, monitor and restart,
+# for a job that runs a few times a week. Five timers on this box already do
+# work of exactly this shape.
+#
+# It is oneshot and idempotent: it takes whatever is PENDING, up to --limit,
+# and does nothing when there is nothing waiting. Missing a run costs a few
+# minutes of "Preview is being prepared" on a tile and nothing else, which is
+# why there is no OnFailure alert here — unlike the backup timers, where a
+# missed run is the whole point of the timer.
+
+[Unit]
+Description=Genmars portal — media preview transcode
+Documentation=file:///opt/gen-portal/docs/DEPLOYMENT.md
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/gen-portal
+# Three per run. A backlog drains over several runs rather than occupying
+# the box for an hour, and ffmpeg already uses every core it can.
+ExecStart=/usr/bin/docker compose exec -T api python manage.py build_media_previews --limit 3
+
+[Install]
+WantedBy=multi-user.target

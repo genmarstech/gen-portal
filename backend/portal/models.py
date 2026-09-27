@@ -4983,6 +4983,22 @@ class LibraryFile(models.Model):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def media_preview_path(instance: "MediaAsset", filename: str) -> str:
+    """
+    Where a video's lighter cut is stored.
+
+    Its own directory, not beside the master, so the two can never be
+    confused by eye or by a glob — and so a preview can be deleted and
+    regenerated without going near the original.
+
+    Always .mp4: whatever the master was, the cut ffmpeg produces is H.264
+    in MP4, because that is what every browser plays.
+    """
+    import uuid
+
+    return f"media/previews/{uuid.uuid4().hex}.mp4"
+
+
 def media_path(instance: "MediaAsset", filename: str) -> str:
     """
     Where a media file is stored. Same rule as everywhere else in this file:
@@ -5077,6 +5093,46 @@ class MediaAsset(models.Model):
     # How many, never who.
     download_count = models.PositiveIntegerField(default=0)
 
+    # ── the lighter cut the grid plays ──────────────────────────────────────
+    #
+    # ⚠ THE MASTER IS NOT WHAT A BROWSER SHOULD STREAM.
+    #
+    # The promo film is 15.4 MB at 2148 kbps. Measured against a real
+    # connection to this server — 0.25 MB/s down, against the 0.26 MB/s the
+    # film needs sustained — it buffers, plays about twelve seconds, drains
+    # and stalls. That is not a bug in the file; it is the wrong file to put
+    # in a grid.
+    #
+    # So video gets a preview cut, generated out of band by
+    # `manage.py build_media_previews`. The master is untouched and is still
+    # what "Download original" returns, because editing is the point of the
+    # shelf.
+    #
+    # Images have no preview row: they are small enough to serve directly,
+    # and a second copy of a 40 KB logo earns nothing.
+    preview_file = models.FileField(
+        upload_to=media_preview_path, max_length=300, blank=True
+    )
+
+    class PreviewState(models.TextChoices):
+        # Not video. Nothing to do, and the master is served directly.
+        NOT_NEEDED = "not_needed", "Not needed"
+        PENDING = "pending", "Being prepared"
+        READY = "ready", "Ready"
+        # Kept rather than retried forever — see build_media_previews.
+        FAILED = "failed", "Could not be prepared"
+
+    preview_state = models.CharField(
+        max_length=12,
+        choices=PreviewState.choices,
+        default=PreviewState.NOT_NEEDED,
+        db_index=True,
+    )
+    # Bounded retries. A file ffmpeg cannot read will never become one, and a
+    # job that retries it every minute forever is a job that hides the
+    # failures that matter.
+    preview_attempts = models.PositiveSmallIntegerField(default=0)
+
     archived_at = models.DateTimeField(null=True, blank=True)
 
     uploaded_by = models.ForeignKey(
@@ -5119,13 +5175,43 @@ class MediaAsset(models.Model):
     @property
     def previewable(self) -> bool:
         """
-        Whether this may be served inline.
+        Whether there is something to serve inline right now.
 
         Raster and video only — never a PDF, and there is no SVG or HTML in
         the allowlist to begin with. `MediaPreviewView` asks this rather than
         deciding for itself, so the rule lives in one place.
+
+        A video is previewable only once its lighter cut EXISTS. Falling back
+        to the master while one is being prepared would reproduce exactly the
+        stall the preview cut is there to prevent, and it would look like an
+        intermittent fault rather than a job that has not run yet.
         """
-        return self.is_image or self.is_video
+        if self.is_image:
+            return True
+        if self.is_video:
+            return (
+                self.preview_state == self.PreviewState.READY
+                and bool(self.preview_file)
+            )
+        return False
+
+    @property
+    def preview_source(self):
+        """
+        The stored file `MediaPreviewView` actually serves.
+
+        An image serves itself; a video serves its lighter cut. Asking the
+        model rather than letting the view choose is what stops a future
+        change accidentally streaming a 200 MB master into a grid.
+        """
+        if self.is_video:
+            return self.preview_file
+        return self.file
+
+    @property
+    def preview_content_type(self) -> str:
+        """The preview cut is always H.264 in MP4, whatever the master was."""
+        return "video/mp4" if self.is_video else self.content_type
 
     @property
     def aspect(self) -> float | None:

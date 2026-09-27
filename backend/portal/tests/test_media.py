@@ -222,10 +222,17 @@ def test_a_pdf_is_storable_but_not_previewable(client, founder):
     assert client.get(f"{LIST}/{body['id']}/preview").status_code == 404
 
 
-def test_a_video_is_previewable(client, founder):
+def test_a_video_is_not_previewable_until_its_lighter_cut_exists(client, founder):
+    """
+    This asserted the opposite until the preview cut existed, and the change
+    is the point: a master is the wrong file to stream into a grid, so a
+    video earns a preview_url only once `build_media_previews` has produced
+    something small enough to play. Section 8 covers the rest.
+    """
     client.force_login(founder)
     body = upload(client, file=an_mp4()).json()
-    assert body["preview_url"] == f"/api/ops/media/{body['id']}/preview"
+    assert body["preview_url"] is None
+    assert body["preview_state"] == "pending"
 
 
 def test_the_download_is_always_an_attachment(client, founder):
@@ -481,3 +488,111 @@ def test_a_partial_response_keeps_every_security_header(client, founder, big):
 def test_a_partial_download_is_still_an_attachment(client, founder, big):
     response = client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE="bytes=0-99")
     assert response["Content-Disposition"].startswith("attachment")
+
+
+# ── 8. the preview cut ───────────────────────────────────────────────────────
+#
+# A master is the wrong file to stream into a grid. The promo is 15.4 MB at
+# 2148 kbps; measured against a real connection to the server — 0.25 MB/s
+# down against the 0.26 MB/s it needs — it buffers, plays about twelve
+# seconds and stalls. So video gets a lighter cut, built out of band.
+
+import shutil
+from django.core.management import call_command
+
+needs_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None,
+    reason="ffmpeg is not on this machine; the image installs it",
+)
+
+
+def test_a_video_is_queued_for_a_preview(client, founder):
+    client.force_login(founder)
+    body = upload(client, file=an_mp4(), title="A film").json()
+    assert body["preview_state"] == "pending"
+
+
+def test_an_image_needs_no_preview(client, founder):
+    """A second copy of a 40 KB logo earns nothing."""
+    client.force_login(founder)
+    body = upload(client).json()
+    assert body["preview_state"] == "not_needed"
+    assert body["preview_url"] is not None
+
+
+def test_a_pending_video_offers_no_preview_url(client, founder):
+    """
+    ⚠ IT MUST NOT FALL BACK TO THE MASTER.
+    
+    Serving the master while the cut is being built reproduces exactly the
+    stall the cut exists to prevent — and it would look like an intermittent
+    fault rather than a job that has not run yet.
+    """
+    client.force_login(founder)
+    body = upload(client, file=an_mp4()).json()
+    assert body["preview_url"] is None
+    assert client.get(f"{LIST}/{body['id']}/preview").status_code == 404
+
+
+def test_a_pending_video_can_still_be_downloaded(client, founder):
+    """The master is there from the moment it is uploaded."""
+    client.force_login(founder)
+    body = upload(client, file=an_mp4()).json()
+    assert client.get(f"{LIST}/{body['id']}/file").status_code == 200
+
+
+def test_the_command_ignores_anything_that_is_not_video(client, founder):
+    client.force_login(founder)
+    pk = upload(client).json()["id"]
+    MediaAsset.objects.filter(pk=pk).update(
+        preview_state=MediaAsset.PreviewState.PENDING
+    )
+    call_command("build_media_previews")
+    assert (
+        MediaAsset.objects.get(pk=pk).preview_state
+        == MediaAsset.PreviewState.NOT_NEEDED
+    )
+
+
+@needs_ffmpeg
+def test_a_file_ffmpeg_cannot_read_fails_and_stops_being_retried(client, founder):
+    """
+    The fixture mp4 has a valid `ftyp` header and no actual video in it, so
+    it passes the upload check and cannot be transcoded — which is exactly
+    the case that must not retry forever. A file ffmpeg cannot read will not
+    become readable, and a job retrying it every minute buries the failures
+    worth looking at.
+    """
+    client.force_login(founder)
+    pk = upload(client, file=an_mp4()).json()["id"]
+
+    for _ in range(4):
+        call_command("build_media_previews")
+
+    asset = MediaAsset.objects.get(pk=pk)
+    assert asset.preview_state == MediaAsset.PreviewState.FAILED
+    assert asset.preview_attempts == 3          # MAX_ATTEMPTS, then left alone
+
+
+@needs_ffmpeg
+def test_a_failed_preview_never_serves_the_master_instead(client, founder):
+    client.force_login(founder)
+    pk = upload(client, file=an_mp4()).json()["id"]
+    for _ in range(4):
+        call_command("build_media_previews")
+
+    assert MediaAsset.objects.get(pk=pk).preview_state == "failed"
+    assert client.get(f"{LIST}/{pk}/preview").status_code == 404
+    # ...but the original is still downloadable, which is what matters most.
+    assert client.get(f"{LIST}/{pk}/file").status_code == 200
+
+
+def test_the_attempt_is_counted_before_ffmpeg_runs(client, founder):
+    """
+    If the process dies mid-transcode the row must not come back looking
+    untried — that is how one poison file becomes an infinite loop.
+    """
+    client.force_login(founder)
+    pk = upload(client, file=an_mp4()).json()["id"]
+    call_command("build_media_previews")
+    assert MediaAsset.objects.get(pk=pk).preview_attempts >= 1
