@@ -498,3 +498,134 @@ def dimensions(upload) -> tuple[int, int] | None:
             upload.seek(0)
         except OSError:
             pass
+
+
+# ── serving a file a browser can seek in ─────────────────────────────────────
+#
+# ═════════════════════════════════════════════════════════════════════════════
+# DJANGO'S FileResponse DOES NOT IMPLEMENT HTTP RANGE, AND VIDEO NEEDS IT.
+#
+# Grep FileResponse in Django 5.2: no `Range`, no `Accept-Ranges`, no 206. It
+# answers every request with the whole file and a 200. For a PDF that is
+# merely wasteful; for video it is broken three ways:
+#
+#   · A <video> element cannot seek. Dragging the scrubber refetches the
+#     entire file from byte zero, so a sixty-second film re-downloads to move
+#     forward ten seconds.
+#   · iOS Safari refuses to play a video at all from a server that does not
+#     advertise byte ranges. Not degraded — it will not start.
+#   · A 200 MB download that drops at 90% cannot resume, and the media shelf
+#     exists so people can pull masters down to edit.
+#
+# So this builds the response instead. One range only: `bytes=a-b`. A
+# multipart range request answers 200 with the whole file, which RFC 9110
+# explicitly permits — supporting it would mean generating multipart/byteranges
+# for a case no browser sends for media.
+#
+# `Accept-Ranges: bytes` goes on BOTH the 200 and the 206. Without it on the
+# full response a client never learns it may ask, and never asks.
+# ═════════════════════════════════════════════════════════════════════════════
+
+import re
+
+from django.http import FileResponse, StreamingHttpResponse
+
+_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
+
+# Read size when streaming a slice. Large enough that a 200 MB file is not
+# 200,000 syscalls, small enough not to hold a video in memory per request —
+# and with 24 threads now serving, per-request memory is multiplied.
+_CHUNK = 512 * 1024
+
+
+def _parse_range(header: str, size: int) -> tuple[int, int] | None:
+    """
+    (start, end) inclusive, or None to serve the whole file.
+
+    Returns None for anything malformed rather than raising: a broken Range
+    header is not worth a 400, and RFC 9110 says to ignore one you cannot
+    satisfy sensibly and send the whole representation.
+    """
+    match = _RANGE.match((header or "").strip())
+    if not match:
+        return None
+
+    first, last = match.group(1), match.group(2)
+
+    if first == "":
+        # `bytes=-500` — the LAST 500 bytes. Easy to read as "from 500".
+        if last == "":
+            return None
+        length = int(last)
+        if length <= 0:
+            return None
+        return max(0, size - length), size - 1
+
+    start = int(first)
+    end = int(last) if last else size - 1
+
+    # Clamp rather than trust. A range past the end must never turn into a
+    # read outside the file.
+    end = min(end, size - 1)
+    if start > end or start >= size:
+        return None
+    return start, end
+
+
+def _slice(handle, start: int, length: int):
+    """Yield exactly `length` bytes from `start`, and no more."""
+    handle.seek(start)
+    remaining = length
+    while remaining > 0:
+        chunk = handle.read(min(_CHUNK, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        yield chunk
+
+
+def serve_file(
+    request,
+    handle,
+    *,
+    size: int,
+    content_type: str,
+    filename: str,
+    as_attachment: bool,
+    cache_control: str,
+):
+    """
+    Serve a stored file, honouring one byte range.
+
+    The security headers are set here rather than by each caller, so a new
+    route cannot be added without them — they are the reason serving stored
+    files is safe at all, and every one of them is argued in the banner above
+    `AttachmentDownloadView` and in `MediaPreviewView`.
+    """
+    wanted = _parse_range(request.META.get("HTTP_RANGE", ""), size)
+
+    if wanted is None:
+        response = FileResponse(
+            handle,
+            content_type=content_type,
+            as_attachment=as_attachment,
+            filename=filename,
+        )
+    else:
+        start, end = wanted
+        response = StreamingHttpResponse(
+            _slice(handle, start, end - start + 1),
+            content_type=content_type,
+            status=206,
+        )
+        response["Content-Range"] = f"bytes {start}-{end}/{size}"
+        response["Content-Length"] = str(end - start + 1)
+        disposition = "attachment" if as_attachment else "inline"
+        response["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+
+    # On both, so a client learns it may ask next time.
+    response["Accept-Ranges"] = "bytes"
+    response["X-Content-Type-Options"] = "nosniff"
+    response["Content-Security-Policy"] = "default-src 'none'; sandbox"
+    response["Cache-Control"] = cache_control
+    return response

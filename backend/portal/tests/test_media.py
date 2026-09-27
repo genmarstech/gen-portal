@@ -368,3 +368,116 @@ def test_the_totals_say_what_the_shelf_costs(client, founder):
     totals = client.get(LIST).json()["totals"]
     assert totals["count"] == 2
     assert totals["bytes"] > 0
+
+
+# ── 7. byte ranges, because a browser cannot play video without them ─────────
+#
+# Django's FileResponse implements no Range support at all: no `Range`, no
+# `Accept-Ranges`, no 206 anywhere in it. Serving video through it means a
+# <video> cannot seek, iOS Safari will not start playback, and a 200 MB
+# download that drops at 90% starts again from zero.
+
+
+def a_big_png(kb: int = 40) -> SimpleUploadedFile:
+    """Large enough that a range is a real slice rather than the whole file."""
+    ihdr = b"IHDR" + struct.pack(">II", 64, 64) + b"\x08\x06\x00\x00\x00"
+    body = (
+        b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + ihdr + b"\x00\x00\x00\x00"
+    )
+    body += bytes(range(256)) * (kb * 1024 // 256)
+    return SimpleUploadedFile("big.png", body, content_type="image/png")
+
+
+@pytest.fixture
+def big(client, founder):
+    client.force_login(founder)
+    return upload(client, file=a_big_png(), title="Big").json()
+
+
+def test_a_full_response_advertises_ranges(client, founder, big):
+    """Without Accept-Ranges a client never learns it may ask, so never asks."""
+    for route in ("preview", "file"):
+        response = client.get(f"{LIST}/{big['id']}/{route}")
+        assert response.status_code == 200
+        assert response["Accept-Ranges"] == "bytes"
+
+
+def test_a_range_request_gets_206_and_only_those_bytes(client, founder, big):
+    response = client.get(f"{LIST}/{big['id']}/preview", HTTP_RANGE="bytes=100-199")
+    assert response.status_code == 206
+    assert response["Content-Range"] == f"bytes 100-199/{big['size_bytes']}"
+    assert response["Content-Length"] == "100"
+    assert len(b"".join(response.streaming_content)) == 100
+
+
+def test_the_sliced_bytes_are_the_right_ones(client, founder, big):
+    """A 206 with the wrong offset is a corrupt stream the browser blames on
+    the codec."""
+    whole = b"".join(client.get(f"{LIST}/{big['id']}/file").streaming_content)
+    part = b"".join(
+        client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE="bytes=500-999").streaming_content
+    )
+    assert part == whole[500:1000]
+
+
+def test_an_open_ended_range_runs_to_the_end(client, founder, big):
+    """`bytes=N-` is what a browser sends to resume a download."""
+    size = big["size_bytes"]
+    response = client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE=f"bytes={size - 10}-")
+    assert response.status_code == 206
+    assert response["Content-Range"] == f"bytes {size - 10}-{size - 1}/{size}"
+    assert len(b"".join(response.streaming_content)) == 10
+
+
+def test_a_suffix_range_is_the_LAST_n_bytes(client, founder, big):
+    """`bytes=-500` means the last 500, not 'from 500'. Reading it the other
+    way serves the wrong part of the file with a confident 206."""
+    size = big["size_bytes"]
+    whole = b"".join(client.get(f"{LIST}/{big['id']}/file").streaming_content)
+    response = client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE="bytes=-500")
+    assert response.status_code == 206
+    assert response["Content-Range"] == f"bytes {size - 500}-{size - 1}/{size}"
+    assert b"".join(response.streaming_content) == whole[-500:]
+
+
+@pytest.mark.parametrize(
+    "header",
+    ["bytes=999999999-", "bytes=abc", "items=0-10", "bytes=50-10", "", "bytes=-0"],
+)
+def test_a_range_we_cannot_satisfy_serves_the_whole_file(client, founder, big, header):
+    """
+    RFC 9110: ignore a Range you cannot make sense of and send the whole
+    representation. A 400 here would break clients that send a header we
+    simply did not anticipate — and a range past the end must never become a
+    read outside the file.
+    """
+    response = client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE=header)
+    assert response.status_code == 200
+
+
+def test_a_resumed_download_is_not_counted_again(client, founder, big):
+    """
+    Otherwise a 200 MB download resumed over a flaky link counts as twenty,
+    and download_count stops meaning anything.
+    """
+    client.get(f"{LIST}/{big['id']}/file")
+    assert MediaAsset.objects.get(pk=big["id"]).download_count == 1
+    client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE="bytes=0-99")
+    client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE="bytes=100-199")
+    assert MediaAsset.objects.get(pk=big["id"]).download_count == 1
+
+
+def test_a_partial_response_keeps_every_security_header(client, founder, big):
+    """The 206 path builds its own response, so it is a second place the
+    headers could go missing."""
+    response = client.get(f"{LIST}/{big['id']}/preview", HTTP_RANGE="bytes=0-99")
+    assert response["X-Content-Type-Options"] == "nosniff"
+    assert "default-src 'none'" in response["Content-Security-Policy"]
+    assert "sandbox" in response["Content-Security-Policy"]
+    assert "private" in response["Cache-Control"]
+    assert response["Content-Disposition"].startswith("inline")
+
+
+def test_a_partial_download_is_still_an_attachment(client, founder, big):
+    response = client.get(f"{LIST}/{big['id']}/file", HTTP_RANGE="bytes=0-99")
+    assert response["Content-Disposition"].startswith("attachment")
