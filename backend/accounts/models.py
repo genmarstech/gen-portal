@@ -311,3 +311,91 @@ class EmailCode(models.Model):
     def generate_code() -> str:
         """Cryptographically random digits — never random.randint."""
         return "".join(secrets.choice("0123456789") for _ in range(EmailCode.LENGTH))
+
+
+class StaffTotp(models.Model):
+    """
+    A second factor for an account that can open the Django admin.
+
+    ══════════════════════════════════════════════════════════════════════════
+    ENFORCEMENT IS PER ACCOUNT, AND THAT IS A ROLLOUT DECISION, NOT A WEAKNESS.
+
+    `AdminTotpLoginForm` demands a code from anybody who HAS a confirmed
+    device here, and lets everybody else through on a password as before.
+    Flipping that to "everybody must" is one setting, `ADMIN_REQUIRE_TOTP`.
+
+    It is that way round because the alternative locks the company out of its
+    own admin the moment it deploys: nobody has a device until somebody
+    enrols, and enrolling needs a shell, and the person with the shell is the
+    person who has just been locked out. So the order is: ship, enrol, then
+    turn the setting on — and the setting exists so that last step is
+    deliberate rather than implied.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── THE SECRET IS NOT ENCRYPTED, AND THAT IS NOT AN OVERSIGHT ───────────
+
+    An attacker holding this table also holds the password hashes, the client
+    records and everything else — the thing a second factor defends against
+    is a password that has escaped, not a database that has. Encrypting it
+    with a key stored on the same host protects against nothing real and
+    would imply a guarantee this does not make. django-otp stores secrets the
+    same way, for the same reason.
+
+    What the column does get is `editable=False` and exclusion from every
+    admin form, so it is not displayed back to anybody who opens the page.
+    """
+
+    user = models.OneToOneField(
+        "accounts.User", on_delete=models.CASCADE, related_name="totp"
+    )
+
+    secret = models.CharField(max_length=64, editable=False)
+
+    # ── THE REPLAY GUARD ────────────────────────────────────────────────────
+    #
+    # The highest time step this account has spent. A code at or below it is
+    # refused however correct it is, so one that is shoulder-surfed or
+    # phished alongside the password cannot be used a second time inside its
+    # own thirty-second window.
+    last_step = models.BigIntegerField(default=0)
+
+    # Null until the person proves the app is set up by typing a code back.
+    # An unconfirmed row never enforces anything: a half-finished enrolment
+    # must not be able to lock somebody out.
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        verbose_name = "staff second factor"
+        verbose_name_plural = "staff second factors"
+
+    def __str__(self) -> str:
+        state = "confirmed" if self.is_confirmed else "not finished"
+        return f"{self.user.email} — {state}"
+
+    @property
+    def is_confirmed(self) -> bool:
+        return self.confirmed_at is not None
+
+    def check_code(self, code: str) -> bool:
+        """
+        Verify and spend a code. Writes `last_step` on success.
+
+        The write is what makes the replay guard real, so it happens here
+        rather than being left to the caller — a caller that forgets is a
+        caller that has quietly turned the guard off.
+        """
+        from django.utils import timezone
+
+        from . import totp
+
+        step = totp.verify(self.secret, code, after_step=self.last_step)
+        if step is None:
+            return False
+
+        self.last_step = step
+        self.last_used_at = timezone.now()
+        self.save(update_fields=["last_step", "last_used_at"])
+        return True

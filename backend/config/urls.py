@@ -2,6 +2,7 @@ from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
 
+from accounts.admin_forms import AdminTotpLoginForm
 from accounts.auth_backends import rate_limited_admin_login
 
 # ── THE ADMIN LOGIN IS RATE LIMITED BEFORE admin.site.urls IS BUILT ─────────
@@ -17,6 +18,18 @@ from accounts.auth_backends import rate_limited_admin_login
 # addresses with one password, and neither covers the other's case.
 # See docs/SECURITY-AUDIT-2026-09-09.md finding 2.
 admin.site.login = rate_limited_admin_login(admin.site.login)
+
+# ── AND THE SAME DOOR ASKS FOR A SECOND FACTOR ──────────────────────────────
+#
+# Installed as the site's login_form rather than as a separate view, for the
+# same reason the rate limit wraps the real one: a control on a door nobody
+# uses is not a control. See accounts/admin_forms.py.
+#
+# It demands a code only from accounts that HAVE a confirmed authenticator,
+# until ADMIN_REQUIRE_TOTP is turned on. That order is deliberate — the other
+# way round locks the company out of its own admin on the deploy, because
+# nobody is enrolled yet and enrolling needs a shell.
+admin.site.login_form = AdminTotpLoginForm
 
 urlpatterns = [
     path("admin/", admin.site.urls),

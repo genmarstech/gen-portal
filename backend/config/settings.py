@@ -100,6 +100,18 @@ AUTH_USER_MODEL = "accounts.User"
 # the next line down.
 AUTHENTICATION_BACKENDS = ["accounts.auth_backends.IdentityBackend"]
 
+# ── WHETHER THE ADMIN INSISTS ON A SECOND FACTOR ────────────────────────────
+#
+# False: an account with a confirmed authenticator must use it, and one
+# without carries on as before. True: no authenticator, no admin.
+#
+# It ships False and that is not timidity. Nobody has a device until somebody
+# runs `manage.py enrol_totp`, that needs a shell on the server, and turning
+# this on first locks out the person who would run it. Deploy, enrol everyone,
+# then set it — and because it is a setting, that last step is a decision
+# somebody makes rather than something a deploy does to them.
+ADMIN_REQUIRE_TOTP = env.bool("ADMIN_REQUIRE_TOTP", default=False)
+
 # Where django-ratelimit reads the caller's address from.
 #
 # Without this it uses REMOTE_ADDR, which behind Caddy is the Docker gateway
