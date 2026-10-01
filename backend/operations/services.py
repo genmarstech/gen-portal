@@ -96,6 +96,7 @@ def convert_enquiry(
     contact: User | None = None,
     target_date: date | None = None,
     service: Service | None = None,
+    tell_client: bool = True,
 ) -> Order:
     """
     Turn a qualified enquiry into an order.
@@ -186,6 +187,25 @@ def convert_enquiry(
     enquiry.save(
         update_fields=["converted_to", "status", "decided_by", "decided_at"]
     )
+
+    # ── THE CLIENT IS TOLD, AND WAS NOT ─────────────────────────────────────
+    #
+    # `create_order` has notified since it was written. This path — the one a
+    # client's own enquiry travels down, which is most of them — created the
+    # order, wrote the activity log, and said nothing to the person who
+    # enquired. They got a reply when somebody remembered to write one.
+    #
+    # Charter 05 §I wants scope agreed in writing before work begins, and the
+    # whole value of writing it down is that the client gets to disagree while
+    # disagreeing is cheap. An order nobody told them about cannot be
+    # disagreed with.
+    #
+    # There is no `retrospective` flag here, unlike create_order: an enquiry
+    # being converted is by definition current, so "nothing has started yet"
+    # is never a lie about work delivered a year ago.
+    if tell_client:
+        _tell_client_later(order)
+
     return order
 
 
@@ -3945,9 +3965,28 @@ def create_order(
     # would arrive in the client's inbox looking like we had lost track of
     # what we had already done for them.
     if tell_client and not retrospective:
-        notify_order_opened(order)
+        _tell_client_later(order)
 
     return order
+
+
+def _tell_client_later(order: Order) -> None:
+    """
+    Send after the transaction commits, not during it.
+
+    ── AN EMAIL CANNOT BE ROLLED BACK ──────────────────────────────────────
+    Both callers are `@transaction.atomic`, and `create_order` sent inline:
+    anything that failed after the send — in the rest of that function, or in
+    a view or a test that wrapped it in a larger transaction — would roll the
+    order back and leave the client holding a message about work that does
+    not exist, quoting a reference nobody at Genmars can find.
+
+    `on_commit` runs the callable only if the outermost transaction actually
+    commits, and runs it immediately when there is no transaction at all, so
+    this is correct in both shapes without the caller having to know which it
+    is in.
+    """
+    transaction.on_commit(lambda: notify_order_opened(order))
 
 
 def notify_order_opened(order: Order) -> None:

@@ -369,7 +369,9 @@ def test_an_order_needs_a_scope_in_writing(client, staff, spa):
     assert response.json()["field"] == "scope"
 
 
-def test_the_client_is_told_in_the_dashboard_and_by_email(client, staff, spa, mailoutbox):
+def test_the_client_is_told_in_the_dashboard_and_by_email(
+    client, staff, spa, mailoutbox, django_capture_on_commit_callbacks
+):
     owner = User.objects.create_user(
         email="owner@spa.co.ke",
         password=PASSWORD,
@@ -379,7 +381,14 @@ def test_the_client_is_told_in_the_dashboard_and_by_email(client, staff, spa, ma
     Membership.objects.create(user=owner, organisation=spa, receives_updates=True)
 
     client.force_login(staff)
-    reference = _order(client, spa).json()["reference"]
+    # ── THE SEND HAPPENS ON COMMIT, SO THE TEST HAS TO COMMIT ──────────
+    # services._tell_client_later defers through transaction.on_commit, so
+    # an email cannot be sent for an order that is then rolled back. A test
+    # runs inside a transaction that never commits, so without this the
+    # callback is collected and discarded — which would read as "no email
+    # was sent" rather than as "the test did not get far enough".
+    with django_capture_on_commit_callbacks(execute=True):
+        reference = _order(client, spa).json()["reference"]
 
     notification = Notification.objects.get(user=owner)
     assert notification.url == f"/dashboard/{reference}"
@@ -388,7 +397,9 @@ def test_the_client_is_told_in_the_dashboard_and_by_email(client, staff, spa, ma
     assert reference in mailoutbox[0].subject
 
 
-def test_the_email_does_not_claim_work_has_started(client, staff, spa, mailoutbox):
+def test_the_email_does_not_claim_work_has_started(
+    client, staff, spa, mailoutbox, django_capture_on_commit_callbacks
+):
     """
     ═══════════════════════════════════════════════════════════════════════════
     Charter 02 §I — a signed statement of work comes before delivery.
@@ -404,7 +415,8 @@ def test_the_email_does_not_claim_work_has_started(client, staff, spa, mailoutbo
     Membership.objects.create(user=owner, organisation=spa, receives_updates=True)
 
     client.force_login(staff)
-    _order(client, spa)
+    with django_capture_on_commit_callbacks(execute=True):
+        _order(client, spa)
 
     body = mailoutbox[0].body.lower()
     assert "nothing has started yet" in body
@@ -417,7 +429,9 @@ def test_the_email_does_not_claim_work_has_started(client, staff, spa, mailoutbo
     assert "staff rostering" in body
 
 
-def test_empty_exclusions_are_stated_rather_than_dropped(client, staff, spa, mailoutbox):
+def test_empty_exclusions_are_stated_rather_than_dropped(
+    client, staff, spa, mailoutbox, django_capture_on_commit_callbacks
+):
     """
     A blank exclusions field means "we have not said what is out of scope",
     which is worth the client seeing. Dropping the heading would let an
@@ -429,7 +443,8 @@ def test_empty_exclusions_are_stated_rather_than_dropped(client, staff, spa, mai
     Membership.objects.create(user=owner, organisation=spa, receives_updates=True)
 
     client.force_login(staff)
-    _order(client, spa, exclusions="")
+    with django_capture_on_commit_callbacks(execute=True):
+        _order(client, spa, exclusions="")
 
     assert "not yet written down what is outside this" in mailoutbox[0].body
 

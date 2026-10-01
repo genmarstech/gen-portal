@@ -137,10 +137,16 @@ def test_past_work_never_emails_the_client(client, founder, spa, owner, mailoutb
     assert mailoutbox == []
 
 
-def test_new_work_opened_today_still_emails(client, founder, spa, owner, mailoutbox):
+def test_new_work_opened_today_still_emails(
+    client, founder, spa, owner, mailoutbox, django_capture_on_commit_callbacks
+):
     """The guard above must not have switched the ordinary path off."""
     client.force_login(founder)
-    _open(client, spa)
+    # The send is deferred through transaction.on_commit so an email cannot
+    # go out for an order that is then rolled back; a test transaction never
+    # commits, so the callback has to be run deliberately.
+    with django_capture_on_commit_callbacks(execute=True):
+        _open(client, spa)
     assert len(mailoutbox) == 1
 
 
