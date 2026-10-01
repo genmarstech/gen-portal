@@ -10,7 +10,7 @@ Stage 0 will carry.
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 
-from .models import EmailCode, Membership, Organisation, User
+from .models import EmailCode, Membership, Organisation, User, StaffTotp
 
 
 @admin.register(User)
@@ -74,3 +74,47 @@ class EmailCodeAdmin(admin.ModelAdmin):
 
     def get_exclude(self, request, obj=None):
         return ["code_hash"]
+
+
+@admin.register(StaffTotp)
+class StaffTotpAdmin(admin.ModelAdmin):
+    """
+    Who has an authenticator. Visible, and not touchable from here.
+
+    ══════════════════════════════════════════════════════════════════════════
+    NO ADD, NO CHANGE, NO DELETE — AND DELETE IS THE ONE THAT MATTERS.
+
+    Somebody who gets in with a stolen session must not be able to remove the
+    second factor from the account they are sitting in, or from anybody
+    else's. A deletable device turns "I have your session" into "I have your
+    account for good", which is precisely the escalation this whole feature
+    exists to block.
+
+    Enrolling and re-enrolling are `manage.py enrol_totp`, which needs a shell
+    on the server. Losing a phone is therefore a trip to the box rather than a
+    click — the right cost for an operation that disarms the control.
+    ══════════════════════════════════════════════════════════════════════════
+
+    The secret is `editable=False` on the model and excluded here as well, so
+    no page ever renders it back.
+    """
+
+    list_display = ["user", "is_confirmed", "confirmed_at", "last_used_at"]
+    list_filter = ["confirmed_at"]
+    search_fields = ["user__email"]
+    exclude = ["secret"]
+    readonly_fields = ["user", "last_step", "confirmed_at", "created_at",
+                       "last_used_at"]
+
+    @admin.display(boolean=True, description="confirmed")
+    def is_confirmed(self, obj) -> bool:
+        return obj.is_confirmed
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
