@@ -1,0 +1,33 @@
+{% extends "email/base.html" %}
+{% block content %}
+{% comment %}
+The one message in this sequence allowed to say work has started, because by
+the time it is sent a statement of work has been signed and the client has
+had their chance to object. order_opened.html deliberately does not say it.
+
+Short on purpose. The scope was already emailed when the order opened and is
+on the order page; repeating it here trains the client to skim the one that
+matters.
+{% endcomment %}
+<p style="margin:0 0 20px 0; font-size:13px; color:#7a7480;">{{ reference }}</p>
+
+<p style="margin:0 0 24px 0; font-size:15px; line-height:1.7; color:#2e2b34;">
+  Work on this has started, against the statement of work you signed.
+</p>
+
+<p style="margin:0 0 24px 0; font-size:15px; line-height:1.7; color:#2e2b34;">
+  If something needs to change from here, tell us as early as you can &mdash;
+  it is cheaper to change a thing before it is built than after, and the order
+  page has a place to say so.
+</p>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6; margin-top:24px;">
+  <tr>
+    <td style="padding-top:18px; font-size:14px; line-height:1.65; color:#5f5867;">
+      Your contact at Genmars is {{ contact }}.<br><br>
+      <a href="https://app.genmars.co.ke/dashboard/{{ reference }}" style="color:#834f49;">app.genmars.co.ke/dashboard/{{ reference }}</a>
+    </td>
+  </tr>
+</table>
+{% endblock %}

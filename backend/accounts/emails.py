@@ -652,3 +652,241 @@ def send_offer(
             "next_step": next_step.strip(),
         },
     )
+
+
+def send_invoice_issued(
+    *,
+    email: str,
+    number: str,
+    amount: str,
+    description: str,
+    due_on: str,
+    reference: str,
+) -> None:
+    """
+    A client has been billed, and told so somewhere they will see it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS CARRIES NO PAYMENT DETAILS, AND THAT IS THE WHOLE DESIGN.
+
+    No paybill, no account number, no bank. Invoice redirection fraud works by
+    intercepting exactly this email and changing exactly those digits, and it
+    works because the client has no reason to doubt an invoice that arrives
+    looking like the last one. It is the most common way a small business in
+    Kenya loses a five-figure payment, and the money does not come back.
+
+    So the authoritative details live in one place the client reaches by
+    signing in, and this message's job is only to say an invoice exists and
+    send them there. A client who has been taught that Genmars never puts
+    account numbers in email is a client who notices when somebody else does.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── AND IT WAS SENT NOWHERE AT ALL BEFORE ─────────────────────────────────
+
+    `notify_invoice_issued` wrote a dashboard notification and stopped there,
+    while an order, a contract, a signature and an offer all emailed. Genmars
+    billed clients and relied on them signing in to find out, which for a
+    client who logs in once a quarter means an invoice sitting unseen until
+    somebody telephones about it. An unseen invoice is an unpaid invoice.
+    """
+    _send(
+        to=email,
+        subject=f"Invoice {number} — KES {amount}",
+        text=(
+            f"Invoice {number}\n"
+            f"KES {amount}\n\n"
+            f"{description}\n\n"
+            + (f"DUE\n{due_on}\n\n" if due_on else "")
+            + (f"AGAINST\n{reference}\n\n" if reference else "")
+            + "How to pay is on the invoice itself, in the portal:\n"
+            "https://app.genmars.co.ke/invoices\n\n"
+            # Said in every one of these, so that the one time it matters the
+            # client has read it a dozen times already.
+            "We will never send you bank or M-Pesa details by email, and we "
+            "will never email you asking to change them. If you receive a "
+            "message that appears to be from us doing either, telephone us "
+            "before you pay it.\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/invoice_issued.html",
+        context={
+            "heading": f"Invoice {number}",
+            "preheader": f"KES {amount} — {description}",
+            "number": number,
+            "amount": amount,
+            "description": description,
+            "due_on": due_on,
+            "reference": reference,
+        },
+    )
+
+
+def send_payment_received(
+    *,
+    email: str,
+    number: str,
+    amount: str,
+    settled: bool,
+    outstanding: str,
+) -> None:
+    """
+    Money arrived. Acknowledged, because silence after a payment is unnerving.
+
+    ── A PART PAYMENT SAYS WHAT IS LEFT, AND SAYS IT PLAINLY ────────────────
+    "Payment received" against an invoice still half outstanding reads as
+    settled, and the client stops thinking about it until a reminder arrives
+    that now looks like a mistake on our side. The remaining figure is in the
+    subject line for that reason.
+
+    No payment details here either, for the reason on send_invoice_issued —
+    and more sharply: a message acknowledging money is the one somebody
+    forging a follow-up would most like to imitate.
+    """
+    if settled:
+        subject = f"Invoice {number} paid in full — thank you"
+        standing = "This invoice is now settled in full. Thank you."
+    else:
+        subject = f"Invoice {number} — KES {outstanding} still outstanding"
+        standing = (
+            f"KES {outstanding} is still outstanding on this invoice. The "
+            "balance and the full history are in the portal."
+        )
+
+    _send(
+        to=email,
+        subject=subject,
+        text=(
+            f"Invoice {number}\n"
+            f"KES {amount} received.\n\n"
+            f"{standing}\n\n"
+            "https://app.genmars.co.ke/invoices\n\n"
+            "We will never send you bank or M-Pesa details by email, and we "
+            "will never email you asking to change them.\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/payment_received.html",
+        context={
+            "heading": f"Invoice {number}",
+            "preheader": f"KES {amount} received.",
+            "number": number,
+            "amount": amount,
+            "settled": settled,
+            "standing": standing,
+        },
+    )
+
+
+def send_change_raised(
+    *,
+    email: str,
+    reference: str,
+    order_reference: str,
+    order_title: str,
+    client: str,
+    summary: str,
+    detail: str,
+) -> None:
+    """
+    A client has asked for something. Told to the person responsible.
+
+    ══════════════════════════════════════════════════════════════════════════
+    IT GOES TO THE ORDER'S NAMED CONTACT, NOT TO EVERY MEMBER OF STAFF.
+
+    Charter 05 §I makes `Order.contact` the client's point of contact, which
+    means it already answers "whose is this". Broadcasting to all staff is how
+    a team learns to ignore a channel: the third person to receive something
+    they cannot act on stops reading the second.
+
+    The dashboard notification still goes to everybody, because a list
+    somebody chooses to open is a different thing from a message that arrives.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── AND IT IS SENT AT ALL, WHICH IT WAS NOT ───────────────────────────────
+
+    `raise_change_request` wrote a staff dashboard row and stopped. A client
+    saying "this is wrong, please change it before you build it" reached
+    Genmars only if somebody happened to be looking at ops — which, for the
+    one message whose whole value is arriving BEFORE work starts, is the
+    worst possible place to put it.
+
+    The client's own words are in the body rather than behind a link, for the
+    same reason scope is: whoever reads this on a phone should be able to tell
+    in five seconds whether it needs answering today.
+    """
+    _send(
+        to=email,
+        subject=f"{order_reference} — {client} asked for something",
+        text=(
+            f"{summary}\n\n"
+            f"{client}\n"
+            f"{order_reference} — {order_title}\n"
+            f"Filed as {reference}\n\n"
+            + (f"THEY SAID\n{detail}\n\n" if detail.strip() else "")
+            + "Nothing has been classified or priced yet. Until it is, this "
+            "is a question, not a commitment.\n\n"
+            f"https://ops.genmars.co.ke/changes\n\n"
+            "Genmars Tech Limited"
+        ),
+        template="email/change_raised.html",
+        context={
+            "heading": summary,
+            "preheader": f"{client} — {order_reference}",
+            "reference": reference,
+            "order_reference": order_reference,
+            "order_title": order_title,
+            "client": client,
+            "detail": detail,
+        },
+    )
+
+
+def send_order_started(
+    *, email: str, reference: str, title: str, contact: str
+) -> None:
+    """
+    Work has begun — and this is the one message in the sequence allowed to
+    say so.
+
+    ══════════════════════════════════════════════════════════════════════════
+    `send_order_opened` GOES TO SOME LENGTHS NOT TO SAY THIS.
+
+    An order opens in SCOPING, often minutes after a phone call, and claiming
+    work had started there would commit the company by notification instead of
+    by contract — Charter 02 §I.
+
+    This is the other side of that line. By the time it is sent a statement of
+    work has been signed and the client has had their chance to say the scope
+    is wrong. The sentence is now simply true, and saying it plainly is what
+    closes the loop the first email opened.
+    ══════════════════════════════════════════════════════════════════════════
+
+    It is short on purpose. Everything a client needs to read is already on
+    the order page and was already emailed when the order opened; repeating
+    the scope here would train them to skim the one that matters.
+    """
+    _send(
+        to=email,
+        subject=f"{reference} — we have started",
+        text=(
+            f"{title}\n"
+            f"{reference}\n\n"
+            "Work on this has started, against the statement of work you "
+            "signed.\n\n"
+            "If something needs to change from here, tell us as early as you "
+            "can — it is cheaper to change a thing before it is built than "
+            "after, and the order page has a place to say so.\n\n"
+            f"Your contact at Genmars is {contact}.\n\n"
+            f"https://app.genmars.co.ke/dashboard/{reference}\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/order_started.html",
+        context={
+            "heading": title,
+            "preheader": "Work on this has started.",
+            "reference": reference,
+            "contact": contact,
+        },
+    )

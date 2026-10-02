@@ -1136,6 +1136,10 @@ class Notification(models.Model):
         CHANGE_RAISED = "change_raised", "New change request"
         CHANGE_CLASSIFIED = "change_classified", "Change request answered"
         CHANGE_DECIDED = "change_decided", "Change request decided"
+        # The moment the client's window to object closes. Worth its own kind
+        # rather than a progress note: it is the only notification that means
+        # "what you agreed is now being built".
+        ORDER_STARTED = "order_started", "Work has started"
 
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1561,6 +1565,12 @@ class ActivityLog(models.Model):
         # A change request moving through its states. Four actions rather than
         # one, because "raised" and "classified" are the two that settle a
         # dispute later and they are asked about separately.
+        # Charter 02 §I's line, crossed. Recorded direct because "when did
+        # work begin" is a question a scope dispute turns on, and because the
+        # summary carries the reason when it was started over a client who
+        # had not yet read it.
+        ORDER_STARTED = "order.started", "Work started on an order"
+
         CHANGE_RAISED = "change.raised", "Change request raised"
         CHANGE_CLASSIFIED = "change.classified", "Change request classified"
         CHANGE_DECIDED = "change.decided", "Change request approved or declined"

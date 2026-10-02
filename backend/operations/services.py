@@ -44,6 +44,7 @@ from portal.models import (
     Notification,
     Offer,
     Order,
+    OrderSeen,
     PaymentRecord,
     ProgressNote,
     Service,
@@ -97,6 +98,7 @@ def convert_enquiry(
     contact: User | None = None,
     target_date: date | None = None,
     service: Service | None = None,
+    tell_client: bool = True,
 ) -> Order:
     """
     Turn a qualified enquiry into an order.
@@ -187,6 +189,25 @@ def convert_enquiry(
     enquiry.save(
         update_fields=["converted_to", "status", "decided_by", "decided_at"]
     )
+
+    # ── THE CLIENT IS TOLD, AND WAS NOT ─────────────────────────────────────
+    #
+    # `create_order` has notified since it was written. This path — the one a
+    # client's own enquiry travels down, which is most of them — created the
+    # order, wrote the activity log, and said nothing to the person who
+    # enquired. They got a reply when somebody remembered to write one.
+    #
+    # Charter 05 §I wants scope agreed in writing before work begins, and the
+    # whole value of writing it down is that the client gets to disagree while
+    # disagreeing is cheap. An order nobody told them about cannot be
+    # disagreed with.
+    #
+    # There is no `retrospective` flag here, unlike create_order: an enquiry
+    # being converted is by definition current, so "nothing has started yet"
+    # is never a lie about work delivered a year ago.
+    if tell_client:
+        _tell_client_later(order)
+
     return order
 
 
@@ -1020,6 +1041,30 @@ def _notify(
         log.exception("could not write %s notifications", kind)
 
 
+def _mailable(organisation: Organisation):
+    """
+    Who may be EMAILED about this client's money.
+
+    Narrower than `_client_recipients`, which is who gets a dashboard row,
+    and narrower for two reasons that recur in every client email here:
+
+      `receives_updates` off   they asked not to hear about this, and service
+                               mail with no way to stop it becomes marketing
+                               in the recipient's mind
+      never verified           nobody has proved they read that address, and
+                               a client's commercial detail sent to it is
+                               sent to whoever happens to own the mailbox
+
+    A dashboard row has neither problem: it is behind the client's own
+    sign-in and it reaches nobody who is not already in the account.
+    """
+    return (
+        Membership.objects.filter(organisation=organisation, receives_updates=True)
+        .select_related("user")
+        .exclude(user__email_verified_at__isnull=True)
+    )
+
+
 def _client_recipients(organisation: Organisation):
     """
     Everyone on the client's account, and only people who can still sign in.
@@ -1037,6 +1082,14 @@ def _staff_recipients():
 
 
 def notify_invoice_issued(invoice: Invoice) -> None:
+    """
+    ── IT EMAILED NOBODY, WHILE EVERY OTHER CLIENT EVENT DID ───────────────
+    An order, a contract, a signature and an offer all reach the client by
+    email. An invoice wrote a dashboard row and stopped — so Genmars billed
+    people and relied on them signing in to find out. For a client who logs
+    in once a quarter that is an invoice sitting unseen until somebody
+    telephones about it, and an unseen invoice is an unpaid invoice.
+    """
     _notify(
         users=_client_recipients(invoice.organisation),
         audience=Notification.Audience.CLIENT,
@@ -1045,6 +1098,24 @@ def notify_invoice_issued(invoice: Invoice) -> None:
         body=f"KES {invoice.amount_kes:,.2f} — {invoice.description}",
         url="/invoices",
     )
+
+    for membership in _mailable(invoice.organisation):
+        try:
+            emails.send_invoice_issued(
+                email=membership.user.email,
+                number=invoice.number,
+                amount=f"{invoice.amount_kes:,.2f}",
+                description=invoice.description,
+                due_on=invoice.due_on.isoformat() if invoice.due_on else "",
+                reference=invoice.order.reference if invoice.order_id else "",
+            )
+        except Exception:
+            # The invoice is the fact; the email is an account of it. A dead
+            # relay must not undo a bill, and the dashboard row has landed.
+            log.exception(
+                "could not email %s about invoice %s",
+                membership.user.email, invoice.number,
+            )
 
 
 def notify_payment_recorded(
@@ -1072,6 +1143,21 @@ def notify_payment_recorded(
         body=body,
         url="/invoices",
     )
+
+    for membership in _mailable(invoice.organisation):
+        try:
+            emails.send_payment_received(
+                email=membership.user.email,
+                number=invoice.number,
+                amount=f"{payment.amount_kes:,.2f}",
+                settled=settled,
+                outstanding=f"{invoice.balance:,.2f}",
+            )
+        except Exception:
+            log.exception(
+                "could not acknowledge payment on invoice %s to %s",
+                invoice.number, membership.user.email,
+            )
 
 
 def notify_invoice_voided(invoice: Invoice) -> None:
@@ -4158,9 +4244,151 @@ def create_order(
     # would arrive in the client's inbox looking like we had lost track of
     # what we had already done for them.
     if tell_client and not retrospective:
-        notify_order_opened(order)
+        _tell_client_later(order)
 
     return order
+
+
+def _tell_client_later(order: Order) -> None:
+    """
+    Send after the transaction commits, not during it.
+
+    ── AN EMAIL CANNOT BE ROLLED BACK ──────────────────────────────────────
+    Both callers are `@transaction.atomic`, and `create_order` sent inline:
+    anything that failed after the send — in the rest of that function, or in
+    a view or a test that wrapped it in a larger transaction — would roll the
+    order back and leave the client holding a message about work that does
+    not exist, quoting a reference nobody at Genmars can find.
+
+    `on_commit` runs the callable only if the outermost transaction actually
+    commits, and runs it immediately when there is no transaction at all, so
+    this is correct in both shapes without the caller having to know which it
+    is in.
+    """
+    transaction.on_commit(lambda: notify_order_opened(order))
+
+
+@transaction.atomic
+def start_order(
+    *, order: Order, actor: User, despite_unseen: str = ""
+) -> Order:
+    """
+    Work begins. SCOPING → ACTIVE.
+
+    ══════════════════════════════════════════════════════════════════════════
+    NOTHING COULD DO THIS BEFORE, AND THAT WAS NOT A DESIGN.
+
+    `Order.Status` has had ACTIVE, REVIEW and CLOSED since it was written and
+    nothing in the application ever assigned any of them. An order was created
+    SCOPING and stayed SCOPING for ever — so "in progress" was a label on a
+    dropdown, the delivery board showed every live engagement in the same
+    column, and a client reading their own order page was told work had not
+    started on something that shipped in March.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── A SIGNED STATEMENT OF WORK COMES FIRST. CHARTER 02 §I. ────────────────
+
+    `issue_invoice` already refuses without one — "the agreement comes before
+    the work, and before the bill". Refusing to BILL without a contract while
+    allowing the work itself is the weaker half of that sentence enforced and
+    the stronger half left to somebody's memory.
+
+    ── AND THE CLIENT HAS TO HAVE READ IT ────────────────────────────────────
+
+    The order email asks them to check the scope and say if it is wrong. The
+    order page now asks them the questions. Both are worth nothing if work
+    starts before anybody looked — the client's chance to object is the whole
+    point of the gap between opening an order and starting it, and starting
+    while they are still unaware closes the gap without using it.
+
+    So: not until somebody at the client has opened the order.
+
+    ⚠ IT IS NOT AN ABSOLUTE BAR, BECAUSE THAT WOULD BE WORSE. A client who
+    agreed everything on the telephone and will never sign in would otherwise
+    block their own work indefinitely, and the pressure to get round that
+    produces a status set directly in the database with no record at all.
+    `despite_unseen` takes a reason, requires one, and puts it in the activity
+    log — so the override exists, costs a sentence, and is auditable.
+    """
+    if order.status != Order.Status.SCOPING:
+        raise OperationsError(
+            f"{order.reference} is already {order.get_status_display().lower()}."
+        )
+
+    if not order.contracts.filter(status=Contract.Status.SIGNED).exists():
+        raise OperationsError(
+            "There is no signed statement of work on this order. Charter 02 §I — "
+            "the agreement comes before the work.",
+        )
+
+    seen = OrderSeen.objects.filter(order=order).exists()
+    if not seen and not despite_unseen.strip():
+        raise OperationsError(
+            f"Nobody at {order.organisation.name} has opened this order yet, so "
+            "they have not had the chance to tell us it is wrong. Start it "
+            "anyway only with a reason — a telephone call, a meeting — and it "
+            "will be recorded.",
+            field="despite_unseen",
+        )
+
+    order.status = Order.Status.ACTIVE
+    # Only if it is not already set: work recorded retrospectively carries its
+    # real start date, and overwriting it with today would rewrite history to
+    # the date somebody got round to pressing the button.
+    if order.started_on is None:
+        order.started_on = timezone.localdate()
+    order.save(update_fields=["status", "started_on"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.ORDER_STARTED,
+        subject=order.reference,
+        organisation=order.organisation,
+        order=order.reference,
+        summary=(
+            f"{order.reference} started"
+            + (f" — client had not opened it: {despite_unseen.strip()}"
+               if not seen else "")
+        ),
+        direct=True,
+    )
+
+    _notify(
+        users=_client_recipients(order.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.ORDER_STARTED,
+        title=f"{order.reference} — work has started",
+        body=order.title,
+        url=f"/dashboard/{order.reference}",
+    )
+
+    transaction.on_commit(lambda: _tell_client_started(order))
+    return order
+
+
+def _tell_client_started(order: Order) -> None:
+    """
+    The one email in this flow that MAY say work has started, because it has.
+
+    `send_order_opened` goes to some lengths not to say it — an order opens in
+    SCOPING, often minutes after a phone call, and claiming otherwise would
+    commit the company by notification instead of by contract. This is the
+    other side of that line: a signed contract exists, the client has had
+    their chance to object, and the sentence is now simply true.
+    """
+    for membership in _mailable(order.organisation):
+        try:
+            emails.send_order_started(
+                email=membership.user.email,
+                reference=order.reference,
+                title=order.title,
+                contact=order.contact.full_name or order.contact.email,
+            )
+        except Exception:
+            log.exception(
+                "could not tell %s that %s started",
+                membership.user.email, order.reference,
+            )
 
 
 def notify_order_opened(order: Order) -> None:
@@ -4626,6 +4854,35 @@ def raise_change_request(
         body=f"{order.organisation.name} — {summary[:120]}",
         url="/changes",
     )
+
+    # ── AND IT IS EMAILED, WHICH IT WAS NOT ────────────────────────────────
+    #
+    # The dashboard row alone meant a client saying "this is wrong, change it
+    # before you build it" reached Genmars only if somebody happened to be
+    # looking at ops — which for the one message whose whole value is
+    # arriving BEFORE work starts is the worst place to leave it.
+    #
+    # To the order's named contact, not to all staff. Charter 05 §I makes
+    # Order.contact the person responsible, so it already answers "whose is
+    # this", and broadcasting is how a team learns to ignore a channel.
+    if order.contact_id and order.contact.email:
+        try:
+            emails.send_change_raised(
+                email=order.contact.email,
+                reference=change.reference,
+                order_reference=order.reference,
+                order_title=order.title,
+                client=order.organisation.name,
+                summary=summary,
+                detail=detail,
+            )
+        except Exception:
+            # The change request is the fact. A dead relay must not lose
+            # what a client asked for, and the dashboard row has landed.
+            log.exception(
+                "could not email %s about %s", order.contact.email, change.reference
+            )
+
     return change
 
 
