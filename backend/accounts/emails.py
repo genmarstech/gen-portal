@@ -776,3 +776,67 @@ def send_payment_received(
             "standing": standing,
         },
     )
+
+
+def send_change_raised(
+    *,
+    email: str,
+    reference: str,
+    order_reference: str,
+    order_title: str,
+    client: str,
+    summary: str,
+    detail: str,
+) -> None:
+    """
+    A client has asked for something. Told to the person responsible.
+
+    ══════════════════════════════════════════════════════════════════════════
+    IT GOES TO THE ORDER'S NAMED CONTACT, NOT TO EVERY MEMBER OF STAFF.
+
+    Charter 05 §I makes `Order.contact` the client's point of contact, which
+    means it already answers "whose is this". Broadcasting to all staff is how
+    a team learns to ignore a channel: the third person to receive something
+    they cannot act on stops reading the second.
+
+    The dashboard notification still goes to everybody, because a list
+    somebody chooses to open is a different thing from a message that arrives.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── AND IT IS SENT AT ALL, WHICH IT WAS NOT ───────────────────────────────
+
+    `raise_change_request` wrote a staff dashboard row and stopped. A client
+    saying "this is wrong, please change it before you build it" reached
+    Genmars only if somebody happened to be looking at ops — which, for the
+    one message whose whole value is arriving BEFORE work starts, is the
+    worst possible place to put it.
+
+    The client's own words are in the body rather than behind a link, for the
+    same reason scope is: whoever reads this on a phone should be able to tell
+    in five seconds whether it needs answering today.
+    """
+    _send(
+        to=email,
+        subject=f"{order_reference} — {client} asked for something",
+        text=(
+            f"{summary}\n\n"
+            f"{client}\n"
+            f"{order_reference} — {order_title}\n"
+            f"Filed as {reference}\n\n"
+            + (f"THEY SAID\n{detail}\n\n" if detail.strip() else "")
+            + "Nothing has been classified or priced yet. Until it is, this "
+            "is a question, not a commitment.\n\n"
+            f"https://ops.genmars.co.ke/changes\n\n"
+            "Genmars Tech Limited"
+        ),
+        template="email/change_raised.html",
+        context={
+            "heading": summary,
+            "preheader": f"{client} — {order_reference}",
+            "reference": reference,
+            "order_reference": order_reference,
+            "order_title": order_title,
+            "client": client,
+            "detail": detail,
+        },
+    )

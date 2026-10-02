@@ -538,6 +538,120 @@ function money(amountKes: string): string {
  * tested. What it says instead is what actually happens next — we price it and
  * they approve it before anything is built.
  */
+/**
+ * The questions worth asking about THIS order, right now.
+ *
+ * ── A BLANK BOX IS NOT AN INVITATION ──────────────────────────────────────
+ * The page already said "anything not in the scope above is a change
+ * request", and it already offered a form. What it asked for was that the
+ * client arrive with a fully-formed request — which most do not, because
+ * most are not sure whether the thing they are uneasy about is even a
+ * change. So they say nothing, and the uneasiness surfaces after the thing
+ * is built, which is the expensive end.
+ *
+ * These are the questions a good account manager would ask, derived from
+ * what the order actually says rather than from a fixed list. Each one opens
+ * the same form with that question as the subject, so the client writes one
+ * sentence instead of composing a request.
+ *
+ * ── AND THEY CHANGE WHEN THE WORK DOES ────────────────────────────────────
+ * Before anything is built, the useful questions are about whether we have
+ * understood. Once it is being built, "is anything missing" is the wrong
+ * question — it reads as an invitation to redesign work in progress. So the
+ * before-it-starts set is offered only while the order is still in scoping,
+ * which is exactly the window send_order_opened asks the client to use.
+ */
+function promptsFor(order: OrderDetail): { subject: string; hint: string }[] {
+  const scoping = order.status === "scoping";
+  const agreed = order.contract;
+  const exclusions = (agreed ? agreed.exclusions : order.exclusions).trim();
+
+  const prompts: { subject: string; hint: string }[] = [];
+
+  if (scoping) {
+    prompts.push({
+      subject: "Something is missing from this",
+      hint: "What you expected to see here and cannot find.",
+    });
+    prompts.push({
+      subject: "Something here is not quite right",
+      hint: "Which part, and what it should say instead.",
+    });
+  } else {
+    // Mid-build, the honest framing is that circumstances moved — not that
+    // the client is free to reopen what was agreed.
+    prompts.push({
+      subject: "Something has changed on our side",
+      hint: "What changed, and what it means for this work.",
+    });
+  }
+
+  // Asked whenever it is blank, in scoping or not. An unstated boundary
+  // looks like a settled one, and the client is the only person who knows
+  // what they were quietly assuming.
+  if (!exclusions) {
+    prompts.push({
+      subject: "Something I am assuming is included",
+      hint: "Nothing has been written down as out of scope yet, so this is the moment to say it.",
+    });
+  }
+
+  if (!order.target_date && scoping) {
+    prompts.push({
+      subject: "When we need this by",
+      hint: "No date is recorded against this yet.",
+    });
+  }
+
+  // ── THE ONE THAT IS NOT A COMPLAINT ──────────────────────────────────
+  // Every other prompt here assumes something is wrong. Most of what a
+  // client actually wants to send is the opposite: a site they like, a
+  // screenshot, "make it feel like this". There was nowhere to put that, so
+  // it arrived in WhatsApp and was never attached to the order.
+  prompts.push({
+    subject: "An example of what I have in mind",
+    hint: "A link, a site you like, or just a description. It does not have to be a change — it helps us build the right thing.",
+  });
+
+  return prompts;
+}
+
+/**
+ * The prompts, as buttons.
+ *
+ * Above the free-text form rather than instead of it: somebody who already
+ * knows exactly what they want should not have to pick a category first.
+ */
+function Prompts({
+  order,
+  onPick,
+}: {
+  order: OrderDetail;
+  onPick: (subject: string, hint: string) => void;
+}) {
+  return (
+    <div className={styles.prompts}>
+      <p className={styles.promptsLede}>
+        {order.status === "scoping"
+          ? "Nothing has been built yet. This is the cheapest moment to tell us we have it wrong:"
+          : "Anything you want to raise about this work:"}
+      </p>
+      <div className={styles.promptRow}>
+        {promptsFor(order).map((prompt) => (
+          <button
+            key={prompt.subject}
+            type="button"
+            className={styles.prompt}
+            onClick={() => onPick(prompt.subject, prompt.hint)}
+          >
+            {prompt.subject}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function ChangeRequest({
   order,
   onRaised,
@@ -548,6 +662,7 @@ function ChangeRequest({
   const [open, setOpen] = useState(false);
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  const [hint, setHint] = useState("");
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -564,9 +679,27 @@ function ChangeRequest({
 
   if (!open) {
     return (
-      <button type="button" className={styles.changeBtn} onClick={() => setOpen(true)}>
-        Ask for a change to this work
-      </button>
+      <>
+        <Prompts
+          order={order}
+          onPick={(picked, pickedHint) => {
+            setSubject(picked);
+            setHint(pickedHint);
+            setOpen(true);
+          }}
+        />
+        <button
+          type="button"
+          className={styles.changeBtn}
+          onClick={() => {
+            setSubject("");
+            setHint("");
+            setOpen(true);
+          }}
+        >
+          Or write it in your own words
+        </button>
+      </>
     );
   }
 
@@ -622,7 +755,7 @@ function ChangeRequest({
           rows={4}
           value={body}
           onChange={(e) => setBody(e.target.value)}
-          placeholder="What it needs to do, and what is prompting it."
+          placeholder={hint || "What it needs to do, and what is prompting it."}
           required
         />
       </label>

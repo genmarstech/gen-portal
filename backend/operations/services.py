@@ -4517,6 +4517,35 @@ def raise_change_request(
         body=f"{order.organisation.name} — {summary[:120]}",
         url="/changes",
     )
+
+    # ── AND IT IS EMAILED, WHICH IT WAS NOT ────────────────────────────────
+    #
+    # The dashboard row alone meant a client saying "this is wrong, change it
+    # before you build it" reached Genmars only if somebody happened to be
+    # looking at ops — which for the one message whose whole value is
+    # arriving BEFORE work starts is the worst place to leave it.
+    #
+    # To the order's named contact, not to all staff. Charter 05 §I makes
+    # Order.contact the person responsible, so it already answers "whose is
+    # this", and broadcasting is how a team learns to ignore a channel.
+    if order.contact_id and order.contact.email:
+        try:
+            emails.send_change_raised(
+                email=order.contact.email,
+                reference=change.reference,
+                order_reference=order.reference,
+                order_title=order.title,
+                client=order.organisation.name,
+                summary=summary,
+                detail=detail,
+            )
+        except Exception:
+            # The change request is the fact. A dead relay must not lose
+            # what a client asked for, and the dashboard row has landed.
+            log.exception(
+                "could not email %s about %s", order.contact.email, change.reference
+            )
+
     return change
 
 
