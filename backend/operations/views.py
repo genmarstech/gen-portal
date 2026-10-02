@@ -46,6 +46,7 @@ from portal.models import (
     DeliveryGate,
     Doc,
     HostingArrangement,
+    HostingNode,
     Incident,
     Invoice,
     LibraryFile,
@@ -106,6 +107,8 @@ from .serializers import (
     EnquiryDetailSerializer,
     EnquiryListSerializer,
     GateWriteSerializer,
+    HostingNodeSerializer,
+    HostingNodeWriteSerializer,
     HostingSerializer,
     HostingWriteSerializer,
     IncidentSerializer,
@@ -2100,6 +2103,29 @@ class ClientRecordView(StaffView):
                 "hosting_kinds": [
                     {"value": v, "label": l} for v, l in HostingArrangement.Kind.choices
                 ],
+                # The pickers for placement. Sent with the page rather than
+                # fetched when the form opens: both lists are tiny, and a
+                # dropdown that is empty for the first moment it is open is a
+                # dropdown somebody closes again.
+                "hosting_nodes": [
+                    {
+                        "value": n.id,
+                        "label": n.name,
+                        "free_storage_gb": n.sellable_storage_gb - int(n.committed_gb),
+                    }
+                    for n in selectors.hosting_nodes()
+                ],
+                "hosting_plans": [
+                    {
+                        "value": t.id,
+                        "label": t.name,
+                        "price_kes": t.price_kes,
+                        "is_from": t.is_from,
+                    }
+                    for t in ServiceTier.objects.filter(
+                        service__slug="hosting"
+                    ).order_by("position")
+                ],
             }
         )
 
@@ -2163,6 +2189,51 @@ class HostingDetailView(StaffView):
         except services.OperationsError as exc:
             return _refuse(exc)
         return Response(HostingSerializer(arrangement).data)
+
+
+class HostingNodeListView(StaffView):
+    """
+    Our machines, and how much of each is left.
+
+    ── WHY THIS IS A SCREEN AND NOT A FIELD ON THE PRICE LIST ──────────────
+    genmars.co.ke publishes storage bounded per tier. Whether we can honour
+    the next one sold is a question about a physical disk, and the only place
+    it can be answered is here. Selling is refused in services, which is the
+    enforcement; this is so somebody can see it coming rather than meet it.
+    """
+
+    def get(self, request):
+        nodes = selectors.hosting_nodes(
+            include_retired=request.query_params.get("retired") == "1"
+        )
+        return Response({"nodes": HostingNodeSerializer(nodes, many=True).data})
+
+    def post(self, request):
+        form = HostingNodeWriteSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        try:
+            node = services.record_hosting_node(
+                actor=request.user, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(
+            HostingNodeSerializer(node).data, status=http.HTTP_201_CREATED
+        )
+
+
+class HostingNodeDetailView(StaffView):
+    def patch(self, request, pk: int):
+        node = get_object_or_404(HostingNode, pk=pk)
+        form = HostingNodeWriteSerializer(data=request.data, partial=True)
+        form.is_valid(raise_exception=True)
+        try:
+            node = services.update_hosting_node(
+                node=node, actor=request.user, values=form.validated_data
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+        return Response(HostingNodeSerializer(node).data)
 
 
 class ContactLogView(StaffView):

@@ -1551,6 +1551,12 @@ class ActivityLog(models.Model):
         HOSTING_RECORDED = "hosting.recorded", "Hosting arrangement recorded"
         HOSTING_CHANGED = "hosting.changed", "Hosting arrangement changed"
         HOSTING_RETIRED = "hosting.retired", "Hosting arrangement retired"
+        # Separate from the three above because a node is OURS, not a client's.
+        # Raising a node's reserved storage can put several clients over
+        # capacity at once without touching any of their rows, and the only
+        # trace of that would be here.
+        NODE_RECORDED = "node.recorded", "Hosting node recorded"
+        NODE_CHANGED = "node.changed", "Hosting node changed"
 
         # A change request moving through its states. Four actions rather than
         # one, because "raised" and "classified" are the two that settle a
@@ -3417,6 +3423,148 @@ class ClientProfile(models.Model):
         return f"Profile for {self.organisation.name}"
 
 
+class HostingNode(models.Model):
+    """
+    A server Genmars runs other people's work on.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS EXISTS BECAUSE THE BOX IS FINITE AND THE PRICE LIST IS NOT.
+
+    genmars.co.ke publishes managed hosting with storage bounded per tier —
+    5 GB on Site, 20 GB on Application. The reason those numbers are on the
+    page at all is the managed-services exclusion that has been there since
+    the catalogue was written: "an unlimited resource commitment inside a
+    fixed monthly fee is a promise that gets quietly broken."
+
+    A bound published and not counted is exactly that promise. Nothing stops
+    four Application plans being sold onto a host with 20 GB left, and the way
+    that is discovered is a client's database refusing to write at month end.
+
+    So the bound is counted here. A node knows how big it is; an arrangement
+    says how much of one it holds; and `operations.services` refuses to commit
+    more than is left unless somebody writes down why.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── `reserved_storage_gb` IS THE FIELD THAT MAKES THE SUM HONEST ───────────
+
+    Genmars' own applications are on these machines too — the portal, the ops
+    dashboard, the website, the Business Platform, their databases and their
+    images. On the shared host they are the majority of what is used.
+
+    Capacity measured as "total minus what clients hold" would therefore count
+    our own footprint as free and sell it twice. What is sellable is the total
+    LESS our own reservation, and that reservation is maintained by a person
+    looking at the machine rather than inferred, because an inferred figure
+    drifts silently and this one decides whether a sale is refused.
+
+    ── IT IS DELIBERATELY NOT A MONITORING AGENT ─────────────────────────────
+
+    These numbers are what we have COMMITTED, not what is currently on disk.
+    They are different questions and conflating them breaks the useful one: a
+    client paying for 20 GB who is using 3 GB still holds 20 GB, because they
+    may fill it tomorrow and we have already sold them the right to.
+
+    Live utilisation belongs to `System` and its heartbeat. This is the
+    ledger.
+    """
+
+    name = models.CharField(
+        max_length=80,
+        unique=True,
+        help_text="What we call it among ourselves. 'hetzner-shared-1'.",
+    )
+    # Not a URL and not validated as a hostname: a node is sometimes reached
+    # only by IP, and sometimes only through an ssh alias that resolves
+    # nowhere public.
+    address = models.CharField(
+        max_length=200,
+        blank=True,
+        help_text="How it is reached. A hostname, an IP, or the ssh alias.",
+    )
+    provider = models.CharField(
+        max_length=120, blank=True, help_text="Hetzner, DigitalOcean, our own rack."
+    )
+    location = models.CharField(
+        max_length=120,
+        blank=True,
+        help_text=(
+            "Where the machine physically is. A client asking where their data "
+            "sits is asking a data-protection question, not a trivia question."
+        ),
+    )
+
+    vcpus = models.PositiveIntegerField(null=True, blank=True)
+    memory_mb = models.PositiveIntegerField(null=True, blank=True)
+    storage_gb = models.PositiveIntegerField(
+        help_text="Total disk on the machine, as the provider sells it."
+    )
+    reserved_storage_gb = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "How much of it Genmars' own systems and headroom take. Not "
+            "sellable. See this model's docstring — leaving it at zero sells "
+            "our own disk to a client."
+        ),
+    )
+
+    # What the machine costs us, so an arrangement that charges less than its
+    # share can be seen. The pair matters, as it does on HostingArrangement.
+    monthly_cost_kes = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            "A retired node keeps its arrangements, because the record of "
+            "where a client's data used to sit is the thing worth keeping."
+        ),
+    )
+    notes = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+    @property
+    def sellable_storage_gb(self) -> int:
+        """
+        Total less our own reservation.
+
+        Clamped at zero rather than going negative: a node whose reservation
+        has been set above its disk is a data-entry error, and a negative
+        capacity would make every subsequent comparison read backwards.
+        """
+        return max(self.storage_gb - self.reserved_storage_gb, 0)
+
+    def committed_storage_gb(self) -> int:
+        """
+        What live arrangements on this node hold.
+
+        A method and not a property, because it runs a query — on a list of
+        nodes call `operations.selectors.hosting_nodes()`, which annotates the
+        same figure in one pass.
+        """
+        total = self.arrangements.filter(retired_at__isnull=True).aggregate(
+            total=models.Sum("allocated_storage_gb")
+        )["total"]
+        return int(total or 0)
+
+    def free_storage_gb(self) -> int:
+        """
+        What is left to sell. Negative when the node is oversubscribed, and
+        deliberately NOT clamped: oversubscribed is a real state somebody has
+        to see, and showing it as zero hides exactly the condition this model
+        was added to make visible.
+        """
+        return self.sellable_storage_gb - self.committed_storage_gb()
+
+
 class HostingArrangement(models.Model):
     """
     Something we run, hold or renew on a client's behalf.
@@ -3477,6 +3625,49 @@ class HostingArrangement(models.Model):
     identifier = models.CharField(
         max_length=200,
         help_text="The domain, the plan, the mailbox. 'clipsserenityspa.co.ke'.",
+    )
+
+    # ── WHERE IT ACTUALLY RUNS, AND HOW MUCH OF IT WE HAVE SOLD ─────────────
+    #
+    # Nullable, and that is the common case rather than an omission. A domain
+    # we renew for a client whose site somebody else built runs on nothing of
+    # ours; so does a mailbox at Zoho. Only work on our own machines has a
+    # node, and only work on our own machines consumes capacity.
+    node = models.ForeignKey(
+        "HostingNode",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="arrangements",
+        help_text="The Genmars machine this runs on, where it runs on one.",
+    )
+    allocated_storage_gb = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Storage committed to this client, from their tier. What they "
+            "HOLD, not what they are using — see HostingNode."
+        ),
+    )
+
+    # ── WHICH PUBLISHED PLAN THIS IS, IF IT IS ONE ──────────────────────────
+    #
+    # Hosting was sold for a year before it was a published offer, so plenty
+    # of arrangements pre-date the price list and some will always be bespoke.
+    # Nullable for both reasons.
+    #
+    # Where it IS set, `annual_charge_kes` can be read against the tier it was
+    # sold on, and a client quietly on a figure the price list no longer
+    # carries becomes visible instead of becoming a surprise at renewal. That
+    # is the same failure ServiceTier.published_price_kes exists to prevent,
+    # one step further down.
+    plan = models.ForeignKey(
+        "ServiceTier",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="hosting_arrangements",
+        help_text="The published tier this was sold on, where it was sold on one.",
     )
     provider = models.CharField(
         max_length=120, blank=True, help_text="Registrar or host. Truehost, Hetzner, Zoho."
@@ -3539,6 +3730,26 @@ class HostingArrangement(models.Model):
         if self.renews_on is None or not self.is_live:
             return None
         return (self.renews_on - (today or timezone.localdate())).days
+
+    @property
+    def charge_matches_plan(self) -> bool | None:
+        """
+        Is this client paying what their plan currently lists?
+
+        None where there is nothing to compare — no plan, no charge, or a tier
+        quoted individually rather than listed. None is NOT "fine": it means
+        unanswerable, and a screen that renders it as a tick would be
+        asserting something nobody checked.
+        """
+        if self.plan is None or self.annual_charge_kes is None:
+            return None
+        if self.plan.price_kes is None:
+            return None
+        # A "from" tier is a floor, not a price. At or above it is correct;
+        # below it is somebody discounting past the published entry point.
+        if self.plan.is_from:
+            return self.annual_charge_kes >= self.plan.price_kes
+        return self.annual_charge_kes == self.plan.price_kes
 
 
 class ContactLogEntry(models.Model):

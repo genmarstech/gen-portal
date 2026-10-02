@@ -16,7 +16,7 @@ from decimal import Decimal
 from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, models, transaction
-from django.db.models import F
+from django.db.models import F, Sum
 from django.utils import timezone
 
 from accounts import emails, identity
@@ -32,6 +32,7 @@ from portal.models import (
     Decision,
     DeliveryGate,
     HostingArrangement,
+    HostingNode,
     ActivityLog,
     Enquiry,
     Incident,
@@ -3455,7 +3456,66 @@ HOSTING_FIELDS = (
     "annual_charge_kes",
     "notes",
     "system",
+    "node",
+    "allocated_storage_gb",
+    "plan",
 )
+
+
+def _check_capacity(
+    *,
+    node: HostingNode | None,
+    wanted: int | None,
+    excluding: HostingArrangement | None = None,
+    despite_full: str = "",
+) -> None:
+    """
+    Refuse to commit more of a machine than it has.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE OVERRIDE IS NOT A WEAKNESS IN THE GUARD. IT IS WHY THE GUARD HOLDS.
+
+    An absolute bar would be unenforceable within a week. A node genuinely
+    does get oversubscribed — a client is migrated onto it the day before the
+    bigger box arrives, or the reservation was raised after the sales were
+    made — and operations still has to be able to WRITE DOWN what is true.
+    Refusing that does not prevent the oversubscription; it prevents the
+    record of it, and leaves somebody editing the row in the database with no
+    trace at all.
+
+    So: it costs a sentence, and the sentence goes in the activity log. The
+    state is reachable, visible, and attributable, which is the most a guard
+    over a physical constraint can honestly offer.
+    ══════════════════════════════════════════════════════════════════════════
+
+    No node or no allocation means nothing to check — a domain renewal
+    consumes no disk, and an arrangement on somebody else's infrastructure
+    consumes none of ours.
+    """
+    if node is None or not wanted:
+        return
+
+    held = node.arrangements.filter(retired_at__isnull=True)
+    if excluding is not None and excluding.pk:
+        held = held.exclude(pk=excluding.pk)
+    committed = int(
+        held.aggregate(total=Sum("allocated_storage_gb"))["total"] or 0
+    )
+    free = node.sellable_storage_gb - committed
+    if wanted <= free:
+        return
+
+    if despite_full.strip():
+        return
+
+    raise OperationsError(
+        f"{node.name} has {free} GB left to sell and this needs {wanted} GB. "
+        f"Of its {node.storage_gb} GB, {node.reserved_storage_gb} GB is "
+        f"reserved for our own systems and {committed} GB is already "
+        f"committed to clients. Move it to another node, sell a smaller tier, "
+        f"or say why we are going ahead anyway.",
+        field="despite_full",
+    )
 
 
 @transaction.atomic
@@ -3469,6 +3529,23 @@ def record_hosting(
             "What is it? The domain, the plan, the mailbox.", field="identifier"
         )
 
+    node = values.get("node")
+    allocated = values.get("allocated_storage_gb")
+    plan = values.get("plan")
+    _check_capacity(
+        node=node,
+        wanted=allocated,
+        despite_full=str(values.get("despite_full", "") or ""),
+    )
+
+    # The published price, where a plan was named and no figure was typed.
+    # Defaulted rather than required, because the alternative is operations
+    # re-keying a number that is already on the tier — and a re-keyed price is
+    # the one that ends up differing from the one the client was quoted.
+    charge = values.get("annual_charge_kes")
+    if charge is None and plan is not None and not plan.is_from:
+        charge = plan.price_kes
+
     arrangement = HostingArrangement.objects.create(
         organisation=organisation,
         kind=values.get("kind") or HostingArrangement.Kind.OTHER,
@@ -3479,10 +3556,28 @@ def record_hosting(
         renews_on=values.get("renews_on"),
         auto_renew=bool(values.get("auto_renew", False)),
         annual_cost_kes=values.get("annual_cost_kes"),
-        annual_charge_kes=values.get("annual_charge_kes"),
+        annual_charge_kes=charge,
         notes=str(values.get("notes", "") or "").strip(),
         system=values.get("system"),
+        node=node,
+        allocated_storage_gb=allocated,
+        plan=plan,
     )
+
+    # Only what is actually true goes in the detail. Keys present with empty
+    # values read, later, as a question that was asked and answered "no" —
+    # here nothing was asked at all.
+    placement: dict = {}
+    if node is not None:
+        placement["node"] = node.name
+    if allocated:
+        placement["allocated_storage_gb"] = allocated
+    if plan is not None:
+        placement["plan"] = f"{plan.service.slug}/{plan.slug}"
+    # Recorded rather than only refused, so an oversubscribed node can be
+    # traced to the decision that made it one.
+    if str(values.get("despite_full", "") or "").strip():
+        placement["despite_full"] = str(values["despite_full"]).strip()[:300]
 
     record(
         actor=actor,
@@ -3492,9 +3587,11 @@ def record_hosting(
         summary=(
             f"{arrangement.get_kind_display()} recorded for {organisation.name}: "
             f"{identifier}"
+            + (f" on {node.name}" if node else "")
             + (f", renews {arrangement.renews_on}" if arrangement.renews_on else "")
         ),
         account_holder=arrangement.account_holder,
+        **placement,
     )
     return arrangement
 
@@ -3503,6 +3600,20 @@ def record_hosting(
 def update_hosting(
     *, arrangement: HostingArrangement, actor: User, values: dict
 ) -> HostingArrangement:
+    # Checked against the arrangement as it WOULD be, not as it is, and with
+    # its own current allocation excluded from the committed total. Counting
+    # itself would make growing 5 GB to 10 GB need 15 GB free, so the obvious
+    # upgrade would be refused on a node with room for it.
+    if "node" in values or "allocated_storage_gb" in values:
+        _check_capacity(
+            node=values.get("node", arrangement.node),
+            wanted=values.get(
+                "allocated_storage_gb", arrangement.allocated_storage_gb
+            ),
+            excluding=arrangement,
+            despite_full=str(values.get("despite_full", "") or ""),
+        )
+
     changed = []
     for field in HOSTING_FIELDS:
         if field not in values:
@@ -3553,6 +3664,108 @@ def retire_hosting(
         + (f": {reason.strip()}" if reason.strip() else ""),
     )
     return arrangement
+
+
+NODE_FIELDS = (
+    "name",
+    "address",
+    "provider",
+    "location",
+    "vcpus",
+    "memory_mb",
+    "storage_gb",
+    "reserved_storage_gb",
+    "monthly_cost_kes",
+    "is_active",
+    "notes",
+)
+
+
+@transaction.atomic
+def record_hosting_node(*, actor: User, values: dict) -> HostingNode:
+    """Write down a machine we run other people's work on."""
+    name = str(values.get("name", "") or "").strip()
+    if not name:
+        raise OperationsError("Give it a name you would use out loud.", field="name")
+    if HostingNode.objects.filter(name__iexact=name).exists():
+        raise OperationsError(f"There is already a node called {name}.", field="name")
+
+    node = HostingNode.objects.create(
+        name=name[:80],
+        address=str(values.get("address", "") or "").strip()[:200],
+        provider=str(values.get("provider", "") or "").strip()[:120],
+        location=str(values.get("location", "") or "").strip()[:120],
+        vcpus=values.get("vcpus"),
+        memory_mb=values.get("memory_mb"),
+        storage_gb=values["storage_gb"],
+        reserved_storage_gb=values.get("reserved_storage_gb") or 0,
+        monthly_cost_kes=values.get("monthly_cost_kes"),
+        notes=str(values.get("notes", "") or "").strip(),
+    )
+    record(
+        actor=actor,
+        action=ActivityLog.Action.NODE_RECORDED,
+        subject=node.name,
+        summary=(
+            f"{node.name} recorded: {node.storage_gb} GB, "
+            f"{node.reserved_storage_gb} GB reserved, "
+            f"{node.sellable_storage_gb} GB sellable"
+        ),
+    )
+    return node
+
+
+@transaction.atomic
+def update_hosting_node(*, node: HostingNode, actor: User, values: dict) -> HostingNode:
+    """
+    Change a machine's facts.
+
+    ── RESIZING DOWNWARD IS NOT REFUSED, AND IS SAID OUT LOUD ────────────────
+
+    Cutting `storage_gb`, or raising `reserved_storage_gb`, can put a node
+    past what is already committed on it without any client's row changing.
+    Refusing that would be wrong — the disk is whatever the disk is, and a
+    reservation somebody has just measured is a fact, not a proposal.
+
+    What must not happen is it passing unnoticed. The log line says so
+    explicitly, because the alternative is finding out at the next sale, and
+    by then several clients are already affected.
+    """
+    changed = []
+    for field in NODE_FIELDS:
+        if field not in values:
+            continue
+        new = values[field]
+        if isinstance(new, str):
+            new = new.strip()
+        if field == "name":
+            if not new:
+                raise OperationsError("A node needs a name.", field="name")
+            clash = HostingNode.objects.filter(name__iexact=new).exclude(pk=node.pk)
+            if clash.exists():
+                raise OperationsError(
+                    f"There is already a node called {new}.", field="name"
+                )
+        if new != getattr(node, field):
+            setattr(node, field, new)
+            changed.append(field)
+
+    if not changed:
+        return node
+
+    node.save(update_fields=[*changed, "updated_at"])
+
+    over = node.free_storage_gb()
+    record(
+        actor=actor,
+        action=ActivityLog.Action.NODE_CHANGED,
+        subject=node.name,
+        summary=f"{node.name} updated: {', '.join(changed)}"
+        + (f" — now OVERSUBSCRIBED by {-over} GB" if over < 0 else ""),
+        fields=changed,
+        oversubscribed_gb=-over if over < 0 else 0,
+    )
+    return node
 
 
 @transaction.atomic

@@ -243,6 +243,55 @@ CATALOGUE = [
             "Attendance and certification record where included"
         ),
     },
+    {
+        "name": "Managed hosting",
+        "slug": "hosting",
+        "summary": "We run the client's site or application on Genmars infrastructure.",
+        "default_scope": (
+            "Deployment onto Genmars infrastructure, with the resources named "
+            "in the signed scope.\n"
+            "TLS certificate issued and renewed automatically.\n"
+            "Daily backups at the agreed retention, held off the serving host.\n"
+            "A restore test at the agreed interval — a backup nobody has "
+            "restored is a hope, not a backup.\n"
+            "Security and platform patching of the operating system, the web "
+            "server and the runtime we provide.\n"
+            "Monitoring with alerting where the tier includes it.\n"
+            "Support during the hours stated in the agreement.\n"
+            "On termination, a full copy of the data and a stated window in "
+            "which we keep serving while it moves."
+        ),
+        "default_exclusions": (
+            "Resources beyond those named in the signed scope. Storage, memory "
+            "and CPU are bounded per tier and the bound is the number in the "
+            "agreement, not a guideline. Exceeding it is a tier change, "
+            "discussed before it is billed.\n"
+            "Domain registration and renewal. That is a separate arrangement "
+            "with its own renewal date, recorded and charged separately — "
+            "bundling it hides the one date that actually loses a client "
+            "their address.\n"
+            "Any uptime percentage. We do not publish one because we do not "
+            "yet measure one, and a figure in a contract we cannot evidence is "
+            "worse than no figure — Charter 04 §IV.\n"
+            "Application defects, features and changes. This keeps the "
+            "infrastructure running; the software on it is managed services or "
+            "custom development.\n"
+            "Third-party outages upstream of us — the provider, the registrar, "
+            "the certificate authority — beyond reporting and chasing them.\n"
+            "Email hosting, unless recorded as its own arrangement.\n"
+            "Data the client is not lawfully entitled to hold. We are the "
+            "processor, not the controller, and the DPA governs it."
+        ),
+        "default_deliverables": (
+            "The site or application live on a named host\n"
+            "TLS, issued and renewing\n"
+            "Backup schedule with stated retention and tested restores\n"
+            "Monitoring and alerting where the tier includes it\n"
+            "Patching log\n"
+            "Named contact and escalation path\n"
+            "Written statement of who holds the domain and the hosting account"
+        ),
+    },
 ]
 
 
@@ -270,7 +319,11 @@ UNITS = {
     "securecare": "per month",
     "advisory": "starting",
     "complianceready": "starting",
-    "training": "per session"
+    "training": "per session",
+    # Annual, alone among the recurring services. The thing being billed
+    # renews on a date — see the note beside `unit` in company.ts, and
+    # HostingArrangement.renews_on, which this price is written into.
+    "hosting": "per year",
 }
 
 TIERS = {
@@ -474,6 +527,35 @@ TIERS = {
             "is_from": True,
             "lead": "Built around your own configuration.",
             "includes": "Custom session count\nCustom duration\n25+ participants\nTraining materials\nRecorded sessions\nAdmin training\nCertification\nCustom curriculum",
+            "position": 3,
+        },
+    ],
+    "hosting": [
+        {
+            "slug": "site",
+            "name": "Site",
+            "price_kes": "15000",
+            "is_from": False,
+            "lead": "A brochure or marketing site, looked after.",
+            "includes": "One site, one domain and www\n5 GB storage\nTLS certificate, renewed automatically\nDaily backups, 14-day retention\nSecurity and platform patching\nBusiness-hours support",
+            "position": 1,
+        },
+        {
+            "slug": "application",
+            "name": "Application",
+            "price_kes": "48000",
+            "is_from": False,
+            "lead": "Something with a database behind it, and a staging copy to try things on.",
+            "includes": "One application and one database\n20 GB storage\nStaging environment\nTLS certificate, renewed automatically\nDaily backups, 30-day retention\nA tested restore every quarter\nMonitoring with alerting\nSecurity and platform patching\nBusiness-hours support",
+            "position": 2,
+        },
+        {
+            "slug": "dedicated",
+            "name": "Dedicated",
+            "price_kes": "150000",
+            "is_from": True,
+            "lead": "A server of your own, sized to what you actually run.",
+            "includes": "A dedicated server, not a share of ours\nResources agreed in writing\nMultiple applications and environments\nTLS certificates, renewed automatically\nBackup schedule and retention to suit\nA tested restore at an agreed interval\nMonitoring with alerting\nSecurity and platform patching\nNamed contact and escalation path",
             "position": 3,
         },
     ],
