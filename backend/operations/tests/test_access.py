@@ -79,6 +79,7 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-orders"),
         reverse("ops-order", args=[reference]),
         reverse("ops-order-notes", args=[reference]),
+        reverse("ops-order-start", args=[reference]),
         reverse("ops-note-publish", args=[reference, 1]),
         reverse("ops-order-milestones", args=[reference]),
         reverse("ops-milestone", args=[reference, 1]),
@@ -207,7 +208,8 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
     named = {p.name for p in ops_urls.urlpatterns}
     covered = {
         "ops-overview", "ops-search", "ops-reports", "ops-staff", "ops-enquiries", "ops-enquiry", "ops-convert",
-        "ops-orders", "ops-order", "ops-order-notes", "ops-note-publish",
+        "ops-orders", "ops-order", "ops-order-notes", "ops-order-start",
+        "ops-note-publish",
         "ops-order-milestones", "ops-milestone",
         "ops-delivery", "ops-delivery-backfill", "ops-gate", "ops-blockers",
         "ops-blocker",

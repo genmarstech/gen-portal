@@ -43,6 +43,7 @@ from portal.models import (
     Notification,
     Offer,
     Order,
+    OrderSeen,
     PaymentRecord,
     ProgressNote,
     Service,
@@ -4052,6 +4053,129 @@ def _tell_client_later(order: Order) -> None:
     is in.
     """
     transaction.on_commit(lambda: notify_order_opened(order))
+
+
+@transaction.atomic
+def start_order(
+    *, order: Order, actor: User, despite_unseen: str = ""
+) -> Order:
+    """
+    Work begins. SCOPING → ACTIVE.
+
+    ══════════════════════════════════════════════════════════════════════════
+    NOTHING COULD DO THIS BEFORE, AND THAT WAS NOT A DESIGN.
+
+    `Order.Status` has had ACTIVE, REVIEW and CLOSED since it was written and
+    nothing in the application ever assigned any of them. An order was created
+    SCOPING and stayed SCOPING for ever — so "in progress" was a label on a
+    dropdown, the delivery board showed every live engagement in the same
+    column, and a client reading their own order page was told work had not
+    started on something that shipped in March.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── A SIGNED STATEMENT OF WORK COMES FIRST. CHARTER 02 §I. ────────────────
+
+    `issue_invoice` already refuses without one — "the agreement comes before
+    the work, and before the bill". Refusing to BILL without a contract while
+    allowing the work itself is the weaker half of that sentence enforced and
+    the stronger half left to somebody's memory.
+
+    ── AND THE CLIENT HAS TO HAVE READ IT ────────────────────────────────────
+
+    The order email asks them to check the scope and say if it is wrong. The
+    order page now asks them the questions. Both are worth nothing if work
+    starts before anybody looked — the client's chance to object is the whole
+    point of the gap between opening an order and starting it, and starting
+    while they are still unaware closes the gap without using it.
+
+    So: not until somebody at the client has opened the order.
+
+    ⚠ IT IS NOT AN ABSOLUTE BAR, BECAUSE THAT WOULD BE WORSE. A client who
+    agreed everything on the telephone and will never sign in would otherwise
+    block their own work indefinitely, and the pressure to get round that
+    produces a status set directly in the database with no record at all.
+    `despite_unseen` takes a reason, requires one, and puts it in the activity
+    log — so the override exists, costs a sentence, and is auditable.
+    """
+    if order.status != Order.Status.SCOPING:
+        raise OperationsError(
+            f"{order.reference} is already {order.get_status_display().lower()}."
+        )
+
+    if not order.contracts.filter(status=Contract.Status.SIGNED).exists():
+        raise OperationsError(
+            "There is no signed statement of work on this order. Charter 02 §I — "
+            "the agreement comes before the work.",
+        )
+
+    seen = OrderSeen.objects.filter(order=order).exists()
+    if not seen and not despite_unseen.strip():
+        raise OperationsError(
+            f"Nobody at {order.organisation.name} has opened this order yet, so "
+            "they have not had the chance to tell us it is wrong. Start it "
+            "anyway only with a reason — a telephone call, a meeting — and it "
+            "will be recorded.",
+            field="despite_unseen",
+        )
+
+    order.status = Order.Status.ACTIVE
+    # Only if it is not already set: work recorded retrospectively carries its
+    # real start date, and overwriting it with today would rewrite history to
+    # the date somebody got round to pressing the button.
+    if order.started_on is None:
+        order.started_on = timezone.localdate()
+    order.save(update_fields=["status", "started_on"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.ORDER_STARTED,
+        subject=order.reference,
+        organisation=order.organisation,
+        order=order.reference,
+        summary=(
+            f"{order.reference} started"
+            + (f" — client had not opened it: {despite_unseen.strip()}"
+               if not seen else "")
+        ),
+        direct=True,
+    )
+
+    _notify(
+        users=_client_recipients(order.organisation),
+        audience=Notification.Audience.CLIENT,
+        kind=Notification.Kind.ORDER_STARTED,
+        title=f"{order.reference} — work has started",
+        body=order.title,
+        url=f"/dashboard/{order.reference}",
+    )
+
+    transaction.on_commit(lambda: _tell_client_started(order))
+    return order
+
+
+def _tell_client_started(order: Order) -> None:
+    """
+    The one email in this flow that MAY say work has started, because it has.
+
+    `send_order_opened` goes to some lengths not to say it — an order opens in
+    SCOPING, often minutes after a phone call, and claiming otherwise would
+    commit the company by notification instead of by contract. This is the
+    other side of that line: a signed contract exists, the client has had
+    their chance to object, and the sentence is now simply true.
+    """
+    for membership in _mailable(order.organisation):
+        try:
+            emails.send_order_started(
+                email=membership.user.email,
+                reference=order.reference,
+                title=order.title,
+                contact=order.contact.full_name or order.contact.email,
+            )
+        except Exception:
+            log.exception(
+                "could not tell %s that %s started",
+                membership.user.email, order.reference,
+            )
 
 
 def notify_order_opened(order: Order) -> None:

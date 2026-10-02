@@ -840,3 +840,53 @@ def send_change_raised(
             "detail": detail,
         },
     )
+
+
+def send_order_started(
+    *, email: str, reference: str, title: str, contact: str
+) -> None:
+    """
+    Work has begun — and this is the one message in the sequence allowed to
+    say so.
+
+    ══════════════════════════════════════════════════════════════════════════
+    `send_order_opened` GOES TO SOME LENGTHS NOT TO SAY THIS.
+
+    An order opens in SCOPING, often minutes after a phone call, and claiming
+    work had started there would commit the company by notification instead of
+    by contract — Charter 02 §I.
+
+    This is the other side of that line. By the time it is sent a statement of
+    work has been signed and the client has had their chance to say the scope
+    is wrong. The sentence is now simply true, and saying it plainly is what
+    closes the loop the first email opened.
+    ══════════════════════════════════════════════════════════════════════════
+
+    It is short on purpose. Everything a client needs to read is already on
+    the order page and was already emailed when the order opened; repeating
+    the scope here would train them to skim the one that matters.
+    """
+    _send(
+        to=email,
+        subject=f"{reference} — we have started",
+        text=(
+            f"{title}\n"
+            f"{reference}\n\n"
+            "Work on this has started, against the statement of work you "
+            "signed.\n\n"
+            "If something needs to change from here, tell us as early as you "
+            "can — it is cheaper to change a thing before it is built than "
+            "after, and the order page has a place to say so.\n\n"
+            f"Your contact at Genmars is {contact}.\n\n"
+            f"https://app.genmars.co.ke/dashboard/{reference}\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/order_started.html",
+        context={
+            "heading": title,
+            "preheader": "Work on this has started.",
+            "reference": reference,
+            "contact": contact,
+        },
+    )

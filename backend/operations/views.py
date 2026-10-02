@@ -3828,3 +3828,37 @@ class MediaPreviewView(StaffView):
             as_attachment=False,
             cache_control="private, max-age=300",
         )
+
+
+class OrderStartView(StaffView):
+    """
+    Begin work on an order. SCOPING → ACTIVE.
+
+    ── THERE WAS NO WAY TO DO THIS AT ALL ─────────────────────────────────
+    `Order.Status` has had ACTIVE since it was written and nothing ever
+    assigned it. Every live engagement sat in SCOPING for ever, the delivery
+    board showed them all in one column, and a client reading their own order
+    page was told work had not started on something that shipped in March.
+
+    The two guards are in `services.start_order` rather than here, because
+    they are rules about the company's own commitments and not about this
+    endpoint: Charter 02 §I's signed statement of work, and the client having
+    had the chance to say the scope is wrong.
+    """
+
+    def post(self, request, reference: str):
+        order = get_object_or_404(Order, reference=reference)
+        try:
+            services.start_order(
+                order=order,
+                actor=request.user,
+                # A sentence explaining why work is starting over a client who
+                # has not opened the order. Absent and unseen, the service
+                # refuses — see its docstring on why that is not an absolute
+                # bar.
+                despite_unseen=str(request.data.get("despite_unseen", "")),
+            )
+        except services.OperationsError as exc:
+            return _refuse(exc)
+
+        return Response(OrderDetailSerializer(selectors.order(order.reference)).data)

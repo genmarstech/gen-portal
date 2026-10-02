@@ -200,6 +200,11 @@ urlpatterns = [
     path("ops/orders", views.OrderListView.as_view(), name="ops-orders"),
     path("ops/orders/<str:reference>", views.OrderDetailView.as_view(), name="ops-order"),
     path("ops/orders/<str:reference>/notes", views.OrderNoteView.as_view(), name="ops-order-notes"),
+    path(
+        "ops/orders/<str:reference>/start",
+        views.OrderStartView.as_view(),
+        name="ops-order-start",
+    ),
     path("ops/orders/<str:reference>/notes/<int:pk>/publish", views.NotePublishView.as_view(), name="ops-note-publish"),
     path("ops/orders/<str:reference>/milestones", views.OrderMilestoneView.as_view(), name="ops-order-milestones"),
     path("ops/orders/<str:reference>/milestones/<int:pk>", views.MilestoneDetailView.as_view(), name="ops-milestone"),
