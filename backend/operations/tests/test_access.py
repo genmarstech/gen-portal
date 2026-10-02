@@ -98,6 +98,11 @@ def operations_urls(enquiry: Enquiry, reference: str = "GM-2026-0001") -> list[s
         reverse("ops-client-hosting", args=[1]),
         reverse("ops-client-contact", args=[1]),
         reverse("ops-hosting", args=[1]),
+        # Our own machines. Not under /ops/clients/ because a node is not a
+        # client's — but just as staff-only, and a client knowing which box
+        # another client sits on is the same leak in a different costume.
+        reverse("ops-hosting-nodes"),
+        reverse("ops-hosting-node", args=[1]),
         reverse("ops-follow-ups"),
         reverse("ops-conversations"),
         reverse("ops-requests"),
@@ -213,6 +218,7 @@ def test_every_operations_route_is_covered_by_the_test_above(enquiry):
         "ops-blocker",
         "ops-organisations", "ops-org-members", "ops-membership",
         "ops-client", "ops-client-admin", "ops-client-hosting", "ops-client-contact", "ops-hosting",
+        "ops-hosting-nodes", "ops-hosting-node",
         "ops-follow-ups", "ops-requests", "ops-request", "ops-conversations",
         "ops-contact-attachments", "ops-attachment", "ops-client-orders",
         "ops-services", "ops-service", "ops-contracts", "ops-contract-sign",

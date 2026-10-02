@@ -26,6 +26,7 @@ from portal.models import (
     Doc,
     Enquiry,
     HostingArrangement,
+    HostingNode,
     Incident,
     Invoice,
     LibraryFile,
@@ -1304,6 +1305,11 @@ class HostingSerializer(serializers.ModelSerializer):
     system_slug = serializers.CharField(source="system.slug", read_only=True, default=None)
     days_until_renewal = serializers.SerializerMethodField()
     is_live = serializers.BooleanField(read_only=True)
+    node_name = serializers.CharField(source="node.name", read_only=True, default=None)
+    plan_name = serializers.CharField(source="plan.name", read_only=True, default=None)
+    # Tri-state, and the UI must keep it that way: true, false, or null for
+    # "there is nothing to compare". See HostingArrangement.charge_matches_plan.
+    charge_matches_plan = serializers.BooleanField(read_only=True, allow_null=True)
 
     class Meta:
         model = HostingArrangement
@@ -1324,6 +1330,12 @@ class HostingSerializer(serializers.ModelSerializer):
             "system_slug",
             "is_live",
             "retired_at",
+            "node",
+            "node_name",
+            "allocated_storage_gb",
+            "plan",
+            "plan_name",
+            "charge_matches_plan",
         ]
 
     def get_days_until_renewal(self, arrangement: HostingArrangement) -> int | None:
@@ -1345,6 +1357,102 @@ class HostingWriteSerializer(serializers.Serializer):
     annual_charge_kes = serializers.DecimalField(
         max_digits=10, decimal_places=2, required=False, allow_null=True
     )
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    node = serializers.PrimaryKeyRelatedField(
+        queryset=HostingNode.objects.filter(is_active=True),
+        required=False,
+        allow_null=True,
+    )
+    allocated_storage_gb = serializers.IntegerField(
+        required=False, allow_null=True, min_value=0
+    )
+    # ── SCOPED TO THE HOSTING SERVICE, UNLIKE MOST QUERYSETS HERE ───────────
+    #
+    # Elsewhere an unscoped queryset plus a check in the service is preferred,
+    # because "that is not a valid choice" hides the real reason. Here the
+    # reason IS the choice: the field is a plan picker, every option in it
+    # comes from this same queryset, and the only way to send an id outside it
+    # is to construct the request by hand. Nothing is being explained away.
+    plan = serializers.PrimaryKeyRelatedField(
+        queryset=ServiceTier.objects.filter(service__slug="hosting"),
+        required=False,
+        allow_null=True,
+    )
+    # Required by services._check_capacity before a node may be oversold, and
+    # written to the activity log. Not a boolean: a tick box would be ticked.
+    despite_full = serializers.CharField(
+        required=False, allow_blank=True, max_length=300
+    )
+
+
+class HostingNodeSerializer(serializers.ModelSerializer):
+    """
+    A machine, and how much of it is left.
+
+    The three storage figures are returned together on purpose. "20 GB free"
+    on its own invites the next question every time, and a screen that makes
+    somebody open a second one to find out whether that is a lot is a screen
+    that gets ignored.
+    """
+
+    sellable_storage_gb = serializers.IntegerField(read_only=True)
+    committed_storage_gb = serializers.SerializerMethodField()
+    free_storage_gb = serializers.SerializerMethodField()
+    live_arrangements = serializers.SerializerMethodField()
+
+    class Meta:
+        model = HostingNode
+        fields = [
+            "id",
+            "name",
+            "address",
+            "provider",
+            "location",
+            "vcpus",
+            "memory_mb",
+            "storage_gb",
+            "reserved_storage_gb",
+            "sellable_storage_gb",
+            "committed_storage_gb",
+            "free_storage_gb",
+            "live_arrangements",
+            "monthly_cost_kes",
+            "is_active",
+            "notes",
+        ]
+
+    # `committed_gb` and `live_count` are annotated by
+    # selectors.hosting_nodes(). The fallback to the model's own method is for
+    # a single node serialised outside that selector — correct either way, one
+    # query more.
+    def get_committed_storage_gb(self, node: HostingNode) -> int:
+        annotated = getattr(node, "committed_gb", None)
+        return int(annotated) if annotated is not None else node.committed_storage_gb()
+
+    def get_free_storage_gb(self, node: HostingNode) -> int:
+        return node.sellable_storage_gb - self.get_committed_storage_gb(node)
+
+    def get_live_arrangements(self, node: HostingNode) -> int:
+        annotated = getattr(node, "live_count", None)
+        if annotated is not None:
+            return int(annotated)
+        return node.arrangements.filter(retired_at__isnull=True).count()
+
+
+class HostingNodeWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=80)
+    address = serializers.CharField(max_length=200, required=False, allow_blank=True)
+    provider = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    location = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    vcpus = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    memory_mb = serializers.IntegerField(required=False, allow_null=True, min_value=0)
+    storage_gb = serializers.IntegerField(min_value=1)
+    reserved_storage_gb = serializers.IntegerField(required=False, min_value=0)
+    monthly_cost_kes = serializers.DecimalField(
+        max_digits=10, decimal_places=2, required=False, allow_null=True
+    )
+    is_active = serializers.BooleanField(required=False)
     notes = serializers.CharField(required=False, allow_blank=True)
 
 

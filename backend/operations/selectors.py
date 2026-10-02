@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 
 from django.db.models import Count, Prefetch, Q, QuerySet, Sum
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from accounts.models import Membership, Organisation, User
@@ -28,6 +29,7 @@ from portal.models import (
     Contract,
     Decision,
     HostingArrangement,
+    HostingNode,
     DeliveryGate,
     Enquiry,
     Invoice,
@@ -677,10 +679,42 @@ def client_profile(organisation: Organisation) -> ClientProfile:
 
 def hosting_for(organisation: Organisation, *, include_retired: bool = False):
     qs = HostingArrangement.objects.filter(organisation=organisation).select_related(
-        "system"
+        "system", "node", "plan"
     )
     if not include_retired:
         qs = qs.filter(retired_at__isnull=True)
+    return qs
+
+
+def hosting_nodes(*, include_retired: bool = False):
+    """
+    Our machines, with what is committed on each counted in the same pass.
+
+    The annotation is the point. HostingNode.committed_storage_gb() runs a
+    query per node, which is fine for one and is a page of them for a list —
+    and this list is the screen somebody looks at precisely when they are
+    deciding whether a sale fits, so it must not be the slow one.
+
+    `filter` inside each aggregate rather than a WHERE: a node with nothing
+    live on it has to appear with zero, not disappear, because an empty node
+    is the answer to "where does this go".
+    """
+    qs = HostingNode.objects.annotate(
+        committed_gb=Coalesce(
+            Sum(
+                "arrangements__allocated_storage_gb",
+                filter=Q(arrangements__retired_at__isnull=True),
+            ),
+            0,
+        ),
+        live_count=Count(
+            "arrangements",
+            filter=Q(arrangements__retired_at__isnull=True),
+            distinct=True,
+        ),
+    )
+    if not include_retired:
+        qs = qs.filter(is_active=True)
     return qs
 
 

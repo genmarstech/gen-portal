@@ -221,6 +221,11 @@ urlpatterns = [
     path("ops/clients/<int:pk>/hosting", views.ClientHostingView.as_view(), name="ops-client-hosting"),
     path("ops/clients/<int:pk>/contact", views.ContactLogView.as_view(), name="ops-client-contact"),
     path("ops/hosting/<int:pk>", views.HostingDetailView.as_view(), name="ops-hosting"),
+    # A node is not a client's arrangement, so these sit beside the route
+    # above rather than under /ops/clients/. Order against it does not
+    # matter: <int:pk> cannot match the literal "nodes".
+    path("ops/hosting/nodes", views.HostingNodeListView.as_view(), name="ops-hosting-nodes"),
+    path("ops/hosting/nodes/<int:pk>", views.HostingNodeDetailView.as_view(), name="ops-hosting-node"),
     path(
         "ops/contact/<int:pk>/attachments",
         views.ContactAttachmentView.as_view(),
