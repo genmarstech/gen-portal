@@ -1,0 +1,36 @@
+{% extends "email/base.html" %}
+{% block content %}
+{% comment %}
+A part payment must not read as settled. "Payment received" on an invoice
+still half outstanding stops the client thinking about it, and the reminder
+that follows then looks like a mistake on our side. What is left is stated
+here and in the subject line.
+
+No payment details, for the reason on invoice_issued.html — and more sharply:
+a message acknowledging money is the one a forger would most like to imitate.
+{% endcomment %}
+<p style="margin:0 0 4px 0; font-size:13px; color:#7a7480;">{{ number }}</p>
+
+<p style="margin:0 0 24px 0; font-size:28px; line-height:1.2; color:#2e2b34;">
+  KES {{ amount }} received
+</p>
+
+<p style="margin:0 0 24px 0; font-size:15px; line-height:1.7; color:#2e2b34;">
+  {{ standing }}
+</p>
+
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0"
+       style="border-top:1px solid #e2dbd6; margin-top:24px;">
+  <tr>
+    <td style="padding-top:18px; font-size:14px; line-height:1.65; color:#5f5867;">
+      <a href="https://app.genmars.co.ke/invoices" style="color:#834f49;">app.genmars.co.ke/invoices</a>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding-top:18px; font-size:13px; line-height:1.6; color:#7a7480;">
+      We will never send you bank or M-Pesa details by email, and we will
+      never email you asking to change them.
+    </td>
+  </tr>
+</table>
+{% endblock %}

@@ -1039,6 +1039,30 @@ def _notify(
         log.exception("could not write %s notifications", kind)
 
 
+def _mailable(organisation: Organisation):
+    """
+    Who may be EMAILED about this client's money.
+
+    Narrower than `_client_recipients`, which is who gets a dashboard row,
+    and narrower for two reasons that recur in every client email here:
+
+      `receives_updates` off   they asked not to hear about this, and service
+                               mail with no way to stop it becomes marketing
+                               in the recipient's mind
+      never verified           nobody has proved they read that address, and
+                               a client's commercial detail sent to it is
+                               sent to whoever happens to own the mailbox
+
+    A dashboard row has neither problem: it is behind the client's own
+    sign-in and it reaches nobody who is not already in the account.
+    """
+    return (
+        Membership.objects.filter(organisation=organisation, receives_updates=True)
+        .select_related("user")
+        .exclude(user__email_verified_at__isnull=True)
+    )
+
+
 def _client_recipients(organisation: Organisation):
     """
     Everyone on the client's account, and only people who can still sign in.
@@ -1056,6 +1080,14 @@ def _staff_recipients():
 
 
 def notify_invoice_issued(invoice: Invoice) -> None:
+    """
+    ── IT EMAILED NOBODY, WHILE EVERY OTHER CLIENT EVENT DID ───────────────
+    An order, a contract, a signature and an offer all reach the client by
+    email. An invoice wrote a dashboard row and stopped — so Genmars billed
+    people and relied on them signing in to find out. For a client who logs
+    in once a quarter that is an invoice sitting unseen until somebody
+    telephones about it, and an unseen invoice is an unpaid invoice.
+    """
     _notify(
         users=_client_recipients(invoice.organisation),
         audience=Notification.Audience.CLIENT,
@@ -1064,6 +1096,24 @@ def notify_invoice_issued(invoice: Invoice) -> None:
         body=f"KES {invoice.amount_kes:,.2f} — {invoice.description}",
         url="/invoices",
     )
+
+    for membership in _mailable(invoice.organisation):
+        try:
+            emails.send_invoice_issued(
+                email=membership.user.email,
+                number=invoice.number,
+                amount=f"{invoice.amount_kes:,.2f}",
+                description=invoice.description,
+                due_on=invoice.due_on.isoformat() if invoice.due_on else "",
+                reference=invoice.order.reference if invoice.order_id else "",
+            )
+        except Exception:
+            # The invoice is the fact; the email is an account of it. A dead
+            # relay must not undo a bill, and the dashboard row has landed.
+            log.exception(
+                "could not email %s about invoice %s",
+                membership.user.email, invoice.number,
+            )
 
 
 def notify_payment_recorded(
@@ -1091,6 +1141,21 @@ def notify_payment_recorded(
         body=body,
         url="/invoices",
     )
+
+    for membership in _mailable(invoice.organisation):
+        try:
+            emails.send_payment_received(
+                email=membership.user.email,
+                number=invoice.number,
+                amount=f"{payment.amount_kes:,.2f}",
+                settled=settled,
+                outstanding=f"{invoice.balance:,.2f}",
+            )
+        except Exception:
+            log.exception(
+                "could not acknowledge payment on invoice %s to %s",
+                invoice.number, membership.user.email,
+            )
 
 
 def notify_invoice_voided(invoice: Invoice) -> None:

@@ -652,3 +652,127 @@ def send_offer(
             "next_step": next_step.strip(),
         },
     )
+
+
+def send_invoice_issued(
+    *,
+    email: str,
+    number: str,
+    amount: str,
+    description: str,
+    due_on: str,
+    reference: str,
+) -> None:
+    """
+    A client has been billed, and told so somewhere they will see it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THIS CARRIES NO PAYMENT DETAILS, AND THAT IS THE WHOLE DESIGN.
+
+    No paybill, no account number, no bank. Invoice redirection fraud works by
+    intercepting exactly this email and changing exactly those digits, and it
+    works because the client has no reason to doubt an invoice that arrives
+    looking like the last one. It is the most common way a small business in
+    Kenya loses a five-figure payment, and the money does not come back.
+
+    So the authoritative details live in one place the client reaches by
+    signing in, and this message's job is only to say an invoice exists and
+    send them there. A client who has been taught that Genmars never puts
+    account numbers in email is a client who notices when somebody else does.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── AND IT WAS SENT NOWHERE AT ALL BEFORE ─────────────────────────────────
+
+    `notify_invoice_issued` wrote a dashboard notification and stopped there,
+    while an order, a contract, a signature and an offer all emailed. Genmars
+    billed clients and relied on them signing in to find out, which for a
+    client who logs in once a quarter means an invoice sitting unseen until
+    somebody telephones about it. An unseen invoice is an unpaid invoice.
+    """
+    _send(
+        to=email,
+        subject=f"Invoice {number} — KES {amount}",
+        text=(
+            f"Invoice {number}\n"
+            f"KES {amount}\n\n"
+            f"{description}\n\n"
+            + (f"DUE\n{due_on}\n\n" if due_on else "")
+            + (f"AGAINST\n{reference}\n\n" if reference else "")
+            + "How to pay is on the invoice itself, in the portal:\n"
+            "https://app.genmars.co.ke/invoices\n\n"
+            # Said in every one of these, so that the one time it matters the
+            # client has read it a dozen times already.
+            "We will never send you bank or M-Pesa details by email, and we "
+            "will never email you asking to change them. If you receive a "
+            "message that appears to be from us doing either, telephone us "
+            "before you pay it.\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/invoice_issued.html",
+        context={
+            "heading": f"Invoice {number}",
+            "preheader": f"KES {amount} — {description}",
+            "number": number,
+            "amount": amount,
+            "description": description,
+            "due_on": due_on,
+            "reference": reference,
+        },
+    )
+
+
+def send_payment_received(
+    *,
+    email: str,
+    number: str,
+    amount: str,
+    settled: bool,
+    outstanding: str,
+) -> None:
+    """
+    Money arrived. Acknowledged, because silence after a payment is unnerving.
+
+    ── A PART PAYMENT SAYS WHAT IS LEFT, AND SAYS IT PLAINLY ────────────────
+    "Payment received" against an invoice still half outstanding reads as
+    settled, and the client stops thinking about it until a reminder arrives
+    that now looks like a mistake on our side. The remaining figure is in the
+    subject line for that reason.
+
+    No payment details here either, for the reason on send_invoice_issued —
+    and more sharply: a message acknowledging money is the one somebody
+    forging a follow-up would most like to imitate.
+    """
+    if settled:
+        subject = f"Invoice {number} paid in full — thank you"
+        standing = "This invoice is now settled in full. Thank you."
+    else:
+        subject = f"Invoice {number} — KES {outstanding} still outstanding"
+        standing = (
+            f"KES {outstanding} is still outstanding on this invoice. The "
+            "balance and the full history are in the portal."
+        )
+
+    _send(
+        to=email,
+        subject=subject,
+        text=(
+            f"Invoice {number}\n"
+            f"KES {amount} received.\n\n"
+            f"{standing}\n\n"
+            "https://app.genmars.co.ke/invoices\n\n"
+            "We will never send you bank or M-Pesa details by email, and we "
+            "will never email you asking to change them.\n\n"
+            "Genmars Tech Limited\n"
+            "genmars.co.ke"
+        ),
+        template="email/payment_received.html",
+        context={
+            "heading": f"Invoice {number}",
+            "preheader": f"KES {amount} received.",
+            "number": number,
+            "amount": amount,
+            "settled": settled,
+            "standing": standing,
+        },
+    )
