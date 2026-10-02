@@ -65,6 +65,32 @@ jobs:
         working-directory: .
         run: python scripts/check_lockfile.py
 
+      # ── THE WEBSITE IS THE PRICE LIST; THIS IS A COPY OF IT ───────────────
+      #
+      # seed_services.py duplicates the tier prices from gen-website's
+      # src/lib/company.ts, and CLAUDE.md has said since the catalogue was
+      # written that "nothing tests that they still do" match.
+      #
+      # It is fetched from the OTHER repository's main, over the network, in a
+      # job that is otherwise hermetic. That is a deliberate trade: the two
+      # repositories deploy separately, so the only place their agreement can
+      # be checked is somewhere that can see both, and a public raw file is
+      # the cheapest way to see the other one. `--fail-with-body` so a 404
+      # from a moved file fails here rather than being parsed as an empty
+      # catalogue.
+      #
+      # Stdlib only, like the two checks above, so it runs before pip.
+      #
+      # ⚠ IT ONLY CATCHES DRIFT WHEN THIS REPOSITORY CHANGES. A price edited
+      # in gen-website does not start this pipeline, so the same check runs
+      # there too, in its build workflow, pointed the other way.
+      - name: The published prices and the catalogue agree
+        working-directory: .
+        run: |
+          curl -sSL --fail-with-body --retry 3 --retry-delay 2 \
+            https://raw.githubusercontent.com/genmarstech/gen-website/main/src/lib/company.ts \
+            | python scripts/check_price_parity.py --company -
+
       - run: pip install -r requirements-dev.txt
 
       # SQLite, no services needed — config/settings_test.py says why.
