@@ -49,6 +49,27 @@ def test_no_entry_claims_a_result_nobody_measured():
     assert claims == [], f"Remove the figure or measure it: {claims}"
 
 
+def test_every_address_is_a_live_https_one():
+    """
+    A dead link on the portfolio is a claim the company cannot keep, and
+    `url` is the one field here that can go stale without anybody editing
+    it. This cannot reach the network, so it checks the only thing a test
+    can: that nothing plain-http, local or placeholder got committed.
+    """
+    bad = [
+        i["slug"]
+        for i in ITEMS
+        if i.get("url")
+        and not (
+            i["url"].startswith("https://")
+            and "localhost" not in i["url"]
+            and "127.0.0.1" not in i["url"]
+            and "example." not in i["url"]
+        )
+    ]
+    assert bad == [], f"These addresses are not public https: {bad}"
+
+
 def test_every_entry_survives_the_model_s_own_validation():
     """
     `full_clean` is what catches a picture with no photographer beside it —

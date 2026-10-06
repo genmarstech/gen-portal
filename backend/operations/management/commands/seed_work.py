@@ -23,15 +23,18 @@ a seeded `True` would look exactly like a real one.
 sets permission_on_file = False on every row it creates, because a migration is
 not a signature. Neither is this.
 
-── `url` IS EMPTY ON THE FIVE DEMONSTRATIONS, AND THAT IS NOT AN OVERSIGHT ────
+── THE ADDRESSES ARE THE SUFFIXED ONES, AND THAT IS NOT A TYPO ────────────────
 
-They are built and they are in `projects/`, and they are not deployed yet.
-The field means "where a reader can go and look at it", and filling it with
-an address that does not answer is worse than leaving a card without a link
-— a dead link on the portfolio is a claim the company cannot keep.
+`njia.vercel.app` and the rest are taken globally, so Vercel assigned
+`njia-eta`, `shamba-kappa`, `ratiba-nine`, `kioo-blue` and `mizani-hazel`.
+The older projects in the team got unsuffixed names before that; these did
+not.
 
-Fill them in when the deployments exist. The command never overwrites, so
-that is an edit in operations rather than a re-run of this.
+⚠ EACH ONE WAS FETCHED BEFORE IT WAS WRITTEN HERE. A new Vercel project is
+  created with Vercel Authentication on, and a protected deployment answers
+  200 with a login page — so a status code is not evidence that a link
+  works. What was checked is that following the redirects lands back on the
+  deployment's own host rather than on vercel.com/login.
 
 ── `results` IS LEFT EMPTY ON PURPOSE ──────────────────────────────────────────
 
@@ -122,6 +125,7 @@ ITEMS = [
         "label": WorkItem.Label.RESEARCH,
         "sector": "Transport",
         "year": "2026",
+        "url": "https://njia-eta.vercel.app",
         "summary": (
             "An arrival board for six Nairobi matatu corridors, with a map "
             "drawn from twenty-five coordinates and no tile server."
@@ -193,6 +197,7 @@ ITEMS = [
         "label": WorkItem.Label.RESEARCH,
         "sector": "Agriculture",
         "year": "2026",
+        "url": "https://shamba-kappa.vercel.app",
         "summary": (
             "An offline-first field survey that converges after a week with "
             "no signal, and shows what the usual merge rule quietly discards."
@@ -261,6 +266,7 @@ ITEMS = [
         "label": WorkItem.Label.RESEARCH,
         "sector": "Workforce",
         "year": "2026",
+        "url": "https://ratiba-nine.vercel.app",
         "summary": (
             "A duty roster solved by constraint search, which names the shift "
             "and the rule when no roster exists."
@@ -333,6 +339,7 @@ ITEMS = [
         "label": WorkItem.Label.INTERNAL,
         "sector": "Design",
         "year": "2026",
+        "url": "https://kioo-blue.vercel.app",
         "summary": (
             "The company's own design system, whose accessibility figures are "
             "measured in the browser rather than written down."
@@ -396,6 +403,7 @@ ITEMS = [
         "label": WorkItem.Label.RESEARCH,
         "sector": "Data",
         "year": "2026",
+        "url": "https://mizani-hazel.vercel.app",
         "summary": (
             "A columnar store and a query engine that run in the browser tab, "
             "with a plan that reports what the query actually read."
