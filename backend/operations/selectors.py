@@ -103,7 +103,7 @@ def orders() -> QuerySet[Order]:
     )
 
 
-def order(reference: str) -> Order | None:
+def order(reference: str, *, include_trashed: bool = False) -> Order | None:
     """
     One order with everything the workspace needs, in one round trip.
 
@@ -114,9 +114,19 @@ def order(reference: str) -> Order | None:
     Notes are prefetched UNFILTERED — drafts included. That is the difference
     from the client view, which shows published notes only. Staff need to see
     the draft precisely because it is the last point at which it can be edited.
+
+    `include_trashed` is off by default, so every existing caller keeps
+    hiding what is in the bin. The bin's own screens pass it — restoring
+    something you cannot fetch is not possible.
     """
+    base = (
+        # Same select_related as orders(); only the bin filter differs.
+        Order.all_objects.select_related("organisation", "contact", "service")
+        if include_trashed
+        else orders()
+    )
     return (
-        orders()
+        base
         .prefetch_related(
             Prefetch(
                 "notes",
