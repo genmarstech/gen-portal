@@ -1571,6 +1571,12 @@ class ActivityLog(models.Model):
         # had not yet read it.
         ORDER_STARTED = "order.started", "Work started on an order"
 
+        # An order removed outright, with the delivery record that hung off
+        # it. Its own action, and the summary carries the counts of what went
+        # with it — because after the fact there is nothing left to count, and
+        # "where did ORD-2026-014 go" is a question only this line can answer.
+        ORDER_DELETED = "order.deleted", "Order deleted"
+
         CHANGE_RAISED = "change.raised", "Change request raised"
         CHANGE_CLASSIFIED = "change.classified", "Change request classified"
         CHANGE_DECIDED = "change.decided", "Change request approved or declined"

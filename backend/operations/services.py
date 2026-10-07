@@ -965,6 +965,181 @@ def set_staff_active(*, actor: User, user: User, active: bool) -> User:
 # ── the activity log ─────────────────────────────────────────────────────────
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# DELETING AN ORDER
+# ══════════════════════════════════════════════════════════════════════════
+#
+# An order is the root of a small tree: progress notes, milestones, delivery
+# gates, blockers, tasks, change requests. Django cascades all of those, which
+# is right — none of them means anything without the order.
+#
+# Two things hanging off it are different, and the whole of this section is
+# about them.
+#
+# ⚠ AN INVOICE IS PROTECTED BY THE DATABASE. `Invoice.order` is PROTECT, so
+#   the delete raises rather than succeeding. Left uncaught that reaches the
+#   browser as a 500 on a button press, which reads as "the tool is broken"
+#   rather than "this order has been billed for".
+#
+# ⚠ A CONTRACT IS **NOT** PROTECTED, AND THAT IS THE DANGEROUS ONE.
+#   `Contract.order` is CASCADE. A signed contract is the snapshot of what a
+#   client agreed to — Charter 05 §I — and deleting the order would take it
+#   with it, silently, with nothing left to say it ever existed. The database
+#   will not stop that. This module does.
+#
+# So: invoices and signed contracts refuse. Everything else is reported
+# before the fact and removed with it.
+
+
+#: What a delete takes with it, as (accessor, singular, plural).
+_ORDER_CASCADES = (
+    ("notes", "progress note", "progress notes"),
+    ("milestones", "milestone", "milestones"),
+    ("gates", "delivery gate", "delivery gates"),
+    ("blockers", "blocker", "blockers"),
+    ("tasks", "task", "tasks"),
+    ("change_requests", "change request", "change requests"),
+    ("seen_by", "read marker", "read markers"),
+)
+
+#: What survives, with its link to the order cleared. Worth listing for the
+#: same reason the cascades are: somebody is about to be surprised otherwise.
+_ORDER_DETACHES = (
+    ("tickets", "support ticket", "support tickets"),
+    ("contact_log", "contact log entry", "contact log entries"),
+)
+
+
+def _count_label(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
+
+
+def order_deletion_preview(order: Order) -> dict:
+    """
+    What deleting this order would do, before anybody does it.
+
+    ── THE PREVIEW IS THE FEATURE, NOT THE CONFIRMATION DIALOG ───────────────
+
+    "Are you sure?" asks a question the person cannot answer: they are sure
+    they want the order gone and have no idea what else is attached to it.
+    The useful thing to put in front of them is the list — four gates, two
+    blockers, a contract in draft — and the reason it is refused when it is.
+
+    Counted in one pass each rather than fetched, because the only thing the
+    caller does with these is print them.
+    """
+    blockers: list[dict] = []
+
+    invoices = order.invoices.count()
+    if invoices:
+        blockers.append(
+            {
+                "kind": "invoices",
+                "count": invoices,
+                "detail": (
+                    f"{_count_label(invoices, 'invoice has', 'invoices have')} been "
+                    "raised against this order. An invoice is a numbered financial "
+                    "record and the database refuses to let one go; void it in "
+                    "Billing if it was a mistake."
+                ),
+            }
+        )
+
+    signed = order.contracts.filter(status=Contract.Status.SIGNED).count()
+    if signed:
+        blockers.append(
+            {
+                "kind": "signed_contracts",
+                "count": signed,
+                "detail": (
+                    f"{_count_label(signed, 'contract is', 'contracts are')} signed. "
+                    "A signed contract is the record of what the client agreed to, "
+                    "and deleting the order would delete it as well. Void it first "
+                    "if the agreement genuinely did not happen."
+                ),
+            }
+        )
+
+    cascades = []
+    for accessor, singular, plural in _ORDER_CASCADES:
+        count = getattr(order, accessor).count()
+        if count:
+            cascades.append({"label": plural if count != 1 else singular, "count": count})
+
+    unsigned = order.contracts.exclude(status=Contract.Status.SIGNED).count()
+    if unsigned:
+        cascades.append(
+            {
+                "label": "unsigned contract" if unsigned == 1 else "unsigned contracts",
+                "count": unsigned,
+            }
+        )
+
+    detaches = []
+    for accessor, singular, plural in _ORDER_DETACHES:
+        count = getattr(order, accessor).count()
+        if count:
+            detaches.append({"label": plural if count != 1 else singular, "count": count})
+
+    enquiry = getattr(order, "from_enquiry", None)
+    if enquiry is not None:
+        detaches.append({"label": "the enquiry it was converted from", "count": 1})
+
+    return {
+        "reference": order.reference,
+        "title": order.title,
+        "organisation": order.organisation.name,
+        "status": order.get_status_display(),
+        "may_delete": not blockers,
+        "blockers": blockers,
+        "cascades": cascades,
+        "detaches": detaches,
+    }
+
+
+@transaction.atomic
+def delete_order(*, actor: User, order: Order) -> dict:
+    """
+    Remove an order and the delivery record that hangs off it.
+
+    Refuses on the two things a delete must never quietly destroy — see the
+    banner above this section. The refusal is an `OperationsError` carrying
+    the reason, not a bare 403: somebody deleting the wrong thing needs to
+    know which of their orders has been billed for.
+
+    ⚠ THE LOG LINE IS WRITTEN BEFORE THE DELETE, AND CARRIES THE COUNTS.
+      Afterwards there is nothing left to count, and the whole value of the
+      entry is answering "what was ORD-2026-014 and what went with it" months
+      later. `services.record` never raises, so this cannot cost the delete.
+    """
+    preview = order_deletion_preview(order)
+
+    if not preview["may_delete"]:
+        raise OperationsError(" ".join(b["detail"] for b in preview["blockers"]))
+
+    went_with_it = ", ".join(
+        f"{row['count']} {row['label']}" for row in preview["cascades"]
+    )
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.ORDER_DELETED,
+        subject=order.reference,
+        organisation=order.organisation,
+        summary=(
+            f"{order.reference} deleted"
+            + (f" — with it: {went_with_it}" if went_with_it else " — nothing attached")
+        ),
+        title=order.title,
+        status=order.status,
+        cascades=preview["cascades"],
+        detaches=preview["detaches"],
+    )
+
+    order.delete()
+    return preview
+
+
 def record(
     *,
     actor: User | None,
