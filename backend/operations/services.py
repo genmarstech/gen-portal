@@ -989,6 +989,21 @@ def set_staff_active(*, actor: User, user: User, active: bool) -> User:
 #
 # So: invoices and signed contracts refuse. Everything else is reported
 # before the fact and removed with it.
+#
+# ⚠ NEITHER REFUSAL HAS A WAY ROUND IT, AND THE MESSAGES MUST NOT PRETEND
+#   OTHERWISE.
+#
+#   They used to say "void it first", which reads as an instruction and is
+#   not one. `services.void_contract` refuses a SIGNED contract outright —
+#   a signed agreement is ended by agreement, with a superseding version —
+#   and voiding an invoice leaves a void invoice, which is still a numbered
+#   record and still PROTECTs the order.
+#
+#   An order that has been signed for or billed for is therefore permanent
+#   as far as this application is concerned. That is the correct stance for
+#   real work and an awkward one for a test order created by exercising the
+#   whole flow; if those ever need clearing it wants a management command,
+#   run from a shell and logged, not an endpoint anybody can reach.
 
 
 #: What a delete takes with it, as (accessor, singular, plural).
@@ -1039,8 +1054,10 @@ def order_deletion_preview(order: Order) -> dict:
                 "detail": (
                     f"{_count_label(invoices, 'invoice has', 'invoices have')} been "
                     "raised against this order. An invoice is a numbered financial "
-                    "record and the database refuses to let one go; void it in "
-                    "Billing if it was a mistake."
+                    "record and the database will not release one — and voiding it "
+                    "does not change that, because a void invoice is still a "
+                    "numbered record of something having been billed. This order "
+                    "cannot be deleted from operations at all."
                 ),
             }
         )
@@ -1054,8 +1071,10 @@ def order_deletion_preview(order: Order) -> dict:
                 "detail": (
                     f"{_count_label(signed, 'contract is', 'contracts are')} signed. "
                     "A signed contract is the record of what the client agreed to, "
-                    "and deleting the order would delete it as well. Void it first "
-                    "if the agreement genuinely did not happen."
+                    "and deleting the order would delete it as well. Operations "
+                    "will not void a signed contract either — one is ended by "
+                    "agreement, with a superseding version. This order cannot be "
+                    "deleted from operations at all."
                 ),
             }
         )
