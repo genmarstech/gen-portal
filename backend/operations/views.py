@@ -437,6 +437,67 @@ class OrderDetailView(StaffView):
         return Response({"deleted": removed})
 
 
+class OrderTrashView(StaffView):
+    """
+    Into the bin, and back out.
+
+    Any member of staff, unlike the delete beside it. Trashing destroys
+    nothing — the row, the contract, the invoice and the money all stay — so
+    the narrow permission that guards an irreversible act does not apply to a
+    reversible one.
+    """
+
+    def post(self, request, reference: str):
+        order = selectors.order(reference, include_trashed=True)
+        if order is None:
+            return Response({"detail": "No such order."}, status=http.HTTP_404_NOT_FOUND)
+
+        restore = bool(request.data.get("restore"))
+        if restore:
+            order = services.restore_order(actor=request.user, order=order)
+        else:
+            order = services.trash_order(
+                actor=request.user,
+                order=order,
+                reason=str(request.data.get("reason", "")),
+            )
+
+        return Response(
+            {
+                "reference": order.reference,
+                "trashed": order.is_trashed,
+                "trashed_at": order.trashed_at,
+                "trash_reason": order.trash_reason,
+            }
+        )
+
+
+class TrashView(StaffView):
+    """What is in the bin."""
+
+    def get(self, request):
+        return Response(
+            {
+                "orders": [
+                    {
+                        "reference": o.reference,
+                        "title": o.title,
+                        "organisation": o.organisation.name,
+                        "status_label": o.get_status_display(),
+                        "trashed_at": o.trashed_at,
+                        "trashed_by": (
+                            o.trashed_by.full_name or o.trashed_by.email
+                            if o.trashed_by
+                            else ""
+                        ),
+                        "reason": o.trash_reason,
+                    }
+                    for o in services.binned_orders()
+                ]
+            }
+        )
+
+
 class OrderDeletionView(StaffView):
     """
     What deleting this order would take with it.

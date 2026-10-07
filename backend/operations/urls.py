@@ -202,6 +202,15 @@ urlpatterns = [
     # What a delete would take with it. A GET of its own rather than a flag on
     # the DELETE, so the question can be asked without the risk of answering
     # it — and so the confirmation can state facts instead of "are you sure?".
+    # Into the bin and back. One route with a `restore` flag rather than two,
+    # because they are the same decision reversed and a client that can do one
+    # must be able to do the other.
+    path(
+        "ops/orders/<str:reference>/trash",
+        views.OrderTrashView.as_view(),
+        name="ops-order-trash",
+    ),
+    path("ops/trash", views.TrashView.as_view(), name="ops-trash"),
     path(
         "ops/orders/<str:reference>/deletion",
         views.OrderDeletionView.as_view(),

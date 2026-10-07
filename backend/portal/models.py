@@ -31,7 +31,93 @@ from django.utils import timezone
 from accounts.models import Organisation
 
 
-class Order(models.Model):
+class TrashQuerySet(models.QuerySet):
+    """A queryset that knows about the bin, for use on either manager."""
+
+    def alive(self):
+        return self.filter(trashed_at__isnull=True)
+
+    def trashed(self):
+        return self.filter(trashed_at__isnull=False)
+
+
+class AliveManager(models.Manager.from_queryset(TrashQuerySet)):
+    """The default manager: everything that is not in the bin."""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(trashed_at__isnull=True)
+
+
+class Trashable(models.Model):
+    """
+    Put it in the bin instead of destroying it.
+
+    ══════════════════════════════════════════════════════════════════════════
+    THE BIN EXISTS BECAUSE DELETING WAS THE ONLY OPTION AND IT WAS TOO BIG ONE.
+
+    An order that has been signed for or billed for cannot be deleted: a
+    signed contract is the record of what a client agreed to and an invoice is
+    a numbered financial record, and no button should erase either. That rule
+    is right and it is absolute, which left test data made by exercising the
+    whole flow permanently in the working lists.
+
+    Trashing is the answer because it is not a destruction. The row stays, the
+    contract stays, the invoice stays, the money stays counted. What changes
+    is that the thing stops appearing in the lists people work from — and it
+    can come back.
+    ══════════════════════════════════════════════════════════════════════════
+
+    ── WHY THE DEFAULT MANAGER FILTERS, AND WHAT THAT COSTS ──────────────────
+
+    `objects` excludes the bin, so every existing query — operations lists,
+    the client portal, counts, search, exports — hides trashed rows without
+    being edited. Fifteen call sites, none of them touched, none of them able
+    to forget.
+
+    ⚠ `base_manager_name` IS `all_objects`, AND THAT IS NOT OPTIONAL.
+      Django uses the BASE manager internally: following a foreign key,
+      collecting rows for a cascade, serialising for a migration. If the base
+      manager hid trashed rows, a cascade would skip them and leave orphans
+      the application cannot see and cannot clean up.
+
+    ⚠ ANYTHING DERIVING A VALUE FROM A COUNT MUST USE `all_objects`.
+      `services.next_reference` builds GM-2026-0007 by counting the orders in
+      the year. Counted through `objects`, trashing GM-2026-0006 makes the
+      next order GM-2026-0006 again — and `reference` is unique, so the
+      collision is the lucky outcome. The unlucky one is a reference silently
+      reused after the first is purged.
+    """
+
+    trashed_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text="When it was put in the bin. Null means it is not.",
+    )
+    trashed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    #: Why, in the words of whoever did it. Shown in the bin, because "what
+    #: is this and should it come back" is the only question asked there.
+    trash_reason = models.CharField(max_length=200, blank=True, default="")
+
+    objects = AliveManager()
+    all_objects = models.Manager.from_queryset(TrashQuerySet)()
+
+    class Meta:
+        abstract = True
+        base_manager_name = "all_objects"
+
+    @property
+    def is_trashed(self) -> bool:
+        return self.trashed_at is not None
+
+
+class Order(Trashable):
     """
     An engagement. CREATED BY STAFF ONLY.
 
@@ -1576,6 +1662,13 @@ class ActivityLog(models.Model):
         # with it — because after the fact there is nothing left to count, and
         # "where did ORD-2026-014 go" is a question only this line can answer.
         ORDER_DELETED = "order.deleted", "Order deleted"
+
+        # Into the bin and back out. Separate from ORDER_DELETED because they
+        # are a different kind of act: nothing is destroyed, and the question
+        # asked of the log afterwards is "who hid this and why", which the
+        # reason on the row answers and a deletion entry cannot.
+        ORDER_TRASHED = "order.trashed", "Order moved to the bin"
+        ORDER_RESTORED = "order.restored", "Order taken out of the bin"
 
         CHANGE_RAISED = "change.raised", "Change request raised"
         CHANGE_CLASSIFIED = "change.classified", "Change request classified"

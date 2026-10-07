@@ -83,7 +83,11 @@ def next_reference(today: date | None = None) -> str:
     """
     year = (today or timezone.localdate()).year
     prefix = f"{REFERENCE_PREFIX}-{year}-"
-    used = Order.objects.filter(reference__startswith=prefix).count()
+    # ⚠ all_objects, NOT objects. The default manager hides trashed orders,
+    #   and a reference derived from a count that skips them is a reference
+    #   that gets reused: trash GM-2026-0006 and the next order is
+    #   GM-2026-0006 again. See Trashable in portal/models.py.
+    used = Order.all_objects.filter(reference__startswith=prefix).count()
     return f"{prefix}{used + 1:04d}"
 
 
@@ -1114,6 +1118,79 @@ def order_deletion_preview(order: Order) -> dict:
         "cascades": cascades,
         "detaches": detaches,
     }
+
+
+def trash_order(*, actor: User, order: Order, reason: str = "") -> Order:
+    """
+    Put an order in the bin.
+
+    ── WHY ANY MEMBER OF STAFF MAY DO THIS AND ONLY A FOUNDER MAY DELETE ─────
+
+    The permission on `delete_order` is narrow because a delete cannot be
+    taken back. This can: the row is still there, the contract is still
+    there, the invoice is still there and still counted, and one click puts
+    it back. The thing being decided is which items are worth looking at,
+    which is ordinary work.
+
+    It accepts an order that could never be deleted — signed, invoiced, paid.
+    That is the point. Nothing is destroyed, so none of the reasons to refuse
+    a deletion apply.
+    """
+    if order.trashed_at is not None:
+        return order
+
+    order.trashed_at = timezone.now()
+    order.trashed_by = actor
+    order.trash_reason = reason.strip()[:200]
+    order.save(update_fields=["trashed_at", "trashed_by", "trash_reason"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.ORDER_TRASHED,
+        subject=order.reference,
+        organisation=order.organisation,
+        summary=(
+            f"{order.reference} moved to the bin"
+            + (f" — {order.trash_reason}" if order.trash_reason else "")
+        ),
+        title=order.title,
+        reason=order.trash_reason,
+    )
+    return order
+
+
+def restore_order(*, actor: User, order: Order) -> Order:
+    """Take it back out. The inverse, and deliberately as easy."""
+    if order.trashed_at is None:
+        return order
+
+    order.trashed_at = None
+    order.trashed_by = None
+    order.trash_reason = ""
+    order.save(update_fields=["trashed_at", "trashed_by", "trash_reason"])
+
+    record(
+        actor=actor,
+        action=ActivityLog.Action.ORDER_RESTORED,
+        subject=order.reference,
+        organisation=order.organisation,
+        summary=f"{order.reference} taken out of the bin",
+        title=order.title,
+    )
+    return order
+
+
+def binned_orders():
+    """
+    What is in the bin, newest first.
+
+    `all_objects`, because the default manager is the thing hiding them.
+    """
+    return (
+        Order.all_objects.trashed()
+        .select_related("organisation", "trashed_by")
+        .order_by("-trashed_at")
+    )
 
 
 @transaction.atomic
