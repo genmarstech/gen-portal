@@ -199,6 +199,14 @@ urlpatterns = [
 
     path("ops/orders", views.OrderListView.as_view(), name="ops-orders"),
     path("ops/orders/<str:reference>", views.OrderDetailView.as_view(), name="ops-order"),
+    # What a delete would take with it. A GET of its own rather than a flag on
+    # the DELETE, so the question can be asked without the risk of answering
+    # it — and so the confirmation can state facts instead of "are you sure?".
+    path(
+        "ops/orders/<str:reference>/deletion",
+        views.OrderDeletionView.as_view(),
+        name="ops-order-deletion",
+    ),
     path("ops/orders/<str:reference>/notes", views.OrderNoteView.as_view(), name="ops-order-notes"),
     path(
         "ops/orders/<str:reference>/start",

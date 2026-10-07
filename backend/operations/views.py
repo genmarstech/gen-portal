@@ -346,6 +346,17 @@ class OrderListView(StaffView):
 
 
 class OrderDetailView(StaffView):
+    """
+    One order: read, edit, or remove.
+
+    ── WHY DELETE IS FOUNDER-ONLY WHEN EDIT IS NOT ──────────────────────────
+    An edit to the scope is recorded, shown to the client as a change marker
+    and recoverable by editing it back. A delete is none of those things.
+    `CanManageAccess` is the narrowest permission the company has and it is
+    the one already used for removing a piece of the portfolio; removing a
+    client's delivery record is at least as serious.
+    """
+
     def get(self, request, reference: str):
         order = selectors.order(reference)
         if order is None:
@@ -396,6 +407,50 @@ class OrderDetailView(StaffView):
             )
 
         return Response(OrderDetailSerializer(selectors.order(reference)).data)
+
+
+    def delete(self, request, reference: str):
+        permission = CanManageAccess()
+        if not permission.has_permission(request, self):
+            return Response(
+                {
+                    "detail": (
+                        "Only a founder can delete an order. Editing it is open to "
+                        "any member of staff; removing it is not."
+                    )
+                },
+                status=http.HTTP_403_FORBIDDEN,
+            )
+
+        order = selectors.order(reference)
+        if order is None:
+            return Response({"detail": "No such order."}, status=http.HTTP_404_NOT_FOUND)
+
+        try:
+            removed = services.delete_order(actor=request.user, order=order)
+        except services.OperationsError as error:
+            # 409, not 400: the request is well formed and the caller is
+            # allowed to make it. What refuses is the state of the order, and
+            # the preview endpoint says so before the button is pressed.
+            return Response({"detail": error.message}, status=http.HTTP_409_CONFLICT)
+
+        return Response({"deleted": removed})
+
+
+class OrderDeletionView(StaffView):
+    """
+    What deleting this order would take with it.
+
+    Read-only and open to any member of staff, because it answers a question
+    worth asking without intending to act on it: "what is actually attached
+    to this?" The delete itself is founder-only.
+    """
+
+    def get(self, request, reference: str):
+        order = selectors.order(reference)
+        if order is None:
+            return Response({"detail": "No such order."}, status=http.HTTP_404_NOT_FOUND)
+        return Response(services.order_deletion_preview(order))
 
 
 class OrderNoteView(StaffView):
