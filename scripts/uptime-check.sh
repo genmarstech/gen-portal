@@ -137,6 +137,39 @@ else
     REPORT+=$(printf "  ok    %-34s %s%% used\n" "disk" "$USED")$'\n'
 fi
 
+# ── REFRESH THE SYSTEMS BOARD ───────────────────────────────────────────────
+#
+# `check_systems` polls every registered system's health_url and writes
+# System.health and System.checked_at — which is what ops/systems renders.
+#
+# ⚠ IT LIVES HERE BECAUSE IT NEVER RAN ANYWHERE ELSE. The command's own
+#   docstring says "run from the same timer as the uptime check", and nothing
+#   ever did: it had no timer and no caller, so it was last run by hand on
+#   2026-09-03. For five weeks the board showed that day's values — every
+#   system "Up", last checked 3 Sept — while this script quietly did the real
+#   checking and told nobody but an inbox.
+#
+#   A board that has stopped refreshing is worse than no board. It answers the
+#   question "is everything alright?" with a confident yes from last month.
+#
+# ── WHY A FAILURE HERE COUNTS, AND WHAT THE MAIL MUST NOT SAY ──────────────
+#
+# It counts, because a registry that has silently stopped updating is exactly
+# the class of failure this script exists to catch — the same shape as Caddy
+# failing to reload while every container reports healthy.
+#
+# But it is NOT a site being down, so it is reported in its own words. The
+# command never raises on an unreachable system (it catches per system and
+# carries on), so reaching this branch means something structural: the api
+# container is gone, or the database is unreachable. Both are worth waking up
+# for; neither is "genmars.co.ke is offline", and the report says so.
+if docker compose exec -T api python manage.py check_systems >/dev/null 2>&1; then
+    REPORT+=$(printf "  ok    %-34s refreshed\n" "systems board")$'\n'
+else
+    REPORT+=$(printf "  FAIL  %-34s did not refresh (api or database)\n" "systems board")$'\n'
+    FAILURES=$((FAILURES + 1))
+fi
+
 printf "Genmars uptime check — %s\n\n%s\n" "$(date -u '+%Y-%m-%d %H:%M UTC')" "$REPORT"
 
 if [ "$FAILURES" -gt 0 ]; then

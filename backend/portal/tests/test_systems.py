@@ -366,3 +366,65 @@ def test_a_system_with_no_health_url_is_not_reported_as_down(owner):
 
     system = System.objects.get(slug="unwatched")
     assert system.health == System.Health.UNKNOWN
+
+
+# ── the parent is not a child of itself ──────────────────────────────────────
+
+
+def test_the_parent_has_no_heartbeat_and_is_still_watched(owner):
+    """
+    ══════════════════════════════════════════════════════════════════════════
+    gen-portal MUST NOT GROW A HEARTBEAT, AND "NEVER REPORTED" IS CORRECT.
+
+    A heartbeat is a system telling this registry it is alive. The registry is
+    gen-portal's database and the board is gen-portal, so the message could
+    only ever be written and displayed by a running gen-portal — green by
+    construction, carrying nothing the reader did not already have.
+
+    It held a stale 2026-09-02 timestamp from a one-off manual post, which the
+    board rendered as a system that had gone quiet. That is the reading
+    `heartbeat_is_stale` exists to keep apart from "not instrumented", so the
+    row was cleared rather than kept fresh.
+
+    The thing that must stay true is that clearing it does NOT make the parent
+    unwatched: `is_watched` is health_url OR heartbeat, and the parent is
+    covered by the poll and by the external curl.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+    parent = System.objects.create(
+        name="Client portal", slug="gen-portal-parent", kind=System.Kind.INTERNAL,
+        criticality=System.Criticality.CRITICAL,
+        purpose="The parent registry itself.",
+        impact_if_down="Clients cannot see their work, and no invoice can be paid.",
+        owner=owner,
+        health_url="https://app.genmars.co.ke/api/health",
+        heartbeat_at=None,
+    )
+
+    assert parent.heartbeat_at is None
+    assert parent.is_watched, (
+        "Clearing the parent's heartbeat must not make it unwatched — its "
+        "health_url is what covers it."
+    )
+    # Never reported is not stale. The board must not render it as gone quiet.
+    assert parent.heartbeat_is_stale() is False
+
+
+def test_a_system_that_reported_once_and_went_quiet_is_stale(owner):
+    """
+    The control for the test above. "Never reported" being not-stale is only
+    meaningful beside a case that IS — otherwise the assertion would pass for a
+    method that always returned False.
+    """
+    from datetime import timedelta
+
+    quiet = System.objects.create(
+        name="Went quiet", slug="went-quiet", kind=System.Kind.INTERNAL,
+        criticality=System.Criticality.IMPORTANT,
+        purpose="Reported once, months ago.",
+        impact_if_down="Something.",
+        owner=owner,
+        heartbeat_at=timezone.now() - timedelta(days=35),
+    )
+
+    assert quiet.heartbeat_is_stale() is True
