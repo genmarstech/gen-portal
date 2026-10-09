@@ -15,9 +15,56 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ── WHERE THE BASE IMAGE IS PULLED FROM, AND WHY IT IS AN ARGUMENT ──────────
+#
+# The default is Docker Hub, spelled in full. `node:22-alpine` and
+# `docker.io/library/node:22-alpine` are the same image; writing it out is
+# what lets the registry be substituted without the tag moving. compose.yaml
+# passes no build argument, so a host build is unchanged.
+#
+# ⚠ THE TAG IS NOT THE PART THAT MAY VARY. Node 22 is what ci.yml pins its
+#   runner to as well, and REGISTRY must never be used to change it.
+#
+# CI overrides this to a read-through cache of Docker Hub, because Docker Hub
+# counts unauthenticated pulls PER IP and GitHub's hosted runners share an IP
+# with everybody else building on them. business-os lost two consecutive runs
+# to it on a green branch — `toomanyrequests` on a service container, a bare
+# `429` on a FROM line — and a check that is red for reasons unconnected to
+# the code is worse than the gap it closed.
+#
+# Deploys do not pass it. The host builds from Docker Hub, as it always has,
+# so nothing that ships comes from the mirror; what CI proves is that this
+# Dockerfile still builds, and the mirror was checked to serve the same
+# manifest digest to prove it against.
+#
+# ⚠ gen-website's copy of this says the OPPOSITE about shipping, and it is
+#   right there: that repository deploys the image its CI builds, so the
+#   mirror genuinely is in its supply chain. Do not flatten the two.
+
+# ── LINE 1 IS A DOCKER HUB PULL TOO, AND REGISTRY CANNOT REACH IT ───────────
+#
+# `# syntax=docker/dockerfile:1.7` is a parser directive. BuildKit resolves
+# that frontend image before it reads a single ARG, so the argument below
+# cannot cover it — and a parser directive has to be the very first line, so
+# it cannot carry an explaining comment above it either. This is that comment.
+#
+# It stays pointed at Docker Hub, and CI overrides it with the BUILDKIT_SYNTAX
+# build argument: same mirror, digest checked the same way, and a host build
+# still takes the frontend from Docker Hub like everything else.
+#
+# Deleting the directive is not the shortcut it looks like: `RUN
+# --mount=type=cache` below is a frontend feature and needs it.
+#
+# Found the way these are always found: gen-website's image job died on `504
+# Gateway Timeout` from auth.docker.io at line 1, with every FROM below it
+# already mirrored and the whole point of the change defeated by the first
+# line of the file.
+
+ARG REGISTRY=docker.io/library
+
 # ---- dependencies -----------------------------------------------------------
 
-FROM node:22-alpine AS deps
+FROM ${REGISTRY}/node:22-alpine AS deps
 
 WORKDIR /app
 
@@ -31,7 +78,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 # ---- build ------------------------------------------------------------------
 
-FROM node:22-alpine AS build
+FROM ${REGISTRY}/node:22-alpine AS build
 
 # Where Next's /api/* rewrite points.
 #
@@ -66,7 +113,7 @@ RUN npm run check:theme && npm run build
 
 # ---- runtime ----------------------------------------------------------------
 
-FROM node:22-alpine AS runtime
+FROM ${REGISTRY}/node:22-alpine AS runtime
 
 LABEL org.opencontainers.image.title="gen-portal-web" \
       org.opencontainers.image.description="Client portal frontend for Genmars Tech Limited" \

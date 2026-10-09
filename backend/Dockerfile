@@ -28,9 +28,58 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ── WHERE THE BASE IMAGE IS PULLED FROM, AND WHY IT IS AN ARGUMENT ──────────
+#
+# The default is Docker Hub, spelled in full. `python:3.13-slim` and
+# `docker.io/library/python:3.13-slim` are the same image; writing it out is
+# what lets the registry be substituted without the tag moving. compose.yaml
+# passes no build argument, so a host build is unchanged.
+#
+# ⚠ THE TAG IS NOT THE PART THAT MAY VARY. The interpreter is pinned for the
+#   reason above and REGISTRY must never be used to change it.
+#
+# CI overrides this to a read-through cache of Docker Hub, because Docker Hub
+# counts unauthenticated pulls PER IP and GitHub's hosted runners share an IP
+# with everybody else building on them. business-os lost two consecutive runs
+# to it on a green branch — `toomanyrequests` on a service container, a bare
+# `429` on a FROM line — and a check that is red for reasons unconnected to
+# the code is worse than the gap it closed.
+#
+# Deploys do not pass it. The host builds from Docker Hub, as it always has,
+# so nothing that ships comes from the mirror; what CI proves is that this
+# Dockerfile still builds, and the mirror was checked to serve the same
+# manifest digest to prove it against.
+#
+# ⚠ gen-website's copy of this says the OPPOSITE about shipping, and it is
+#   right there: that repository deploys the image its CI builds, so the
+#   mirror genuinely is in its supply chain. Do not flatten the two.
+
+# ── LINE 1 IS A DOCKER HUB PULL TOO, AND REGISTRY CANNOT REACH IT ───────────
+#
+# `# syntax=docker/dockerfile:1.7` is a parser directive. BuildKit resolves
+# that frontend image before it reads a single ARG, so the argument below
+# cannot cover it — and a parser directive has to be the very first line, so
+# it cannot carry an explaining comment above it either. This is that comment.
+#
+# It stays pointed at Docker Hub, and CI overrides it with the BUILDKIT_SYNTAX
+# build argument: same mirror, digest checked the same way, and a host build
+# still takes the frontend from Docker Hub like everything else.
+#
+# Nothing below actually needs a 1.7-only feature, so the directive could be
+# deleted here instead — but three of this company's other Dockerfiles do need
+# theirs, and five files that disagree about how they are parsed is a worse
+# thing to own than one build argument.
+#
+# Found the way these are always found: gen-website's image job died on `504
+# Gateway Timeout` from auth.docker.io at line 1, with every FROM below it
+# already mirrored and the whole point of the change defeated by the first
+# line of the file.
+
+ARG REGISTRY=docker.io/library
+
 # ---- build ------------------------------------------------------------------
 
-FROM python:3.13-slim AS build
+FROM ${REGISTRY}/python:3.13-slim AS build
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -70,7 +119,7 @@ RUN pip install --no-cache-dir -r requirements.lock.txt
 
 # ---- runtime ----------------------------------------------------------------
 
-FROM python:3.13-slim AS runtime
+FROM ${REGISTRY}/python:3.13-slim AS runtime
 
 LABEL org.opencontainers.image.title="gen-portal-api" \
       org.opencontainers.image.description="Client portal API for Genmars Tech Limited" \
