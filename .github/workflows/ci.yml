@@ -176,6 +176,7 @@ jobs:
           push: false
           build-args: |
             REGISTRY=mirror.gcr.io/library
+            BUILDKIT_SYNTAX=mirror.gcr.io/docker/dockerfile:1.7
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -186,5 +187,6 @@ jobs:
           push: false
           build-args: |
             REGISTRY=mirror.gcr.io/library
+            BUILDKIT_SYNTAX=mirror.gcr.io/docker/dockerfile:1.7
           cache-from: type=gha
           cache-to: type=gha,mode=max

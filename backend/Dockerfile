@@ -54,6 +54,27 @@
 #   right there: that repository deploys the image its CI builds, so the
 #   mirror genuinely is in its supply chain. Do not flatten the two.
 
+# ── LINE 1 IS A DOCKER HUB PULL TOO, AND REGISTRY CANNOT REACH IT ───────────
+#
+# `# syntax=docker/dockerfile:1.7` is a parser directive. BuildKit resolves
+# that frontend image before it reads a single ARG, so the argument below
+# cannot cover it — and a parser directive has to be the very first line, so
+# it cannot carry an explaining comment above it either. This is that comment.
+#
+# It stays pointed at Docker Hub, and CI overrides it with the BUILDKIT_SYNTAX
+# build argument: same mirror, digest checked the same way, and a host build
+# still takes the frontend from Docker Hub like everything else.
+#
+# Nothing below actually needs a 1.7-only feature, so the directive could be
+# deleted here instead — but three of this company's other Dockerfiles do need
+# theirs, and five files that disagree about how they are parsed is a worse
+# thing to own than one build argument.
+#
+# Found the way these are always found: gen-website's image job died on `504
+# Gateway Timeout` from auth.docker.io at line 1, with every FROM below it
+# already mirrored and the whole point of the change defeated by the first
+# line of the file.
+
 ARG REGISTRY=docker.io/library
 
 # ---- build ------------------------------------------------------------------
