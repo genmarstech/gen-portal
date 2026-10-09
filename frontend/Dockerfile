@@ -15,9 +15,37 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+# ── WHERE THE BASE IMAGE IS PULLED FROM, AND WHY IT IS AN ARGUMENT ──────────
+#
+# The default is Docker Hub, spelled in full. `node:22-alpine` and
+# `docker.io/library/node:22-alpine` are the same image; writing it out is
+# what lets the registry be substituted without the tag moving. compose.yaml
+# passes no build argument, so a host build is unchanged.
+#
+# ⚠ THE TAG IS NOT THE PART THAT MAY VARY. Node 22 is what ci.yml pins its
+#   runner to as well, and REGISTRY must never be used to change it.
+#
+# CI overrides this to a read-through cache of Docker Hub, because Docker Hub
+# counts unauthenticated pulls PER IP and GitHub's hosted runners share an IP
+# with everybody else building on them. business-os lost two consecutive runs
+# to it on a green branch — `toomanyrequests` on a service container, a bare
+# `429` on a FROM line — and a check that is red for reasons unconnected to
+# the code is worse than the gap it closed.
+#
+# Deploys do not pass it. The host builds from Docker Hub, as it always has,
+# so nothing that ships comes from the mirror; what CI proves is that this
+# Dockerfile still builds, and the mirror was checked to serve the same
+# manifest digest to prove it against.
+#
+# ⚠ gen-website's copy of this says the OPPOSITE about shipping, and it is
+#   right there: that repository deploys the image its CI builds, so the
+#   mirror genuinely is in its supply chain. Do not flatten the two.
+
+ARG REGISTRY=docker.io/library
+
 # ---- dependencies -----------------------------------------------------------
 
-FROM node:22-alpine AS deps
+FROM ${REGISTRY}/node:22-alpine AS deps
 
 WORKDIR /app
 
@@ -31,7 +59,7 @@ RUN --mount=type=cache,target=/root/.npm \
 
 # ---- build ------------------------------------------------------------------
 
-FROM node:22-alpine AS build
+FROM ${REGISTRY}/node:22-alpine AS build
 
 # Where Next's /api/* rewrite points.
 #
@@ -66,7 +94,7 @@ RUN npm run check:theme && npm run build
 
 # ---- runtime ----------------------------------------------------------------
 
-FROM node:22-alpine AS runtime
+FROM ${REGISTRY}/node:22-alpine AS runtime
 
 LABEL org.opencontainers.image.title="gen-portal-web" \
       org.opencontainers.image.description="Client portal frontend for Genmars Tech Limited" \

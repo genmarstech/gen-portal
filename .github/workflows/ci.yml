@@ -163,11 +163,19 @@ jobs:
 
       # Both images, because a Dockerfile can break while the source is fine —
       # a missing public/ directory took the ops build down exactly that way.
+      #
+      # REGISTRY routes the base images through a read-through cache of Docker
+      # Hub, which counts unauthenticated pulls per IP — and a hosted runner's
+      # IP is shared with everybody else building on it. Both Dockerfiles
+      # explain it at the ARG, and both default to Docker Hub, so the host —
+      # which passes no build argument — builds exactly what it always did.
       - name: Backend image
         uses: docker/build-push-action@v6
         with:
           context: ./backend
           push: false
+          build-args: |
+            REGISTRY=mirror.gcr.io/library
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -176,5 +184,7 @@ jobs:
         with:
           context: ./frontend
           push: false
+          build-args: |
+            REGISTRY=mirror.gcr.io/library
           cache-from: type=gha
           cache-to: type=gha,mode=max
