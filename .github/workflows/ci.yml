@@ -160,6 +160,25 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
+        with:
+          # ── THE BUILDER IS A DOCKER HUB PULL, AND THE FIRST ONE IN THE JOB ──
+          #
+          # This action creates a buildkit container before any Dockerfile is
+          # read, so neither REGISTRY nor BUILDKIT_SYNTAX can reach it — they
+          # are build arguments and this is not a build. It is the third and
+          # last layer of the same problem, found the same way: business-os's
+          # `images build` job died on the MERGE COMMIT of the change that
+          # mirrored everything else, on a client timeout against
+          # auth.docker.io fetching moby/buildkit.
+          #
+          # Same mirror, and the digest was checked the same way. Nothing here
+          # reaches a shipped image — the builder is the tool doing the
+          # building, not an input to it.
+          #
+          # buildx-stable-1 is the tag this action picks by default, kept
+          # rather than chosen; it floats with stable buildkit the way the
+          # action's own default does.
+          driver-opts: image=mirror.gcr.io/moby/buildkit:buildx-stable-1
 
       # Both images, because a Dockerfile can break while the source is fine —
       # a missing public/ directory took the ops build down exactly that way.
