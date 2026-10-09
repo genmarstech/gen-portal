@@ -2143,6 +2143,33 @@ class System(models.Model):
     what breaks if it stops — are the ones that are required.
     ══════════════════════════════════════════════════════════════════════════
 
+    ── THE PARENT CANNOT BE A CHILD OF ITSELF ──────────────────────────────────
+
+    gen-portal has a row here, and it must never grow a heartbeat.
+
+    A heartbeat is a system telling this registry it is alive. The registry IS
+    gen-portal's database and the board that renders it IS gen-portal, so the
+    message is one only a running gen-portal could write and only a running
+    gen-portal could show you. Up, and you already knew — you are reading the
+    board. Down, and nothing writes the row and nothing displays it. The tick
+    would be green by construction.
+
+    `heartbeat_at` for this row is therefore NULL on purpose, and "never
+    reported" is the truthful value rather than a gap to be closed. It held a
+    stale 2026-09-02 timestamp from a one-off manual post, which read as a
+    system that had gone quiet — the one reading the model works hardest to
+    tell apart from "not instrumented" (see heartbeat_is_stale).
+
+    ⚠ WHAT COVERS THE PARENT IS OUTSIDE IT. `check_systems` polls its
+      health_url like any other system, and scripts/uptime-check.sh curls it
+      over real TLS every fifteen minutes and mails on failure.
+
+      Both of those run ON THE HOST THEY WATCH. If that machine stops — panic,
+      full disk, provider incident, network partition — nothing runs, nothing
+      curls, and no mail is sent, and the silence is indistinguishable from
+      everything being well. Genuinely external monitoring is the open gap
+      here; a self-heartbeat is not a substitute for it and would obscure it.
+
     ── THE PARENT WATCHES; IT DOES NOT REACH IN ────────────────────────────────
 
     Registering a system here grants Genmars no ability to execute anything
