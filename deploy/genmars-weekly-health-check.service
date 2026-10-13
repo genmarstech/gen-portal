@@ -1,0 +1,49 @@
+# Does the backup and health infrastructure actually work, this week?
+#
+# ⚠ THIS IS A USER UNIT AND IT RUNS ON YOUR LAPTOP, NOT ON THE SERVER.
+#
+# Same reason as genmars-pull-backups above it: the checks this makes straddle
+# the server (timer state, restore-test results, disk) and this machine
+# (whether the encrypted dumps actually landed, whether the GPG key that
+# decrypts them is still here). See the banner in
+# scripts/weekly-health-check.sh for the long version.
+#
+#   mkdir -p ~/.config/systemd/user
+#   cp deploy/genmars-weekly-health-check.{service,timer} ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now genmars-weekly-health-check.timer
+#   systemctl --user list-timers genmars-weekly-health-check.timer
+#
+# Reuses genmars-pull-alert@.service for OnFailure — it already does the one
+# thing this needs (a desktop notification with no credential of its own) and
+# is written generically against %i. If you have not installed that unit yet,
+# copy it over too:
+#
+#   cp deploy/genmars-pull-alert@.service ~/.config/systemd/user/
+#
+# Needs the same `loginctl enable-linger` as pull-backups if you have not set
+# that already — without it neither timer survives you logging out.
+
+[Unit]
+Description=Genmars — weekly check that the backups are not just running, but working
+Documentation=file:%h/Genmars/gen-portal/scripts/weekly-health-check.sh
+
+After=network-online.target
+
+# A failed RUN of this check (the SSH itself failing, say) still deserves a
+# nudge. A WARN finding inside a successful run is different — that is the
+# whole content of the weekly email, not a crash, and is not what
+# OnFailure= is for.
+OnFailure=genmars-pull-alert@%N.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Genmars/gen-portal
+ExecStart=%h/Genmars/gen-portal/scripts/weekly-health-check.sh
+
+# No EnvironmentFile, for the same reason pull-backups.service has none: the
+# script needs only an ssh host alias, and the Resend key it reports through
+# is read and used on the SERVER, never fetched here. See the script's banner.
+
+[Install]
+WantedBy=default.target

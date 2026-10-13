@@ -1,0 +1,17 @@
+# Monday morning, Africa/Nairobi — a time somebody is plausibly at the
+# machine and at the start of a week rather than buried in the middle of one.
+#
+# Persistent=true for the same reason as pull-backups.timer: a laptop is not
+# always on, and without this a week where it was closed on Monday morning
+# skips the check entirely rather than catching up the moment it wakes.
+
+[Unit]
+Description=Genmars — weekly infrastructure health check
+
+[Timer]
+OnCalendar=Mon *-*-* 05:00:00
+Persistent=true
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target
