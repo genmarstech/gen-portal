@@ -28,18 +28,21 @@ silently gains it. A key that is not a user cannot be swept up in that.
 
 from __future__ import annotations
 
+import json
 import logging
 import secrets
+from datetime import UTC
 
 from django.contrib.auth.hashers import check_password, make_password
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 
-from .models import System, SystemEvent, SystemKey
+from .models import System, SystemEvent, SystemKey, SystemMetricSnapshot
 
 log = logging.getLogger(__name__)
 
@@ -235,3 +238,102 @@ class SystemEventView(SystemView):
         return Response(
             {"ok": True, "id": event.pk}, status=status.HTTP_201_CREATED
         )
+
+
+class MetricsView(SystemView):
+    """
+    "Here is what happened this period." Business numbers a child measured
+    about itself — revenue, storefront funnel, inventory, retention — for a
+    stated window of time. See SystemMetricSnapshot's docstring for why this
+    gets its own model, and therefore its own endpoint, instead of riding
+    along in a SystemEvent's `detail`.
+
+    Same bearer-key auth as the two views above, reused rather than
+    duplicated. A key still speaks only for `key.system`: nothing in this
+    view reads a system identifier out of the request body, so there is no
+    field to mistype or forge that would file a snapshot against a system the
+    presented key does not belong to.
+    """
+
+    # Generous but bounded — the same reasoning as SystemEvent.detail's
+    # 4000-character cap, scaled up because a business-metrics payload is
+    # structured (acquisition, revenue, funnel, inventory, retention, each a
+    # handful of numbers) rather than one free-text field. 32KB comfortably
+    # holds that shape with room to add sections later; it exists to stop a
+    # child — or a bug in one — from turning this endpoint into unbounded
+    # storage, not to trim a real report down.
+    MAX_METRICS_BYTES = 32_000
+
+    def post(self, request):
+        key = self.resolve(request)
+        if key is None:
+            return self.refused()
+
+        period_start = self._parse_aware(request.data.get("period_start"))
+        period_end = self._parse_aware(request.data.get("period_end"))
+        if period_start is None or period_end is None:
+            return Response(
+                {"detail": "period_start and period_end must be ISO datetimes."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if period_end <= period_start:
+            return Response(
+                {"detail": "period_end must be after period_start."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        metrics = request.data.get("metrics")
+        if not isinstance(metrics, dict):
+            return Response(
+                {"detail": "metrics must be a JSON object."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            encoded = json.dumps(metrics)
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "metrics must be JSON-serialisable."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(encoded.encode("utf-8")) > self.MAX_METRICS_BYTES:
+            return Response(
+                {
+                    "detail": (
+                        f"metrics payload exceeds {self.MAX_METRICS_BYTES} bytes."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Always key.system — never a system named in the body. See the
+        # class docstring: that is what makes "a key for A reports for B"
+        # not just wrong but unexpressable.
+        snapshot = SystemMetricSnapshot.objects.create(
+            system=key.system,
+            period_start=period_start,
+            period_end=period_end,
+            metrics=metrics,
+        )
+
+        SystemKey.objects.filter(pk=key.pk).update(last_used_at=timezone.now())
+
+        return Response(
+            {"ok": True, "id": snapshot.pk}, status=status.HTTP_201_CREATED
+        )
+
+    @staticmethod
+    def _parse_aware(value):
+        """
+        Parse an ISO datetime and make sure it is tz-aware before it ever
+        reaches the database — USE_TZ=True and a naive datetime silently
+        gets interpreted in server-local time, which is exactly the kind of
+        off-by-a-few-hours bug a reporting period must not have.
+        """
+        if not isinstance(value, str) or not value:
+            return None
+        parsed = parse_datetime(value)
+        if parsed is None:
+            return None
+        if timezone.is_naive(parsed):
+            parsed = timezone.make_aware(parsed, UTC)
+        return parsed

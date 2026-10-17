@@ -91,6 +91,7 @@ urlpatterns = [
         name="system-heartbeat",
     ),
     path("systems/events", system_api.SystemEventView.as_view(), name="system-event"),
+    path("systems/metrics", system_api.MetricsView.as_view(), name="system-metrics"),
 
     path("mpesa/callback", views.MpesaCallbackView.as_view(), name="mpesa-callback"),
     path(

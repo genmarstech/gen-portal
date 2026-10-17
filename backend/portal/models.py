@@ -2462,6 +2462,69 @@ class SystemEvent(models.Model):
         return f"{self.system.slug}: {self.message[:60]}"
 
 
+class SystemMetricSnapshot(models.Model):
+    """
+    A child's business numbers for one reporting period — revenue, storefront
+    funnel, inventory, retention. Genmars Commerce is the first system to
+    report this.
+
+    ══════════════════════════════════════════════════════════════════════════
+    WHY THIS IS NOT JUST ANOTHER SystemEvent
+
+    SystemEvent.detail is deliberately write-only in every sense that matters:
+    its docstring says the JSON is "never acted on, never structured for
+    querying" — one incident, read once by a human, and that is the whole
+    lifecycle. Bolting a metrics payload onto it would mean either leaving
+    aggregation permanently impossible (defeating the point of reporting a
+    number instead of a sentence) or quietly starting to query `detail`, which
+    breaks the promise every existing SystemEvent test relies on.
+
+    `metrics` here is the opposite on purpose: it is MEANT to be read back, by
+    period, across periods, and rendered as charts and tiles on the ops
+    dashboard. That is a different contract, so it gets a different model
+    rather than a flag on this one.
+
+    ── STILL UNTRUSTED. STILL NEVER A COMMAND. ─────────────────────────────────
+
+    The widened contract is "this gets displayed and summed", not "this gets
+    believed". Exactly as with SystemEvent: nothing in this codebase branches
+    program behaviour on what a child's numbers say. No alert fires because
+    `orders_cancelled` is high, no business logic reads
+    `outstanding_unpaid_kes` and acts on it — a human looks at the dashboard
+    and decides. A child that reports fabricated or wildly wrong numbers
+    produces a wrong-looking chart, not a wrong action, for the same reason a
+    leaked SystemKey produces noise in an event feed rather than a hole in the
+    portal.
+    ══════════════════════════════════════════════════════════════════════════
+    """
+
+    system = models.ForeignKey(
+        System, on_delete=models.CASCADE, related_name="metric_snapshots"
+    )
+    period_start = models.DateTimeField()
+    period_end = models.DateTimeField()
+    # Child-defined shape — acquisition, revenue, storefront funnel, inventory,
+    # retention, whatever the reporting system measures. Stored as reported
+    # and rendered as reported; see the banner above for why that is safe here
+    # where it would not be on SystemEvent.
+    metrics = models.JSONField()
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-period_end", "-id"]
+        indexes = [
+            models.Index(
+                fields=["system", "-period_end"], name="system_metric_idx"
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"{self.system.slug}: {self.period_start:%Y-%m-%d} – "
+            f"{self.period_end:%Y-%m-%d}"
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Signing in to a sibling application with a Genmars account
 # ─────────────────────────────────────────────────────────────────────────────

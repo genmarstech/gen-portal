@@ -13,7 +13,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from accounts.models import Organisation, User
-from portal.models import System, SystemEvent, SystemKey
+from portal.models import System, SystemEvent, SystemKey, SystemMetricSnapshot
 from portal.system_api import authenticate, issue_key
 
 pytestmark = pytest.mark.django_db
@@ -260,6 +260,189 @@ def test_a_key_cannot_read_anything(client, system, owner):
         assert response.status_code == 403, f"{name} answered {response.status_code}"
 
     assert client.get(reverse("ops-overview"), **headers).status_code == 403
+
+
+# ── metrics are read-and-charted, never acted on ─────────────────────────────
+#
+# See SystemMetricSnapshot's docstring for why this is a model of its own
+# rather than riding along in SystemEvent.detail: these numbers are meant to
+# be aggregated and rendered, where an event's detail deliberately is not.
+
+SAMPLE_METRICS = {
+    "acquisition": {
+        "businesses_total": 42, "businesses_active_with_storefront": 30,
+        "businesses_onboarded_period": 3, "businesses_active_7d": 25,
+        "businesses_active_30d": 35, "businesses_churned_period": 1,
+    },
+    "revenue": {
+        "total_order_value_kes": "150000.00", "orders_placed": 120,
+        "orders_completed": 100, "orders_cancelled": 10, "orders_refunded": 2,
+        "merchant_revenue_collected_kes": "140000.00",
+        "outstanding_unpaid_kes": "5000.00", "average_order_value_kes": "1250.00",
+    },
+    "storefront": {
+        "visits": 500, "product_views": 800, "add_to_cart_events": 150,
+        "checkout_starts": 60, "orders_placed": 120,
+        "visitor_to_order_rate": "0.24", "cart_abandonment_rate": "0.60",
+    },
+    "platform_health": {"failed_checkouts": 3, "failed_payment_attempts": 5},
+    "inventory": {
+        "products_out_of_stock": 12, "orders_awaiting_fulfilment": 8,
+        "cancellation_rate": "0.08", "refund_rate": "0.02",
+        "theme_usage": {"default": 10, "fashion": 15, "electronics": 8, "grocery": 9},
+    },
+    "retention": {
+        "merchants_active_7d": 25, "merchants_active_30d": 35,
+        "repeat_orders_per_merchant": "2.1", "paying_merchants_retained_mom": "0.85",
+    },
+}
+
+
+def _metrics_body(**overrides):
+    body = {
+        "period_start": "2026-10-15T00:00:00Z",
+        "period_end": "2026-10-16T00:00:00Z",
+        "metrics": SAMPLE_METRICS,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_a_snapshot_is_recorded_against_its_own_system(client, system, owner):
+    _, token = issue_key(system=system, label="production", actor=owner)
+
+    response = _post(
+        client, reverse("system-metrics"), token, _metrics_body(),
+    )
+
+    assert response.status_code == 201, response.content
+    snapshot = SystemMetricSnapshot.objects.get()
+    assert snapshot.system == system
+    assert snapshot.metrics == SAMPLE_METRICS
+    assert SystemMetricSnapshot.objects.count() == 1
+
+
+def test_posting_a_snapshot_marks_the_key_used(client, system, owner):
+    key, token = issue_key(system=system, label="production", actor=owner)
+    assert key.last_used_at is None
+
+    _post(client, reverse("system-metrics"), token, _metrics_body())
+
+    key.refresh_from_db()
+    assert key.last_used_at is not None
+
+
+def test_no_token_is_refused_identically_to_a_bad_one_for_metrics(client, system, owner):
+    url = reverse("system-metrics")
+
+    without = client.post(url, _metrics_body(), content_type="application/json")
+    wrong = _post(client, url, "gms_made-up", _metrics_body())
+
+    assert without.status_code == 401
+    assert wrong.status_code == 401
+    assert without.json() == wrong.json()
+    assert SystemMetricSnapshot.objects.count() == 0
+
+
+def test_a_revoked_key_cannot_post_a_snapshot(client, system, owner):
+    key, token = issue_key(system=system, label="production", actor=owner)
+    SystemKey.objects.filter(pk=key.pk).update(revoked_at=timezone.now())
+
+    response = _post(client, reverse("system-metrics"), token, _metrics_body())
+
+    assert response.status_code == 401
+    assert SystemMetricSnapshot.objects.count() == 0
+
+
+def test_bad_dates_are_refused(client, system, owner):
+    _, token = issue_key(system=system, label="production", actor=owner)
+
+    not_a_date = _post(
+        client, reverse("system-metrics"), token,
+        _metrics_body(period_start="not-a-date"),
+    )
+    assert not_a_date.status_code == 400
+
+    backwards = _post(
+        client, reverse("system-metrics"), token,
+        _metrics_body(
+            period_start="2026-10-16T00:00:00Z",
+            period_end="2026-10-15T00:00:00Z",
+        ),
+    )
+    assert backwards.status_code == 400
+
+    equal = _post(
+        client, reverse("system-metrics"), token,
+        _metrics_body(
+            period_start="2026-10-15T00:00:00Z",
+            period_end="2026-10-15T00:00:00Z",
+        ),
+    )
+    assert equal.status_code == 400
+
+    assert SystemMetricSnapshot.objects.count() == 0
+
+
+def test_metrics_must_be_a_json_object(client, system, owner):
+    _, token = issue_key(system=system, label="production", actor=owner)
+
+    for bad in ["a string", 42, [1, 2, 3], None]:
+        response = _post(
+            client, reverse("system-metrics"), token, _metrics_body(metrics=bad),
+        )
+        assert response.status_code == 400, bad
+
+    assert SystemMetricSnapshot.objects.count() == 0
+
+
+def test_an_oversized_metrics_payload_is_refused(client, system, owner):
+    """
+    Generous but bounded — the same reasoning as the 4000-character cap on
+    SystemEvent.detail, scaled up because this payload is structured rather
+    than one free-text field. The cap exists to stop unbounded storage, not
+    to trim a real report, so this test pushes well past it.
+    """
+    _, token = issue_key(system=system, label="production", actor=owner)
+
+    huge = {"padding": "x" * 40_000}
+    response = _post(
+        client, reverse("system-metrics"), token, _metrics_body(metrics=huge),
+    )
+
+    assert response.status_code == 400
+    assert SystemMetricSnapshot.objects.count() == 0
+
+
+def test_a_key_for_one_system_cannot_file_a_snapshot_for_another(client, owner):
+    """
+    There is no system identifier in the request body at all — the endpoint
+    reads only `key.system`. This test exists to pin that down: even a
+    deliberately crafted body cannot name a different system, because
+    nothing on this view ever looks for one.
+    """
+    a = System.objects.create(
+        name="A", slug="system-a", kind=System.Kind.INTERNAL,
+        criticality=System.Criticality.MINOR, purpose="p",
+        impact_if_down="i", owner=owner,
+    )
+    b = System.objects.create(
+        name="B", slug="system-b", kind=System.Kind.INTERNAL,
+        criticality=System.Criticality.MINOR, purpose="p",
+        impact_if_down="i", owner=owner,
+    )
+    _, token_a = issue_key(system=a, label="k", actor=owner)
+
+    # Throwing a "system" field into the body changes nothing — MetricsView
+    # never reads one. The DRF request parser accepts the extra key and the
+    # view ignores it, exactly as it would ignore any other unknown field.
+    body = _metrics_body(system=b.slug, system_id=b.pk)
+    response = _post(client, reverse("system-metrics"), token_a, body)
+
+    assert response.status_code == 201, response.content
+    snapshot = SystemMetricSnapshot.objects.get()
+    assert snapshot.system == a
+    assert not SystemMetricSnapshot.objects.filter(system=b).exists()
 
 
 # ── knowing whether something is alive ───────────────────────────────────────

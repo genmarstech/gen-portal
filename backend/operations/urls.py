@@ -166,6 +166,11 @@ urlpatterns = [
     path("ops/systems/<slug:slug>", views.SystemDetailView.as_view(), name="ops-system"),
     path("ops/systems/<slug:slug>/keys", views.SystemKeyView.as_view(), name="ops-system-keys"),
     path(
+        "ops/systems/<slug:slug>/metrics",
+        views.SystemMetricsView.as_view(),
+        name="ops-system-metrics",
+    ),
+    path(
         "ops/systems/<slug:slug>/security/<int:pk>",
         views.SecurityCheckView.as_view(),
         name="ops-security-check",

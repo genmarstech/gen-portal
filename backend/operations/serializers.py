@@ -47,6 +47,7 @@ from portal.models import (
     System,
     SystemEvent,
     SystemKey,
+    SystemMetricSnapshot,
     Task,
     WorkItem,
 )
@@ -974,6 +975,20 @@ class SystemKeySerializer(serializers.ModelSerializer):
     class Meta:
         model = SystemKey
         fields = ["id", "label", "prefix", "created_at", "last_used_at", "revoked_at"]
+        read_only_fields = fields
+
+
+class SystemMetricSnapshotSerializer(serializers.ModelSerializer):
+    """
+    One reporting period, as the child sent it. `metrics` is rendered exactly
+    as reported — ops builds charts and tiles over it client-side, and see
+    SystemMetricSnapshot's docstring for why that is a display concern and
+    never a trigger for anything this API does on its own.
+    """
+
+    class Meta:
+        model = SystemMetricSnapshot
+        fields = ["period_start", "period_end", "metrics", "received_at"]
         read_only_fields = fields
 
 

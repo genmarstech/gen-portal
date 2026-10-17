@@ -64,6 +64,7 @@ from portal.models import (
     System,
     SystemEvent,
     SystemKey,
+    SystemMetricSnapshot,
     Task,
     WorkItem,
 )
@@ -146,6 +147,7 @@ from .serializers import (
     StaffWriteSerializer,
     SystemEventSerializer,
     SystemKeySerializer,
+    SystemMetricSnapshotSerializer,
     SystemSerializer,
     SystemWriteSerializer,
     TaskSerializer,
@@ -1721,6 +1723,51 @@ class SystemDetailView(StaffView):
                 "keys": SystemKeySerializer(system.keys.all(), many=True).data,
                 "security": SecurityCheckSerializer(
                     system.security_checks.all(), many=True
+                ).data,
+            }
+        )
+
+
+class SystemMetricsView(StaffView):
+    """
+    One system's reported business numbers — the latest period and recent
+    history, for the ops dashboard to chart.
+
+    MUST NEVER ERROR because a system has not reported metrics yet. A system
+    with zero SystemMetricSnapshot rows is the ordinary state of every system
+    before its first reporting period completes, not a fault — see
+    SystemMetricSnapshot's docstring for why these numbers are rendered, not
+    acted on, which is exactly why "nothing to render yet" is a fine answer
+    rather than something to error over.
+    """
+
+    DEFAULT_LIMIT = 30
+    MAX_LIMIT = 90
+
+    def get(self, request, slug: str):
+        system = get_object_or_404(
+            System.objects.select_related("owner", "organisation"), slug=slug
+        )
+
+        try:
+            limit = int(request.query_params.get("limit", self.DEFAULT_LIMIT))
+        except (TypeError, ValueError):
+            limit = self.DEFAULT_LIMIT
+        limit = max(1, min(limit, self.MAX_LIMIT))
+
+        snapshots = list(system.metric_snapshots.all()[:limit])
+        latest = snapshots[0] if snapshots else None
+
+        return Response(
+            {
+                "system": SystemSerializer(system).data,
+                "latest": (
+                    SystemMetricSnapshotSerializer(latest).data
+                    if latest is not None
+                    else None
+                ),
+                "history": SystemMetricSnapshotSerializer(
+                    snapshots, many=True
                 ).data,
             }
         )
